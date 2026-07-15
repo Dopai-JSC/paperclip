@@ -229,6 +229,7 @@ export function healthRoutes(
                 eq(heartbeatRuns.processPreservable, true),
                 isNotNull(heartbeatRuns.processPid),
                 isNotNull(heartbeatRuns.processGroupId),
+                isNull(heartbeatRuns.lifecycleState),
               ),
             )
             .then((rows) => Number(rows[0]?.count ?? 0))
