@@ -71,7 +71,9 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
+import { completeHotRestartReport } from "./hot-restart-report.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import { serverVersion } from "./version.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -928,6 +930,31 @@ export async function startServer(): Promise<StartedServer> {
           logger.error(
             { err },
             "startup hot-restart adoption reconciliation failed - orphan reaper will serve as degraded backstop",
+          );
+        }
+
+        try {
+          const adoption = await heartbeat.adoptAwaitingRuns();
+          const report = completeHotRestartReport({
+            newServerVersion: serverVersion,
+            adoptedRunIds: adoption.adoptedRunIds,
+            finalizedWhileDownRunIds: adoption.finalizedWhileDownRunIds,
+            rejectedRunIds: adoption.rejectedRunIds,
+          });
+          if (report) {
+            logger.info(
+              {
+                adoptedRunIds: report.adoptedRunIds,
+                finalizedWhileDownRunIds: report.finalizedWhileDownRunIds,
+                lostRunIds: report.lostRunIds,
+              },
+              "startup hot-restart report finalized",
+            );
+          }
+        } catch (err) {
+          logger.error(
+            { err },
+            "startup awaiting-run adoption failed - orphan reaper will serve as degraded backstop",
           );
         }
 
