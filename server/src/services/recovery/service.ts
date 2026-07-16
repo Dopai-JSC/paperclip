@@ -4,6 +4,7 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
+  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -38,11 +39,15 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import {
+  applyIssueMonitorPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../issue-execution-policy.js";
+import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
 } from "../issue-dependency-wakeups.js";
-import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -143,6 +148,31 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   handoffAttempt: number;
   maxHandoffAttempts: number;
 };
+
+function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
+  const result = parseObject(latestRun?.resultJson);
+  return readNonEmptyString(result.errorFamily);
+}
+
+function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
+  if (latestRun?.errorCode === "provider_quota") return true;
+  if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
+  if (latestRun?.errorCode !== "adapter_failed") return false;
+  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
+}
+
+function resolveStrandedRecoveryCause(
+  latestRun: LatestIssueRun,
+  explicitCause?: StrandedRecoveryCause,
+): StrandedRecoveryCause {
+  if (explicitCause) return explicitCause;
+  if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
+  if (latestRun?.errorCode === "process_lost") return "process_lost";
+  if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
+    return "codex_output_inactivity_monitor";
+  }
+  return "stranded_assigned_issue";
+}
 
 function readWorkspaceValidationPayload(latestRun: LatestIssueRun): Record<string, unknown> | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).workspaceValidation);
@@ -251,6 +281,122 @@ const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
+export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
+
+const PROVIDER_QUOTA_ERROR_RE =
+  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+const CONFIGURATION_INCOMPLETE_ERROR_RE =
+  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+
+export type AdapterFailureRecoveryClassification =
+  | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
+  | { kind: "configuration_incomplete" }
+  | null;
+
+function parseProviderQuotaClockReset(error: string, now: Date) {
+  const match = error.match(
+    /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
+  );
+  if (!match) return null;
+
+  const hourValue = Number.parseInt(match[1] ?? "", 10);
+  const minute = Number.parseInt(match[2] ?? "0", 10);
+  const meridiem = (match[3] ?? "").toLowerCase();
+  if (!Number.isInteger(hourValue)) return null;
+  if (meridiem ? hourValue < 1 || hourValue > 12 : hourValue < 0 || hourValue > 23) return null;
+  if (!Number.isInteger(minute) || minute < 0 || minute > 59) return null;
+
+  let hour = meridiem ? hourValue % 12 : hourValue;
+  if (meridiem === "p") hour += 12;
+  const timeZone = (match[4] ?? match[5])?.trim();
+  if (!timeZone) {
+    const retryAt = new Date(now);
+    retryAt.setUTCHours(hour, minute, 0, 0);
+    if (retryAt.getTime() <= now.getTime()) retryAt.setUTCDate(retryAt.getUTCDate() + 1);
+    return retryAt;
+  }
+
+  try {
+    const wallClock = (date: Date) => Object.fromEntries(
+      new Intl.DateTimeFormat("en-US", {
+        timeZone,
+        hourCycle: "h23",
+        year: "numeric",
+        month: "2-digit",
+        day: "2-digit",
+        hour: "2-digit",
+        minute: "2-digit",
+      }).formatToParts(date).map((part) => [part.type, part.value]),
+    );
+    const nowParts = wallClock(now);
+    const buildRetryAt = (dayOffset: number) => {
+      const targetDay = new Date(Date.UTC(
+        Number(nowParts.year),
+        Number(nowParts.month) - 1,
+        Number(nowParts.day) + dayOffset,
+        hour,
+        minute,
+      ));
+      let candidate = targetDay;
+      const targetMs = targetDay.getTime();
+      for (let attempt = 0; attempt < 4; attempt += 1) {
+        const actual = wallClock(candidate);
+        const actualMs = Date.UTC(
+          Number(actual.year),
+          Number(actual.month) - 1,
+          Number(actual.day),
+          Number(actual.hour),
+          Number(actual.minute),
+        );
+        const adjustment = targetMs - actualMs;
+        if (adjustment === 0) break;
+        candidate = new Date(candidate.getTime() + adjustment);
+      }
+      return candidate;
+    };
+    const sameDay = buildRetryAt(0);
+    return sameDay.getTime() > now.getTime() ? sameDay : buildRetryAt(1);
+  } catch {
+    return null;
+  }
+}
+
+export function classifyAdapterFailureForRecovery(
+  latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
+  now = new Date(),
+): AdapterFailureRecoveryClassification {
+  if (
+    latestRun.errorCode !== "adapter_failed" &&
+    latestRun.errorCode !== "provider_quota" &&
+    latestRun.errorCode !== "configuration_incomplete"
+  ) {
+    return null;
+  }
+  const resultJson = parseObject(latestRun.resultJson);
+  const error = [latestRun.errorCode ?? "", latestRun.error ?? "", JSON.stringify(resultJson)].join("\n");
+  if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
+    return { kind: "configuration_incomplete" };
+  }
+  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
+
+  const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
+    readNonEmptyString(resultJson.transientRetryNotBefore) ??
+    readNonEmptyString(resultJson.providerQuotaRetryNotBefore);
+  const parsedPersistedRetryAt = persistedRetryAt ? new Date(persistedRetryAt) : null;
+  if (parsedPersistedRetryAt && !Number.isNaN(parsedPersistedRetryAt.getTime()) && parsedPersistedRetryAt > now) {
+    return { kind: "provider_quota", retryAt: parsedPersistedRetryAt, parsedResetTime: true };
+  }
+
+  const parsedClockReset = parseProviderQuotaClockReset(error, now);
+  if (parsedClockReset) {
+    return { kind: "provider_quota", retryAt: parsedClockReset, parsedResetTime: true };
+  }
+  return {
+    kind: "provider_quota",
+    retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+    parsedResetTime: false,
+  };
+}
 
 type ContinuationRetryClassification = {
   kind: "transient_infra" | "non_retryable" | "default";
@@ -2845,6 +2991,139 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return updated;
   }
 
+  async function persistAdapterFailureRecoveryClassification(
+    latestRun: NonNullable<LatestIssueRun>,
+    classification: NonNullable<AdapterFailureRecoveryClassification>,
+  ): Promise<NonNullable<LatestIssueRun>> {
+    const classifiedRun = withAdapterFailureRecoveryClassification(latestRun, classification);
+
+    await db
+      .update(heartbeatRuns)
+      .set({
+        errorCode: classifiedRun.errorCode,
+        resultJson: parseObject(classifiedRun.resultJson),
+        updatedAt: new Date(),
+      })
+      .where(eq(heartbeatRuns.id, latestRun.id));
+
+    return classifiedRun;
+  }
+
+  function withAdapterFailureRecoveryClassification(
+    latestRun: NonNullable<LatestIssueRun>,
+    classification: NonNullable<AdapterFailureRecoveryClassification>,
+  ): NonNullable<LatestIssueRun> {
+    const resultJson = parseObject(latestRun.resultJson);
+    const providerQuotaMetadata = classification.kind === "provider_quota"
+      ? {
+          errorFamily: "provider_quota",
+          retryNotBefore: classification.retryAt.toISOString(),
+          transientRetryNotBefore: classification.retryAt.toISOString(),
+          providerQuotaRetryNotBefore: classification.retryAt.toISOString(),
+        }
+      : { errorFamily: "configuration_incomplete" };
+    const errorCode = classification.kind;
+
+    return {
+      ...latestRun,
+      errorCode,
+      resultJson: {
+        ...resultJson,
+        ...providerQuotaMetadata,
+        recoveryClassification: errorCode,
+      },
+    };
+  }
+
+  async function scheduleProviderQuotaRecoveryMonitor(input: {
+    issue: typeof issues.$inferSelect;
+    latestRun: NonNullable<LatestIssueRun>;
+    classification: Extract<NonNullable<AdapterFailureRecoveryClassification>, { kind: "provider_quota" }>;
+  }) {
+    if (input.issue.status !== "in_progress" && input.issue.status !== "in_review") return null;
+
+    const targetAgentId = getAdapterFailureRecoveryTargetAgentId(input.issue);
+    if (!targetAgentId || input.latestRun.agentId !== targetAgentId) return null;
+
+    const previousPolicy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+    const retryTargetDescription = input.issue.status === "in_review"
+      ? "the active review participant"
+      : "the original assignee";
+    const policy = {
+      ...(previousPolicy ?? { mode: "normal" as const, commentRequired: true, stages: [] }),
+      monitor: {
+        nextCheckAt: input.classification.retryAt.toISOString(),
+        notes: input.classification.parsedResetTime
+          ? `Provider usage quota reached; retry ${retryTargetDescription} at the provider reset time.`
+          : `Provider usage quota reached; retry ${retryTargetDescription} after the default recovery backoff.`,
+        scheduledBy: "assignee" as const,
+        kind: "external_service" as const,
+        serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+        externalRef: input.latestRun.id,
+        timeoutAt: null,
+        maxAttempts: null,
+        recoveryPolicy: "wake_owner" as const,
+      },
+    };
+    const transition = applyIssueMonitorPolicyTransition({
+      issue: input.issue,
+      policy,
+      previousPolicy,
+      requestedStatus: input.issue.status,
+      requestedAssigneePatch: {},
+      actor: { agentId: null, userId: null },
+      monitorExplicitlyUpdated: true,
+    });
+    const updated = await issuesSvc.update(input.issue.id, {
+      ...transition.patch,
+      executionPolicy: policy,
+    });
+    if (!updated) return null;
+
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: "system",
+      actorId: "recovery",
+      agentId: null,
+      runId: input.latestRun.id,
+      action: "issue.monitor_scheduled",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        source: "recovery.provider_quota",
+        latestRunId: input.latestRun.id,
+        errorCode: "provider_quota",
+        nextCheckAt: input.classification.retryAt.toISOString(),
+        parsedResetTime: input.classification.parsedResetTime,
+        targetAgentId,
+      },
+    });
+
+    return updated;
+  }
+
+  function getAdapterFailureRecoveryTargetAgentId(issue: typeof issues.$inferSelect) {
+    if (issue.status !== "in_review") return issue.assigneeAgentId;
+
+    const pendingExecutionState = parseIssueExecutionState(issue.executionState);
+    const participant = pendingExecutionState?.status === "pending"
+      ? pendingExecutionState.currentParticipant
+      : null;
+    return participant?.type === "agent" ? participant.agentId : null;
+  }
+
+  function hasPendingProviderQuotaRecoveryMonitor(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+    now: Date,
+  ) {
+    if (!latestRun || !issue.monitorNextCheckAt || issue.monitorNextCheckAt.getTime() <= now.getTime()) return false;
+    const monitor = parseObject(parseObject(issue.executionPolicy).monitor);
+    return readNonEmptyString(monitor.serviceName) === PROVIDER_QUOTA_MONITOR_SERVICE_NAME &&
+      readNonEmptyString(monitor.externalRef) === latestRun.id;
+  }
+
   async function reconcileStrandedAssignedIssues() {
     const candidates = await db
       .select()
@@ -2871,6 +3150,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       reviewParticipantRequeued: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
+      providerQuotaMonitored: 0,
       recentProgressExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
@@ -2921,7 +3201,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      const latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+      const recoveryNow = new Date();
+      const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
+        ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        : null;
+      const providerQuotaMonitorRun = issue.status === "in_review"
+        ? participantLatestRunForRecovery
+        : latestRun;
+      if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+        result.skipped += 1;
+        continue;
+      }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
         const updated = await escalateStrandedRecoveryIssueInPlace({
           issue,
@@ -2937,16 +3228,57 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
+        ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
+        : null;
+      if (latestRun && adapterFailureClassification) {
+        const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
+        if (!targetAgentId || latestRun.agentId !== targetAgentId) {
+          result.skipped += 1;
+          continue;
+        }
+
+        if (adapterFailureClassification.kind === "provider_quota") {
+          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+            issue,
+            latestRun,
+            classification: adapterFailureClassification,
+          });
+          if (monitored) {
+            latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
+            result.providerQuotaMonitored += 1;
+            result.issueIds.push(issue.id);
+            continue;
+          }
+          result.skipped += 1;
+          continue;
+        } else {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: issue.status as StrandedPreviousStatus,
+            latestRun,
+            recoveryCause: "configuration_incomplete",
+            comment:
+              "Paperclip classified the latest adapter failure as `configuration_incomplete`. " +
+              "Moving the issue to `blocked` with the configuration fix recorded instead of creating a recovery takeover.",
+          });
+          if (updated) {
+            latestRun = await persistAdapterFailureRecoveryClassification(latestRun, adapterFailureClassification);
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+      }
+
       if (issue.status === "in_review") {
         if (!participantAgentId || !pendingExecutionState) {
           result.skipped += 1;
           continue;
         }
-        const participantLatestRun = await getLatestIssueRunForAgent(
-          issue.companyId,
-          issue.id,
-          participantAgentId,
-        );
+        const participantLatestRun = participantLatestRunForRecovery;
 
         if (!participantLatestRun || !isTerminalIssueRun(participantLatestRun)) {
           if (!agentInvokable) {
@@ -2964,6 +3296,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             } else {
               result.skipped += 1;
             }
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
+        const participantAdapterFailureClassification = isUnsuccessfulTerminalIssueRun(participantLatestRun)
+          ? classifyAdapterFailureForRecovery(participantLatestRun, recoveryNow)
+          : null;
+        if (participantAdapterFailureClassification?.kind === "provider_quota") {
+          const monitored = await scheduleProviderQuotaRecoveryMonitor({
+            issue,
+            latestRun: participantLatestRun,
+            classification: participantAdapterFailureClassification,
+          });
+          if (monitored) {
+            latestRun = await persistAdapterFailureRecoveryClassification(
+              participantLatestRun,
+              participantAdapterFailureClassification,
+            );
+            result.providerQuotaMonitored += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+        if (participantAdapterFailureClassification?.kind === "configuration_incomplete") {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            recoveryCause: "configuration_incomplete",
+            recoveryOwnerAgentId: participantAgentId,
+            comment:
+              "Paperclip classified the active review participant's latest adapter failure as " +
+              "`configuration_incomplete`. Moving the issue to `blocked` with the configuration fix " +
+              "recorded instead of repeatedly requeueing the reviewer.",
+          });
+          if (updated) {
+            latestRun = await persistAdapterFailureRecoveryClassification(
+              participantLatestRun,
+              participantAdapterFailureClassification,
+            );
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
           } else {
             result.skipped += 1;
           }
