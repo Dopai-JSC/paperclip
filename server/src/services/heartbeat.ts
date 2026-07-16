@@ -9889,6 +9889,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId?: string | null;
     force?: boolean;
     lookbackHours?: number;
+    now?: Date;
+    reescalationCooldownMs?: number;
   }) {
     return recovery.reconcileIssueGraphLiveness(opts);
   }
