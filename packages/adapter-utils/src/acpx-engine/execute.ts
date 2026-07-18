@@ -68,6 +68,7 @@ import {
   type AcpRuntimeEvent,
   type AcpRuntimeHandle,
   type AcpRuntimeOptions,
+  type AcpSessionStore,
   type AcpRuntimeStatus,
   type AcpRuntimeTurn,
   type AcpRuntimeTurnResult,
@@ -2524,6 +2525,21 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+async function persistLocalAcpProcessMetadata(input: {
+  ctx: AdapterExecutionContext;
+  prepared: AcpxPreparedRuntime;
+  sessionStore: AcpSessionStore;
+  handle: AcpRuntimeHandle;
+}) {
+  if (!input.ctx.onSpawn || input.prepared.remoteExecutionIdentity) return;
+  const recordId = input.handle.acpxRecordId ?? input.handle.sessionKey;
+  const record = await input.sessionStore.load(recordId);
+  const pid = record?.pid;
+  if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return;
+  const startedAt = record?.agentStartedAt ?? record?.createdAt ?? new Date().toISOString();
+  await input.ctx.onSpawn({ pid, processGroupId: null, startedAt });
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -2572,6 +2588,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
     flushChildStderr(childStderrState);
     childStderrState.logPath = prepared.childStderrLogPath;
+    const sessionStore = createRuntimeStore({ stateDir: prepared.stateDir });
     const runtimeOptions: AcpRuntimeOptions = {
       cwd: prepared.cwd,
       // Host-only spawn cwd for the relay proxy on the remote process-session
@@ -2580,7 +2597,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       // fingerprint / compat key are unaffected — this redirects ONLY the host
       // `spawn()` `chdir`, not the in-sandbox data path.
       spawnCwd: prepared.hostSpawnCwd,
-      sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
+      sessionStore,
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
       nonInteractivePermissions: prepared.nonInteractivePermissions,
@@ -2682,6 +2699,12 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
     const sessionHandle = handle;
     try {
+      await persistLocalAcpProcessMetadata({
+        ctx,
+        prepared,
+        sessionStore,
+        handle: sessionHandle,
+      });
       await applySessionConfigOptions({
         runtime,
         handle: sessionHandle,
