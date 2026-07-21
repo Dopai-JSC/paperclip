@@ -161,6 +161,8 @@ export {
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectBrowseRequestSchema,
+  companySkillProjectBrowseEntrySchema,
+  companySkillProjectBrowseResultSchema,
   companySkillProjectScanSkippedSchema,
   companySkillProjectScanConflictSchema,
   companySkillProjectScanResultSchema,
