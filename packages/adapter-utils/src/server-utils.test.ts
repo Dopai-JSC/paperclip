@@ -468,6 +468,23 @@ describe("runChildProcess", () => {
     await expect(run).rejects.toThrow("database unavailable");
   });
 
+  it("rejects when the child closes before onSpawn persistence fails", async () => {
+    const run = runChildProcess(randomUUID(), process.execPath, ["-e", "process.exit(0);"], {
+      cwd: process.cwd(),
+      env: {},
+      timeoutSec: 5,
+      graceSec: 1,
+      onLog: async () => {},
+      onLogError: () => {},
+      onSpawn: async () => {
+        await new Promise((resolve) => setTimeout(resolve, 100));
+        throw new Error("database unavailable after child exit");
+      },
+    });
+
+    await expect(run).rejects.toThrow("database unavailable after child exit");
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 
