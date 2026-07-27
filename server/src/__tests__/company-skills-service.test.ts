@@ -15,6 +15,7 @@ import {
   projects,
   projectWorkspaces,
 } from "@paperclipai/db";
+import { parseFrontmatterMarkdown } from "@paperclipai/shared";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -2561,8 +2562,23 @@ describeEmbeddedPostgres("companySkillService.list", () => {
     // Description and version history are preserved.
     const persisted = await svc.getById(companyId, skill.id);
     expect(persisted).toMatchObject({ description: "Prep pull requests" });
+    expect(persisted?.markdown).toBe(renamedMarkdown);
     const versions = await svc.listVersions(companyId, skill.id);
     expect(versions).toHaveLength(1);
+  });
+
+  it("quotes YAML-special names while keeping stored and on-disk markdown synchronized", async () => {
+    const companyId = randomUUID();
+    await seedCompany(companyId);
+    const skill = await svc.createLocalSkill(companyId, { name: "Prepare PR", slug: "prepare-pr" });
+
+    const result = await svc.renameSkill(companyId, skill.id, { name: "Ship: PR #1", slug: "ship-pr" });
+    const markdown = await fs.readFile(path.join(result.skill.sourceLocator!, "SKILL.md"), "utf8");
+    const persisted = await svc.getById(companyId, skill.id);
+
+    expect(markdown).toContain('name: "Ship: PR #1"');
+    expect(parseFrontmatterMarkdown(markdown).frontmatter.name).toBe("Ship: PR #1");
+    expect(persisted?.markdown).toBe(markdown);
   });
 
   it("supports a name-only rename that keeps the slug/key and directory", async () => {

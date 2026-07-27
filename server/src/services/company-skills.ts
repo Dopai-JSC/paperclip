@@ -90,7 +90,14 @@ import type {
   IssueAttachment,
   IssueDocument,
 } from "@paperclipai/shared";
-import { isUuidLike, joinFrontmatterBlock, normalizeAgentUrlKey, parseFrontmatterMarkdown, splitFrontmatterBlock } from "@paperclipai/shared";
+import {
+  isUuidLike,
+  joinFrontmatterBlock,
+  normalizeAgentUrlKey,
+  parseFrontmatterMarkdown,
+  splitFrontmatterBlock,
+  stringifyFrontmatter,
+} from "@paperclipai/shared";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
@@ -569,7 +576,7 @@ function rewriteFrontmatterName(markdown: string, newName: string): string {
   const nextLines = block.frontmatterText.split("\n").map((line) => {
     if (!replaced && /^name\s*:/.test(line)) {
       replaced = true;
-      return `name: ${newName}`;
+      return stringifyFrontmatter({ name: newName });
     }
     return line;
   });
@@ -3900,6 +3907,7 @@ export function companySkillService(db: Db) {
     // Reversible filesystem stage: capture the original SKILL.md so a failed DB
     // transaction can be rolled back to the pre-rename on-disk state.
     const originalMarkdown = await fs.readFile(path.join(oldDir, "SKILL.md"), "utf8").catch(() => null);
+    const rewrittenMarkdown = rewriteFrontmatterName(originalMarkdown ?? skill.markdown, newName);
     let movedDir = false;
     try {
       if (directoryMoved) {
@@ -3908,9 +3916,8 @@ export function companySkillService(db: Db) {
         movedDir = true;
       }
       if (originalMarkdown !== null) {
-        const rewritten = rewriteFrontmatterName(originalMarkdown, newName);
-        if (rewritten !== originalMarkdown) {
-          await fs.writeFile(path.join(newDir, "SKILL.md"), rewritten, "utf8");
+        if (rewrittenMarkdown !== originalMarkdown) {
+          await fs.writeFile(path.join(newDir, "SKILL.md"), rewrittenMarkdown, "utf8");
         }
       }
 
@@ -3922,6 +3929,7 @@ export function companySkillService(db: Db) {
             slug: newSlug,
             key: newKey,
             sourceLocator: newDir,
+            markdown: rewrittenMarkdown,
             updatedAt: new Date(),
           })
           .where(and(eq(companySkills.id, skill.id), eq(companySkills.companyId, companyId)))
