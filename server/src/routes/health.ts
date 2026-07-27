@@ -58,6 +58,23 @@ function redactedDatabaseBackupHealth(databaseBackup: DatabaseBackupHealthStatus
   };
 }
 
+function redactedStateSnapshotWarning(warning: { code: string; message: string }) {
+  const messages: Record<string, string> = {
+    instance_state_snapshot_last_failure: "Instance-state snapshot failure marker is present.",
+    instance_state_snapshot_missing: "No recent instance-state snapshot was found.",
+    instance_state_snapshot_stale: "Latest instance-state snapshot is stale.",
+  };
+  return { code: warning.code, message: messages[warning.code] ?? "Instance-state snapshot health warning." };
+}
+
+function redactedStateSnapshotHealth(stateSnapshot: ReturnType<typeof inspectInstanceStateSnapshotHealth>) {
+  return {
+    enabled: stateSnapshot.enabled,
+    status: stateSnapshot.status,
+    warnings: stateSnapshot.warnings.map(redactedStateSnapshotWarning),
+  };
+}
+
 export function healthRoutes(
   db?: Db,
   opts: {
@@ -211,7 +228,9 @@ export function healthRoutes(
 
     if (!exposeFullDetails) {
       const redactedDatabaseBackup = databaseBackup ? redactedDatabaseBackupHealth(databaseBackup) : undefined;
-      const redactedWarnings = redactedDatabaseBackup?.warnings.length ? redactedDatabaseBackup.warnings : undefined;
+      const redactedStateSnapshot = stateSnapshot ? redactedStateSnapshotHealth(stateSnapshot) : undefined;
+      const combinedRedactedWarnings = [...(redactedDatabaseBackup?.warnings ?? []), ...(redactedStateSnapshot?.warnings ?? [])];
+      const redactedWarnings = combinedRedactedWarnings.length ? combinedRedactedWarnings : undefined;
       res.json({
         status: "ok",
         deploymentMode: opts.deploymentMode,
@@ -219,7 +238,7 @@ export function healthRoutes(
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
-        ...(stateSnapshot ? { stateSnapshot: { enabled: stateSnapshot.enabled, status: stateSnapshot.status, warnings: stateSnapshot.warnings } } : {}),
+        ...(redactedStateSnapshot ? { stateSnapshot: redactedStateSnapshot } : {}),
         ...(redactedWarnings ? { warnings: redactedWarnings } : {}),
         ...(devServer ? { devServer } : {}),
       });
