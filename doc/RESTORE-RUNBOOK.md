@@ -79,14 +79,18 @@ exported bundle, or **your connected mirror**:
 
 ```sh
 # Dry run first — prints the file list without writing anything.
-paperclipai state restore --from-git /path/to/state-repo.git \
+paperclipai state restore --from-git ~/.paperclip/instances/default/health/state-repo.bundle \
   --company-id <companyId> --ref main --dry-run
 
-# Then for real (drop --dry-run). --from-git also accepts an https:// mirror URL
-# or a `paperclip-state-<cid>.bundle` exported from Settings → Backups.
+# Then for real (drop --dry-run). --from-git also accepts an https:// mirror URL.
 paperclipai state restore --from-git https://github.com/acme/paperclip-state.git \
   --company-id <companyId> --ref main
 ```
+
+For server-side safety, local restore paths must be either the company's managed
+bare state repo or a bundle copied into the instance `health/` staging directory.
+Copy a `paperclip-state-<cid>.bundle` exported from Settings → Backups there
+before invoking the CLI. Other local paths and non-HTTPS remote URLs are rejected.
 
 This materializes instructions, skills, and memory markdown back to their
 instance paths through the same manifest mapping that wrote them. If you only

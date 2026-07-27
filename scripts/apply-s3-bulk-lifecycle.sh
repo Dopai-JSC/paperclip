@@ -8,9 +8,13 @@ prefix="${prefix%/}"
 base="${prefix:+${prefix}/}"
 config="$(mktemp)"
 trap 'rm -f "$config"' EXIT
-cat >"$config" <<JSON
-{"Rules":[{"ID":"paperclip-run-logs-90d","Status":"Enabled","Filter":{"Prefix":"${base}run-logs/"},"Expiration":{"Days":90}},{"ID":"paperclip-retained-snapshots-90d","Status":"Enabled","Filter":{"Prefix":"${base}retention/90-days/"},"Expiration":{"Days":90}}]}
-JSON
+node -e '
+const base = process.argv[1];
+process.stdout.write(JSON.stringify({ Rules: [
+  { ID: "paperclip-run-logs-90d", Status: "Enabled", Filter: { Prefix: `${base}run-logs/` }, Expiration: { Days: 90 } },
+  { ID: "paperclip-retained-snapshots-90d", Status: "Enabled", Filter: { Prefix: `${base}retention/90-days/` }, Expiration: { Days: 90 } },
+] }));
+' "$base" >"$config"
 
 if [[ "${PAPERCLIP_LIFECYCLE_DRY_RUN:-false}" == "true" ]]; then
   cat "$config"

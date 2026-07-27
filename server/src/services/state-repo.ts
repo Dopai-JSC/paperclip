@@ -3,6 +3,7 @@ import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { resolvePaperclipInstancePath, resolveStateRepoPath } from "@paperclipai/shared";
+import { unprocessable } from "../errors.js";
 
 async function run(file: string, args: string[], options: { input?: string | Buffer; env?: NodeJS.ProcessEnv } = {}) {
   return await new Promise<{ stdout: string; stderr: string }>((resolve, reject) => {
@@ -39,6 +40,34 @@ export type StateRepoCommit = {
 };
 export type StateRepoMemorySource = { agentId: string; root: string };
 type Entry = { oid: string; mode: string };
+
+function isPathWithin(root: string, candidate: string) {
+  const relative = path.relative(path.resolve(root), path.resolve(candidate));
+  return relative === "" || (!relative.startsWith(`..${path.sep}`) && relative !== ".." && !path.isAbsolute(relative));
+}
+
+export function resolveStateRepoRestoreDestination(root: string, relative: string) {
+  if (!relative || path.isAbsolute(relative)) {
+    throw unprocessable("State repo restore entry has an invalid path");
+  }
+  const destination = path.resolve(root, relative);
+  if (!isPathWithin(root, destination)) {
+    throw unprocessable(`State repo restore entry escapes its destination root: ${relative}`);
+  }
+  return destination;
+}
+
+async function validateRestoreRef(ref: string) {
+  if (!ref || ref.startsWith("-") || /[\u0000-\u0020\u007f]/.test(ref)) {
+    throw unprocessable("State repo restore ref is invalid");
+  }
+  if (/^[0-9a-f]{7,40}$/i.test(ref)) return;
+  try {
+    await run("git", ["check-ref-format", "--allow-onelevel", ref]);
+  } catch {
+    throw unprocessable("State repo restore ref is invalid");
+  }
+}
 
 async function git(repo: string, args: string[], input?: string | Buffer) {
   return run("git", ["--git-dir", repo, ...args], {
@@ -271,36 +300,65 @@ export function createStateRepoService(options: {
     async restore(companyId: string, source: string, ref = "main", dryRun = false) {
       const instance = resolvePaperclipInstancePath({ homeDir: options.homeDir, instanceId: options.instanceId });
       const companyRoot = path.join(instance, "companies", companyId);
+      const managedRepo = repoPathFor(companyId);
+      await validateRestoreRef(ref);
+      let remoteSource = false;
+      try {
+        const parsed = new URL(source);
+        if (parsed.protocol !== "https:") {
+          throw unprocessable("State repo restore source must use https://");
+        }
+        remoteSource = true;
+      } catch (error) {
+        if (error instanceof TypeError) {
+          const localSource = path.resolve(source);
+          if (!isPathWithin(options.markerDir, localSource) && localSource !== path.resolve(managedRepo)) {
+            throw unprocessable("Local state repo restore sources must be the managed company repo or inside the state-repo staging directory");
+          }
+          source = localSource;
+        } else {
+          throw error;
+        }
+      }
       let gitDir = source;
+      let restoreRef = ref;
       let temporaryRepo: string | null = null;
       try {
+        if (remoteSource) throw new Error("remote source requires fetch");
         await fs.access(path.join(source, "HEAD"));
       } catch {
         await fs.mkdir(options.markerDir, { recursive: true });
         temporaryRepo = await fs.mkdtemp(path.join(options.markerDir, "state-restore-"));
         await run("git", ["init", "--bare", temporaryRepo]);
-        await run("git", ["--git-dir", temporaryRepo, "fetch", source, `${ref}:${ref}`]);
+        await run("git", ["--git-dir", temporaryRepo, "fetch", "--no-tags", "--", source, ref]);
         gitDir = temporaryRepo;
+        restoreRef = "FETCH_HEAD";
       }
       try {
-        const { stdout } = await run("git", ["--git-dir", gitDir, "ls-tree", "-r", ref, `companies/${companyId}`]);
+        const { stdout } = await run("git", ["--git-dir", gitDir, "ls-tree", "-r", restoreRef, "--", `companies/${companyId}`]);
         const restored: string[] = [];
         const memorySources = new Map((await options.resolveMemorySources?.(companyId) ?? []).map((source) => [source.agentId, source.root]));
         for (const line of stdout.trim().split("\n").filter(Boolean)) {
           const match = line.match(/^\d+ blob ([0-9a-f]+)\tcompanies\/[^/]+\/(agents\/([^/]+)\/(.+)|skills\/(.+))$/);
           if (!match) continue;
           const relative = match[2]!;
-          restored.push(relative);
-          if (dryRun) continue;
           const agentId = match[3];
           const agentRelative = match[4];
           const memoryRelative = agentRelative?.startsWith("memory/") ? agentRelative.slice("memory/".length) : null;
           const memoryRoot = agentId && memoryRelative ? memorySources.get(agentId) : null;
           const destination = agentId && agentRelative
             ? memoryRoot
-              ? path.join(memoryRoot, memoryRelative!)
-              : path.join(companyRoot, "agents", agentId, "instructions", agentRelative)
-            : path.join(instance, "skills", companyId, match[5]!);
+              ? resolveStateRepoRestoreDestination(memoryRoot, memoryRelative!)
+              : resolveStateRepoRestoreDestination(
+                  resolveStateRepoRestoreDestination(companyRoot, `agents/${agentId}/instructions`),
+                  agentRelative,
+                )
+            : resolveStateRepoRestoreDestination(
+                resolveStateRepoRestoreDestination(path.join(instance, "skills"), companyId),
+                match[5]!,
+              );
+          restored.push(relative);
+          if (dryRun) continue;
           const content = (await run("git", ["--git-dir", gitDir, "cat-file", "blob", match[1]!])).stdout;
           await fs.mkdir(path.dirname(destination), { recursive: true });
           await fs.writeFile(destination, content);

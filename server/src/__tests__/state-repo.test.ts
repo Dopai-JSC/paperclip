@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
-import { createStateRepoService } from "../services/state-repo.js";
+import { createStateRepoService, resolveStateRepoRestoreDestination } from "../services/state-repo.js";
 
 const exec = promisify(execFile);
 
@@ -20,10 +20,11 @@ describe("state repo service", () => {
     await fs.writeFile(path.join(skill, "SKILL.md"), "# Skill\n");
     const remote = path.join(homeDir, "remote.git");
     await exec("git", ["init", "--bare", remote]);
+    const markerDir = path.join(instance, "health");
     const service = createStateRepoService({
       homeDir,
       instanceId: "test",
-      markerDir: path.join(instance, "health"),
+      markerDir,
       resolveMirror: async () => ({ url: remote }),
     });
     await service.commit({ companyId: "company-1", actor: { name: "Fable", email: "agent+fable@paperclip.invalid" }, message: "agent-instructions: update Fable" });
@@ -35,7 +36,7 @@ describe("state repo service", () => {
     expect(log).toContain("Board User|user+board@paperclip.invalid|paperclip-state-bot|skill: update skill-1");
     expect(log).toContain("Fable|agent+fable@paperclip.invalid|paperclip-state-bot|agent-instructions: update Fable");
     expect((await exec("git", ["--git-dir", remote, "rev-parse", "main"])).stdout.trim()).toMatch(/^[0-9a-f]{40}$/);
-    const bundle = path.join(homeDir, "state.bundle");
+    const bundle = path.join(markerDir, "state.bundle");
     await service.exportBundle("company-1", bundle);
     await fs.rm(path.join(instance, "companies", "company-1"), { recursive: true, force: true });
     await fs.rm(path.join(instance, "skills", "company-1"), { recursive: true, force: true });
@@ -45,6 +46,19 @@ describe("state repo service", () => {
     expect(await fs.readFile(path.join(skill, "SKILL.md"), "utf8")).toBe("# Updated skill\n");
     await fs.writeFile(path.join(instructions, "AGENTS.md"), "ghp_abcdefghijklmnopqrstuvwxyz123456\n");
     await expect(service.commit({ companyId: "company-1", actor: { name: "Fable", email: "agent+fable@paperclip.invalid" }, message: "bad" })).rejects.toThrow("secret scan blocked");
+  });
+
+  it("rejects restore refs, sources, and destinations that escape trust boundaries", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-restore-security-"));
+    const instance = path.join(homeDir, "instances", "test");
+    const markerDir = path.join(instance, "health");
+    const service = createStateRepoService({ homeDir, instanceId: "test", markerDir });
+
+    await expect(service.restore("company-1", "https://example.com/state.git", "--upload-pack=evil")).rejects.toThrow("ref is invalid");
+    await expect(service.restore("company-1", "/etc/passwd")).rejects.toThrow("staging directory");
+    await expect(service.restore("company-1", "file:///etc/passwd")).rejects.toThrow("must use https://");
+    expect(() => resolveStateRepoRestoreDestination(path.join(instance, "companies", "company-1"), "agents/a/memory/../../../../target"))
+      .toThrow("escapes its destination root");
   });
 
   it("reports an attributed commit log, newest first, and empty for an unborn repo", async () => {
@@ -74,10 +88,12 @@ describe("state repo service", () => {
     const memory = path.join(homeDir, ".claude", "projects", "workspace", "memory");
     await fs.mkdir(memory, { recursive: true });
     await fs.writeFile(path.join(memory, "MEMORY.md"), "# Initial\n");
+    const markerDir = path.join(instance, "health");
+    await fs.mkdir(markerDir, { recursive: true });
     const service = createStateRepoService({
       homeDir,
       instanceId: "test",
-      markerDir: path.join(instance, "health"),
+      markerDir,
       resolveMemorySources: async () => [{ agentId: "agent-1", root: memory }],
     });
     await service.commit({ companyId: "company-1", actor: { name: "Setup", email: "setup@paperclip.invalid" }, message: "initial" });
@@ -91,7 +107,7 @@ describe("state repo service", () => {
     expect(log).toContain("claude-memory: capture external changes");
     const content = (await exec("git", ["--git-dir", repo, "show", "main:companies/company-1/agents/agent-1/memory/MEMORY.md"])).stdout;
     expect(content).toBe("# Updated\n");
-    const bundle = path.join(homeDir, "memory.bundle");
+    const bundle = path.join(markerDir, "memory.bundle");
     await service.exportBundle("company-1", bundle);
     await fs.rm(path.join(memory, "MEMORY.md"));
     await service.restore("company-1", bundle);
