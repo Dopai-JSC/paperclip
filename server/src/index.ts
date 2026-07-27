@@ -843,6 +843,7 @@ export async function startServer(): Promise<StartedServer> {
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
   const stopStateRepoWatcher = stateRepoService.startWatcher({
     listCompanyIds: async () => (await db.select({ id: companies.id }).from(companies)).map((company) => company.id),
+    onError: (err) => logger.warn({ err }, "state repo watcher poll failed"),
   });
 
   // Increase keep-alive timeouts to safely outlive default idle timeouts

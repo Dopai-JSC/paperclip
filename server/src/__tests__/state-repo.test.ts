@@ -82,6 +82,24 @@ describe("state repo service", () => {
     expect(await service.log("company-1", 1)).toHaveLength(1);
   });
 
+  it("reports watcher polling failures instead of creating unhandled rejections", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-watcher-error-"));
+    const markerDir = path.join(homeDir, "instances", "test", "health");
+    const service = createStateRepoService({ homeDir, instanceId: "test", markerDir });
+    const errors: unknown[] = [];
+    const stop = service.startWatcher({
+      listCompanyIds: async () => { throw new Error("database unavailable"); },
+      debounceMs: 10,
+      sweepMs: 60_000,
+      onError: (error) => errors.push(error),
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    stop();
+    expect(errors).not.toHaveLength(0);
+    expect(errors[0]).toEqual(expect.objectContaining({ message: "database unavailable" }));
+  });
+
   it("debounces Claude memory changes into an automatic commit", async () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-state-memory-"));
     const instance = path.join(homeDir, "instances", "test");

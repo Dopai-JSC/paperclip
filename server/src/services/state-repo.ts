@@ -368,7 +368,7 @@ export function createStateRepoService(options: {
         if (temporaryRepo) await fs.rm(temporaryRepo, { recursive: true, force: true });
       }
     },
-    startWatcher(input: { listCompanyIds: () => Promise<string[]>; debounceMs?: number; sweepMs?: number }) {
+    startWatcher(input: { listCompanyIds: () => Promise<string[]>; debounceMs?: number; sweepMs?: number; onError?: (error: unknown) => void }) {
       const debounceMs = input.debounceMs ?? 30_000;
       const sweepMs = input.sweepMs ?? 24 * 60 * 60 * 1_000;
       const pending = new Map<string, NodeJS.Timeout>();
@@ -406,9 +406,12 @@ export function createStateRepoService(options: {
           }
         }
       };
-      const pollTimer = setInterval(() => void poll(), Math.min(5_000, debounceMs));
-      const sweepTimer = setInterval(() => void sweep("state: daily drift sweep"), sweepMs);
-      void poll();
+      const runSafely = (task: () => Promise<unknown>) => {
+        void task().catch((error) => input.onError?.(error));
+      };
+      const pollTimer = setInterval(() => runSafely(poll), Math.min(5_000, debounceMs));
+      const sweepTimer = setInterval(() => runSafely(() => sweep("state: daily drift sweep")), sweepMs);
+      runSafely(poll);
       return () => {
         stopped = true;
         clearInterval(pollTimer);
