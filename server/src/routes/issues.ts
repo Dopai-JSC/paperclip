@@ -7,13 +7,17 @@ import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
+  approvals,
+  companyMemberships,
   documents,
   executionWorkspaces,
   heartbeatRuns,
+  issueApprovals,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
   issueRelations,
+  issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
   pipelineCaseIssueLinks,
@@ -108,6 +112,7 @@ import {
   issueApprovalService,
   issueRecoveryActionService,
   issueThreadInteractionService,
+  inboxAgentPolicyService,
   ISSUE_LIST_DEFAULT_LIMIT,
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
@@ -122,6 +127,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
   resolveTaskWatchdogMutationScope,
@@ -138,9 +144,11 @@ import {
 } from "./workspace-command-authz.js";
 import { shouldWakeAssigneeOnCheckout } from "./issues-checkout-wakeup.js";
 import {
+  GENERIC_ATTACHMENT_CONTENT_TYPES,
   isInlineAttachmentContentType,
   normalizeIssueAttachmentMaxBytes,
   normalizeContentType,
+  normalizeUploadAttachmentContentType,
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
@@ -151,6 +159,7 @@ import {
 } from "../services/issue-dependency-wakeups.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
+import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import {
@@ -190,6 +199,7 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
+import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const SELECTED_AGENT_CHAT_UNAVAILABLE_STATUSES = new Set([
@@ -203,6 +213,9 @@ const updateIssueRouteSchema = updateIssueSchema.extend({
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
+const inboxArchiveBodySchema = z.object({
+  userId: z.string().trim().min(1).optional(),
+}).strict().default({});
 const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
 }).strict();
@@ -344,6 +357,13 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
+        stopSnapshot: {
+          version: 2,
+          fingerprint: "task_watchdog_stop:unavailable",
+          materialLeaves: [],
+          waitsByIssueId: {},
+        },
+        pendingInteractionsByIssueId: {},
       },
     }),
   };
@@ -353,11 +373,7 @@ function buildAttachmentContentPath(attachmentId: string): string {
   return `/api/attachments/${attachmentId}/content`;
 }
 
-const GENERIC_ATTACHMENT_CONTENT_TYPES = new Set([
-  "application/octet-stream",
-  "binary/octet-stream",
-  "application/x-binary",
-]);
+const GENERIC_RESPONSE_ATTACHMENT_CONTENT_TYPES = new Set(GENERIC_ATTACHMENT_CONTENT_TYPES);
 
 function inferVideoContentTypeFromFilename(filename: string | null | undefined): string | null {
   const lower = (filename ?? "").toLowerCase();
@@ -373,7 +389,7 @@ function resolveAttachmentResponseContentType(input: {
   originalFilename?: string | null;
 }) {
   const storedContentType = normalizeContentType(input.storedContentType || input.objectContentType);
-  if (!GENERIC_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
+  if (!GENERIC_RESPONSE_ATTACHMENT_CONTENT_TYPES.has(storedContentType)) return storedContentType;
   return inferVideoContentTypeFromFilename(input.originalFilename) ?? storedContentType;
 }
 
@@ -456,6 +472,7 @@ async function auditAgentIssueCreateAttributionSpoof(input: {
     actorId: actor.actorId,
     agentId: actor.agentId,
     runId: actor.runId,
+    agentApiKeyId: actor.agentApiKeyId,
     action: input.action === "rejected"
       ? "issue.attribution_spoof_rejected"
       : "issue.attribution_spoof_stripped",
@@ -698,6 +715,7 @@ function successfulRunHandoffStateFromActivity(row: {
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readNonEmptyString(details.sourceRunId)
       ?? readNonEmptyString(details.source_run_id)
@@ -724,6 +742,7 @@ async function listSuccessfulRunHandoffStates(
   db: Db,
   companyId: string,
   issueIds: string[],
+  options?: { hydrateLiveness?: boolean },
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   if (issueIds.length === 0) return new Map();
   const rows = await db
@@ -750,7 +769,9 @@ async function listSuccessfulRunHandoffStates(
     const state = successfulRunHandoffStateFromActivity(row);
     if (state) states.set(row.entityId, state);
   }
-  return states;
+  return options?.hydrateLiveness === false
+    ? states
+    : hydrateSuccessfulRunHandoffLiveness(db, companyId, states);
 }
 
 type RecoveryActionsLister = {
@@ -2606,6 +2627,7 @@ export function issueRoutes(
   const documentsSvc = documentService(db);
   const companySkillsSvc = companySkillService(db);
   const documentAnnotationsSvc = documentAnnotationService(db);
+  const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
@@ -2755,6 +2777,33 @@ export function issueRoutes(
     return resolution?.kind === "low_trust_review";
   }
 
+  async function directParentReportDisabledForIssue(issue: {
+    companyId: string;
+    projectId?: string | null;
+    executionPolicy?: unknown;
+    assigneeAgentId?: string | null;
+    checkoutRunId?: string | null;
+    executionRunId?: string | null;
+  }) {
+    const resolution = issue.assigneeAgentId
+      ? await resolveAgentTrustForIssue({
+          agentId: issue.assigneeAgentId,
+          runId: issue.checkoutRunId ?? issue.executionRunId,
+        }, issue.companyId, issue)
+      : null;
+    if (resolution) return resolution.kind !== "standard";
+
+    const project = issue.projectId ? await projectsSvc.getById(issue.projectId) : null;
+    return resolveCoreTrustPreset({
+      companyId: issue.companyId,
+      project: project?.companyId === issue.companyId ? project : null,
+      issue: {
+        companyId: issue.companyId,
+        executionPolicy: issue.executionPolicy,
+      },
+    }).kind !== "standard";
+  }
+
   async function assertLowTrustControlPlaneDenied(
     req: Request,
     res: Response,
@@ -2871,9 +2920,11 @@ export function issueRoutes(
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
         runId: input.actor.runId,
+        agentApiKeyId: input.actor.agentApiKeyId,
         action: "heartbeat.cancelled",
         entityType: "heartbeat_run",
         entityId: cancelledRunId,
+        issueId: input.issue.id,
         details: {
           source: "issue_comment_scheduled_retry_superseded",
           issueId: input.issue.id,
@@ -3250,6 +3301,7 @@ export function issueRoutes(
         actorId: input.actor.actorId,
         agentId: input.actor.agentId,
         runId: input.actor.runId,
+        agentApiKeyId: input.actor.agentApiKeyId,
         action: "issue.thread_interaction_expired",
         entityType: "issue",
         entityId: input.issue.id,
@@ -3467,6 +3519,10 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
 
+  function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_direct_parent_report";
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3593,6 +3649,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.checkout_lock_adopted",
         entityType: "issue",
         entityId: issue.id,
@@ -3814,6 +3871,7 @@ export function issueRoutes(
       actorId: input.actor.actorId,
       agentId: input.actor.agentId,
       runId: input.actor.runId,
+      agentApiKeyId: input.actor.agentApiKeyId,
       action: "issue.task_watchdog_followups_serialized",
       entityType: "issue",
       entityId: watchdogParent.id,
@@ -5117,6 +5175,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "label.created",
       entityType: "label",
       entityId: label.id,
@@ -5141,6 +5200,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "label.deleted",
       entityType: "label",
       entityId: removed.id,
@@ -5295,7 +5355,7 @@ export function issueRoutes(
           }
         : null,
       planReviewContext,
-      currentExecutionWorkspace,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
     });
   });
 
@@ -5430,6 +5490,9 @@ export function issueRoutes(
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
     const [
       { project, goal },
       ancestors,
@@ -5443,6 +5506,7 @@ export function issueRoutes(
       scheduledRetry,
       activeRecoveryAction,
       linkedCases,
+      inboxArchiveFields,
     ] = await Promise.all([
       resolveIssueProjectAndGoal(issue),
       svc.getAncestors(issue.id),
@@ -5456,6 +5520,7 @@ export function issueRoutes(
       svc.getCurrentScheduledRetry(issue.id),
       recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       listIssueLinkedCases(db, issue.companyId, issue.id),
+      inboxArchiveFieldsPromise,
     ]);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
@@ -5481,6 +5546,7 @@ export function issueRoutes(
     const workProducts = await workProductsSvc.listForIssue(issue.id);
     res.json({
       ...issue,
+      ...inboxArchiveFields,
       goalId: goal?.id ?? issue.goalId,
       ancestors,
       ...(blockerAttention ? { blockerAttention } : {}),
@@ -5536,6 +5602,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: created ? "issue.watchdog_created" : "issue.watchdog_updated",
       entityType: "issue",
       entityId: issue.id,
@@ -5572,6 +5639,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.watchdog_removed",
         entityType: "issue",
         entityId: issue.id,
@@ -5703,6 +5771,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.updated",
         entityType: "issue",
         entityId: result.issue.id,
@@ -5724,6 +5793,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.recovery_action_resolved",
       entityType: "issue",
       entityId: result.issue.id,
@@ -5847,6 +5917,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "external_object.refresh_requested",
       entityType: "issue",
       entityId: issue.id,
@@ -5941,6 +6012,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_annotation_thread_created",
         entityType: "issue",
         entityId: issue.id,
@@ -6019,6 +6091,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_annotation_comment_added",
         entityType: "issue",
         entityId: issue.id,
@@ -6067,6 +6140,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: thread.status === "resolved"
           ? "issue.document_annotation_thread_resolved"
           : "issue.document_annotation_thread_reopened",
@@ -6137,6 +6211,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: result.created ? "issue.document_created" : "issue.document_updated",
       entityType: "issue",
       entityId: issue.id,
@@ -6162,6 +6237,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_annotation_remapped",
         entityType: "issue",
         entityId: issue.id,
@@ -6238,6 +6314,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_locked",
         entityType: "issue",
         entityId: issue.id,
@@ -6277,6 +6354,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_unlocked",
         entityType: "issue",
         entityId: issue.id,
@@ -6349,6 +6427,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.document_restored",
         entityType: "issue",
         entityId: issue.id,
@@ -6375,6 +6454,7 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "issue.document_annotation_remapped",
           entityType: "issue",
           entityId: issue.id,
@@ -6451,6 +6531,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.document_deleted",
       entityType: "issue",
       entityId: issue.id,
@@ -6525,6 +6606,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.work_product_created",
       entityType: "issue",
       entityId: issue.id,
@@ -6658,6 +6740,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.low_trust_output_promoted",
       entityType: "issue",
       entityId: issue.id,
@@ -6722,6 +6805,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.work_product_updated",
       entityType: "issue",
       entityId: existing.issueId,
@@ -6759,6 +6843,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.work_product_deleted",
       entityType: "issue",
       entityId: existing.issueId,
@@ -6793,6 +6878,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.read_marked",
       entityType: "issue",
       entityId: issue.id,
@@ -6821,6 +6907,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.read_unmarked",
       entityType: "issue",
       entityId: issue.id,
@@ -6829,47 +6916,90 @@ export function issueRoutes(
     res.json({ id: issue.id, removed });
   });
 
-  router.post("/issues/:id/inbox-archive", async (req, res) => {
+  async function resolveInboxArchiveTarget(
+    req: Request,
+    issue: { id: string; companyId: string },
+  ) {
+    if (req.actor.type === "board") {
+      if (!req.actor.userId) throw forbidden("Board user context required", { code: "inbox_target_user_unresolved" });
+      return {
+        userId: req.actor.userId,
+        targetResolvedFrom: "responsible_user" as const,
+        policyMode: null,
+      };
+    }
+    if (req.actor.type !== "agent") throw unauthorized("Authentication required");
+
+    const explicitUserId = typeof req.body?.userId === "string" ? req.body.userId.trim() || null : null;
+    const responsibleUserId = req.actor.onBehalfOfUserId?.trim() || null;
+    const userId = explicitUserId ?? responsibleUserId;
+    if (!userId) {
+      throw forbidden("Inbox target user could not be resolved", { code: "inbox_target_user_unresolved" });
+    }
+
+    const decision = await access.decide({
+      actor: req.actor,
+      action: "inbox:manage",
+      resource: { type: "issue", companyId: issue.companyId, issueId: issue.id },
+      scope: { userId },
+    });
+    if (!decision.allowed) {
+      const code = decision.reason === "inbox_management_disabled"
+        ? "inbox_management_disabled"
+        : decision.reason === "inbox_agent_not_allowed" || decision.reason === "deny_low_trust_boundary"
+          ? "inbox_agent_not_allowed"
+          : decision.reason === "inbox_target_user_unresolved"
+            ? "inbox_target_user_unresolved"
+            : userId !== responsibleUserId
+              ? "inbox_cross_user_grant_required"
+              : "inbox_agent_not_allowed";
+      throw forbidden(decision.explanation, { code, reason: decision.reason });
+    }
+
+    return {
+      userId,
+      targetResolvedFrom: explicitUserId ? "explicit" as const : "responsible_user" as const,
+      policyMode: decision.inboxPolicyMode ?? "open",
+    };
+  }
+
+  router.post("/issues/:id/inbox-archive", validate(inboxArchiveBodySchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, req.actor.userId, new Date());
+    const target = await resolveInboxArchiveTarget(req, issue);
     const actor = getActorInfo(req);
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId, new Date(), {
+      archivedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      archivedByAgentId: actor.agentId,
+      archivedByRunId: actor.runId,
+    });
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.inbox_archived",
       entityType: "issue",
       entityId: issue.id,
-      details: { userId: req.actor.userId, archivedAt: archiveState.archivedAt },
+      details: {
+        userId: target.userId,
+        archivedAt: archiveState.archivedAt,
+        targetResolvedFrom: target.targetResolvedFrom,
+        ...(target.policyMode ? { policyMode: target.policyMode } : {}),
+      },
     });
     res.json(archiveState);
   });
 
-  router.delete("/issues/:id/inbox-archive", async (req, res) => {
+  router.delete("/issues/:id/inbox-archive", validate(inboxArchiveBodySchema), async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
-    if (!req.actor.userId) {
-      res.status(403).json({ error: "Board user context required" });
-      return;
-    }
-    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, req.actor.userId);
+    const target = await resolveInboxArchiveTarget(req, issue);
+    const removed = await svc.unarchiveInbox(issue.companyId, issue.id, target.userId);
     const actor = getActorInfo(req);
     await logActivity(db, {
       companyId: issue.companyId,
@@ -6877,12 +7007,17 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.inbox_unarchived",
       entityType: "issue",
       entityId: issue.id,
-      details: { userId: req.actor.userId },
+      details: {
+        userId: target.userId,
+        targetResolvedFrom: target.targetResolvedFrom,
+        ...(target.policyMode ? { policyMode: target.policyMode } : {}),
+      },
     });
-    res.json(removed ?? { ok: true });
+    res.json(removed ?? { ok: true, userId: target.userId });
   });
 
   router.get("/issues/:id/approvals", async (req, res) => {
@@ -6915,6 +7050,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.approval_linked",
       entityType: "issue",
       entityId: issue.id,
@@ -6943,6 +7079,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.approval_unlinked",
       entityType: "issue",
       entityId: issue.id,
@@ -7116,6 +7253,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.created",
       entityType: "issue",
       entityId: issue.id,
@@ -7151,6 +7289,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.monitor_scheduled",
         entityType: "issue",
         entityId: issue.id,
@@ -7174,6 +7313,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.watchdog_created",
         entityType: "issue",
         entityId: issue.id,
@@ -7284,6 +7424,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.child_created",
       entityType: "issue",
       entityId: issue.id,
@@ -7311,6 +7452,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.monitor_scheduled",
         entityType: "issue",
         entityId: issue.id,
@@ -7335,6 +7477,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.watchdog_created",
         entityType: "issue",
         entityId: issue.id,
@@ -7475,6 +7618,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.accepted_plan_decomposition_updated",
       entityType: "issue",
       entityId: sourceIssue.id,
@@ -7503,6 +7647,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.child_created",
         entityType: "issue",
         entityId: issue.id,
@@ -7530,6 +7675,7 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "issue.monitor_scheduled",
           entityType: "issue",
           entityId: issue.id,
@@ -7779,9 +7925,11 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: existing.id,
             details: {
               agentId: cancelled.agentId,
               source: "issue_comment_interrupt",
@@ -7874,6 +8022,65 @@ export function issueRoutes(
       };
     }
     Object.assign(updateFields, transition.patch);
+
+    const nextStatus = updateFields.status ?? existing.status;
+    if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
+      throw unprocessable("unblockDescriptor requires blocked status");
+    }
+    const descriptor = updateFields.unblockDescriptor ?? null;
+    if (descriptor && typeof descriptor === "object") {
+      const owner = descriptor.owner;
+      if (req.actor.type === "agent" && (owner === "board" || "userId" in owner)) {
+        throw forbidden("Agents may only name themselves as an unblock owner");
+      }
+      if (owner !== "board" && "agentId" in owner) {
+        const target = await db.select({ id: agents.id }).from(agents).where(and(
+          eq(agents.id, owner.agentId),
+          eq(agents.companyId, existing.companyId),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!target) throw unprocessable("Unblock owner agent must belong to the issue company");
+        if (req.actor.type === "agent" && req.actor.agentId !== owner.agentId) {
+          throw forbidden("Agents may only name themselves as an unblock owner");
+        }
+      } else if (owner !== "board" && "userId" in owner) {
+        const member = await db.select({ id: companyMemberships.id }).from(companyMemberships).where(and(
+          eq(companyMemberships.companyId, existing.companyId),
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, owner.userId),
+          eq(companyMemberships.status, "active"),
+        )).limit(1).then((rows) => rows[0] ?? null);
+        if (!member) throw unprocessable("Unblock owner user must be an active company member");
+      }
+    }
+    const enteringBlocked = existing.status !== "blocked" && updateFields.status === "blocked";
+    if (enteringBlocked) {
+      const requestedBlockerIds = Array.isArray(req.body.blockedByIssueIds)
+        ? [...new Set(req.body.blockedByIssueIds as string[])]
+        : null;
+      const hasUnresolvedBlocker = requestedBlockerIds
+        ? requestedBlockerIds.length > 0 && await db.select({ id: issueRows.id }).from(issueRows).where(and(
+          eq(issueRows.companyId, existing.companyId),
+          inArray(issueRows.id, requestedBlockerIds),
+          notInArray(issueRows.status, ["done", "cancelled"]),
+        )).limit(1).then((rows) => rows.length > 0)
+        : (await svc.getDependencyReadiness(existing.id)).unresolvedBlockerCount > 0;
+      const [pendingInteraction, pendingApproval] = await Promise.all([
+        db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
+          eq(issueThreadInteractions.companyId, existing.companyId),
+          eq(issueThreadInteractions.issueId, existing.id),
+          eq(issueThreadInteractions.status, "pending"),
+        )).limit(1).then((rows) => rows[0] ?? null),
+        db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id)).where(and(
+          eq(issueApprovals.companyId, existing.companyId),
+          eq(issueApprovals.issueId, existing.id),
+          eq(approvals.status, "pending"),
+        )).limit(1).then((rows) => rows[0] ?? null),
+      ]);
+      if (!hasUnresolvedBlocker && !pendingInteraction && !pendingApproval && !descriptor) {
+        res.status(422).json({ error: "Entering blocked requires unresolved blockers, a pending interaction/approval, or unblockDescriptor" });
+        return;
+      }
+    }
     if (reviewRequest !== undefined && transition.patch.executionState === undefined) {
       const existingExecutionState = parseIssueExecutionState(existing.executionState);
       if (!existingExecutionState || existingExecutionState.status !== "pending") {
@@ -7932,7 +8139,29 @@ export function issueRoutes(
       }
     }
 
-    let issue;
+    const nextParentId = updateFields.parentId === undefined
+      ? existing.parentId
+      : updateFields.parentId as string | null;
+    const shouldRelayStop =
+      Boolean(nextParentId) &&
+      existing.status !== updateFields.status &&
+      (updateFields.status === "blocked" || updateFields.status === "cancelled") &&
+      await directParentReportDisabledForIssue({
+        companyId: existing.companyId,
+        projectId: updateFields.projectId === undefined
+          ? existing.projectId
+          : updateFields.projectId as string | null,
+        executionPolicy: updateFields.executionPolicy === undefined
+          ? existing.executionPolicy
+          : updateFields.executionPolicy,
+        assigneeAgentId: nextAssigneeAgentId,
+        checkoutRunId: existing.checkoutRunId,
+        executionRunId: existing.executionRunId,
+      });
+    const stopRelayResult: {
+      value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
+    } = { value: null };
+    let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
@@ -7961,6 +8190,21 @@ export function issueRoutes(
             createdByRunId: actor.runId ?? null,
           });
 
+          if (shouldRelayStop) {
+            stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+          }
+
+          return updated;
+        });
+      } else if (shouldRelayStop) {
+        issue = await db.transaction(async (tx) => {
+          const updated = await svc.update(id, {
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
+          if (!updated) return null;
+          stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
         });
       } else {
@@ -7998,6 +8242,25 @@ export function issueRoutes(
       return;
     }
 
+    if (enteringBlocked) {
+      const blockedIssue = issue;
+      let ownerNotifiedAt: Date | null = null;
+      await deliverAgentUnblockNotification({
+        issue: blockedIssue,
+        wakeup: heartbeat.wakeup,
+        markNotified: async (blockedOwnerNotifiedAt) => {
+          ownerNotifiedAt = blockedOwnerNotifiedAt;
+        },
+      });
+      if (ownerNotifiedAt) {
+        await db.update(issueRows).set({ blockedOwnerNotifiedAt: ownerNotifiedAt }).where(and(
+          eq(issueRows.id, blockedIssue.id),
+          eq(issueRows.companyId, blockedIssue.companyId),
+        ));
+        issue = { ...blockedIssue, blockedOwnerNotifiedAt: ownerNotifiedAt };
+      }
+    }
+
     let cancelledStatusRunId: string | null = null;
     if (runToCancelForCancelledStatus) {
       try {
@@ -8010,9 +8273,11 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: existing.id,
             details: { agentId: cancelled.agentId, source: "issue_status_cancelled", issueId: existing.id },
           });
         }
@@ -8024,9 +8289,11 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
           entityId: runToCancelForCancelledStatus.id,
+          issueId: existing.id,
           details: { source: "issue_status_cancelled", issueId: existing.id },
         });
       }
@@ -8134,6 +8401,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.updated",
       entityType: "issue",
       entityId: issue.id,
@@ -8167,7 +8435,7 @@ export function issueRoutes(
     });
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
-      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id])
+      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })
         .then(async (handoffStates) => {
           const handoff = handoffStates.get(issue.id);
           if (handoff?.state !== "required") return;
@@ -8177,6 +8445,7 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "issue.successful_run_handoff_resolved",
             entityType: "issue",
             entityId: issue.id,
@@ -8207,6 +8476,7 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "issue.blockers_updated",
           entityType: "issue",
           entityId: issue.id,
@@ -8235,6 +8505,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.reviewers_updated",
         entityType: "issue",
         entityId: issue.id,
@@ -8255,6 +8526,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.approvers_updated",
         entityType: "issue",
         entityId: issue.id,
@@ -8278,6 +8550,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.monitor_scheduled",
         entityType: "issue",
         entityId: issue.id,
@@ -8300,6 +8573,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.monitor_cleared",
         entityType: "issue",
         entityId: issue.id,
@@ -8346,9 +8620,11 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "company.skill_test_run_completed",
           entityType: "company_skill_test_run",
           entityId: completedRun.id,
+          issueId: issue.id,
           details: {
             issueId: issue.id,
             status: completedRun.status,
@@ -8390,6 +8666,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.comment_added",
         entityType: "issue",
         entityId: issue.id,
@@ -8689,6 +8966,52 @@ export function issueRoutes(
         }
       }
 
+      const stopRelay = stopRelayResult.value;
+      if (stopRelay) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "issue_stop_relay",
+          agentId: null,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue.comment_added",
+          entityType: "issue",
+          entityId: stopRelay.parent.id,
+          details: {
+            commentId: stopRelay.comment.id,
+            source: "child_stop_relay",
+            childIssueId: issue.id,
+            childIdentifier: issue.identifier,
+            childStatus: issue.status,
+          },
+        });
+        if (stopRelay.parent.assigneeAgentId && !isClosedIssueStatus(stopRelay.parent.status)) {
+          addWakeup(stopRelay.parent.assigneeAgentId, {
+            source: "automation",
+            triggerDetail: "system",
+            reason: "issue_commented",
+            payload: {
+              issueId: stopRelay.parent.id,
+              commentId: stopRelay.comment.id,
+              mutation: "comment",
+            },
+            requestedByActorType: "system",
+            requestedByActorId: "issue_stop_relay",
+            contextSnapshot: {
+              issueId: stopRelay.parent.id,
+              taskId: stopRelay.parent.id,
+              commentId: stopRelay.comment.id,
+              wakeCommentId: stopRelay.comment.id,
+              source: "issue.stop_relay",
+              wakeReason: "issue_commented",
+              childIssueId: issue.id,
+              childStatus: issue.status,
+            },
+          });
+        }
+      }
+
       const becameTerminal =
         !["done", "cancelled"].includes(existing.status) && ["done", "cancelled"].includes(issue.status);
       if (becameTerminal) {
@@ -8737,6 +9060,7 @@ export function issueRoutes(
               actorId: "issue_update",
               agentId,
               runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
               action: "issue.blockers_resolved_wake_emitted",
               entityType: "issue",
               entityId: dependentIssueId,
@@ -8787,6 +9111,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.deleted",
       entityType: "issue",
       entityId: issue.id,
@@ -8849,6 +9174,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.checked_out",
       entityType: "issue",
       entityId: issue.id,
@@ -8904,6 +9230,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.released",
       entityType: "issue",
       entityId: released.id,
@@ -8939,6 +9266,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.admin_force_release",
       entityType: "issue",
       entityId: result.issue.id,
@@ -9036,6 +9364,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.thread_interaction_created",
       entityType: "issue",
       entityId: issue.id,
@@ -9113,6 +9442,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: interaction.status === "expired"
           ? "issue.thread_interaction_expired"
           : "issue.thread_interaction_accepted",
@@ -9140,6 +9470,7 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "issue.updated",
           entityType: "issue",
           entityId: issue.id,
@@ -9216,6 +9547,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: interaction.status === "expired"
           ? "issue.thread_interaction_expired"
           : "issue.thread_interaction_rejected",
@@ -9269,6 +9601,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.thread_interaction_answered",
         entityType: "issue",
         entityId: issue.id,
@@ -9323,6 +9656,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: interaction.status === "expired"
           ? "issue.thread_interaction_expired"
           : "issue.thread_interaction_item_verdicts_submitted",
@@ -9384,6 +9718,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.thread_interaction_cancelled",
         entityType: "issue",
         entityId: issue.id,
@@ -9682,6 +10017,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.comment_cancelled",
         entityType: "issue",
         entityId: issue.id,
@@ -9737,6 +10073,12 @@ export function issueRoutes(
               ])
             ),
           );
+          await decisionTrainingSvc.scrubDeletedComments({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            commentIds: [deletedComment.id, ...annotationCleanup.deletedCommentIds],
+            deletedAt: deletedComment.deletedAt ?? new Date(),
+          }, tx);
         },
       },
     );
@@ -9751,6 +10093,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.comment_deleted",
       entityType: "issue",
       entityId: issue.id,
@@ -9867,22 +10210,23 @@ export function issueRoutes(
     const interruptRequested = req.body.interrupt === true;
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
-    const mentionGrantedPeerAgentCommentOnly =
+    const crossIssueCommentOnlyGrant =
       isClosed &&
-      req.actor.type === "agent" &&
-      issue.assigneeAgentId !== null &&
-      issue.assigneeAgentId !== req.actor.agentId &&
-      !reopenRequested &&
-      !resumeRequested &&
-      isIssueMentionGrantDecision(commentAccessDecision);
-    const effectiveReopenRequested = mentionGrantedPeerAgentCommentOnly ? false : reopenRequested;
-    const effectiveResumeRequested = mentionGrantedPeerAgentCommentOnly ? false : resumeRequested;
+      (isDirectParentReportDecision(commentAccessDecision) ||
+        (req.actor.type === "agent" &&
+          issue.assigneeAgentId !== null &&
+          issue.assigneeAgentId !== req.actor.agentId &&
+          !reopenRequested &&
+          !resumeRequested &&
+          isIssueMentionGrantDecision(commentAccessDecision)));
+    const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
+    const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
       isClosed &&
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
-      !mentionGrantedPeerAgentCommentOnly
+      !crossIssueCommentOnlyGrant
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
@@ -9969,6 +10313,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "issue.updated",
         entityType: "issue",
         entityId: currentIssue.id,
@@ -10010,9 +10355,11 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "heartbeat.cancelled",
             entityType: "heartbeat_run",
             entityId: cancelled.id,
+            issueId: currentIssue.id,
             details: {
               agentId: cancelled.agentId,
               source: "issue_comment_interrupt",
@@ -10130,6 +10477,7 @@ export function issueRoutes(
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "issue.updated",
           entityType: "issue",
           entityId: currentIssue.id,
@@ -10181,6 +10529,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.comment_added",
       entityType: "issue",
       entityId: currentIssue.id,
@@ -10189,6 +10538,9 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...(isDirectParentReportDecision(commentAccessDecision)
+          ? { directParentReportGrant: true }
+          : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
         ...(scheduledRetrySupersededByComment
@@ -10447,6 +10799,7 @@ export function issueRoutes(
               actorId: "issue_comment",
               agentId,
               runId: actor.runId,
+              agentApiKeyId: actor.agentApiKeyId,
               action: "issue.blockers_resolved_wake_emitted",
               entityType: "issue",
               entityId: dependentIssueId,
@@ -10495,6 +10848,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.feedback_vote_saved",
       entityType: "issue",
       entityId: issue.id,
@@ -10515,6 +10869,7 @@ export function issueRoutes(
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "company.feedback_data_sharing_updated",
         entityType: "company",
         entityId: issue.companyId,
@@ -10536,6 +10891,7 @@ export function issueRoutes(
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.general_updated",
             entityType: "instance_settings",
             entityId: settings.id,
@@ -10611,7 +10967,10 @@ export function issueRoutes(
       res.status(400).json({ error: "Missing file field 'file'" });
       return;
     }
-    const contentType = normalizeContentType(file.mimetype);
+    const contentType = normalizeUploadAttachmentContentType({
+      contentType: file.mimetype,
+      originalFilename: file.originalname,
+    });
     if (file.buffer.length <= 0) {
       res.status(422).json({ error: "Attachment is empty" });
       return;
@@ -10651,6 +11010,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.attachment_added",
       entityType: "issue",
       entityId: issueId,
@@ -10757,6 +11117,7 @@ export function issueRoutes(
       actorId: actor.actorId,
       agentId: actor.agentId,
       runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
       action: "issue.attachment_removed",
       entityType: "issue",
       entityId: removed.issueId,

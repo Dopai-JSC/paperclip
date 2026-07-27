@@ -35,6 +35,7 @@ export { workspaceOperations } from "./workspace_operations.js";
 export { workspaceRuntimeServices } from "./workspace_runtime_services.js";
 export { projectGoals } from "./project_goals.js";
 export { goals } from "./goals.js";
+export { folders } from "./folders.js";
 export { issues } from "./issues.js";
 export { issueWatchdogs } from "./issue_watchdogs.js";
 export { issuePlanDecompositions } from "./issue_plan_decompositions.js";
@@ -76,6 +77,7 @@ export { issueInboxArchives } from "./issue_inbox_archives.js";
 export { userInboxAgentPolicies } from "./user_inbox_agent_policies.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
+export { decisionTrainingExamples } from "./decision_training_examples.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";
@@ -83,6 +85,8 @@ export { issueAttachments } from "./issue_attachments.js";
 export { documents } from "./documents.js";
 export { documentRevisions } from "./document_revisions.js";
 export { issueDocuments } from "./issue_documents.js";
+export { summarySlots } from "./summary_slots.js";
+export { statusCards, statusCardUpdates } from "./status_cards.js";
 export { routineDocuments } from "./routine_documents.js";
 export { documentAnnotationThreads } from "./document_annotation_threads.js";
 export { documentAnnotationComments } from "./document_annotation_comments.js";
@@ -106,6 +110,7 @@ export { secretAccessEvents } from "./secret_access_events.js";
 export {
   toolApplications,
   toolConnections,
+  connectionGrants,
   toolConnectionInstalls,
   toolOauthStates,
   toolCatalogEntries,
