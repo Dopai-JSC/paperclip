@@ -1707,6 +1707,30 @@ describe("company skill mutation permissions", () => {
     }));
   });
 
+  it("attributes rename activity to the calling agent API key", async () => {
+    const app = await createApp({
+      type: "agent",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      companyId: "company-1",
+      runId: "run-1",
+      keyId: "agent-key-1",
+      source: "agent_key",
+    });
+
+    await request(app)
+      .post("/api/companies/company-1/skills/skill-1/rename")
+      .send({ name: "Ship PR", slug: "ship-pr" })
+      .expect(200);
+
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "company.skill_renamed",
+      actorType: "agent",
+      agentId: "55555555-5555-4555-8555-555555555555",
+      runId: "run-1",
+      agentApiKeyId: "agent-key-1",
+    }));
+  });
+
   it("rejects a rename request with a missing name", async () => {
     const app = await createApp({ type: "board", source: "local_implicit", userId: "user-1" });
 

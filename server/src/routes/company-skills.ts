@@ -880,6 +880,7 @@ export function companySkillRoutes(db: Db) {
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "company.skill_renamed",
           entityType: "company_skill",
           entityId: result.skill.id,
