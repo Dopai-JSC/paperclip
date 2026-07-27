@@ -61,6 +61,14 @@ async function exists(target: string): Promise<boolean> {
   try { await fs.access(target); return true; } catch { return false; }
 }
 
+async function isNonSymlink(target: string): Promise<boolean> {
+  try {
+    return !(await fs.lstat(target)).isSymbolicLink();
+  } catch {
+    return false;
+  }
+}
+
 async function expandPattern(pattern: string): Promise<string[]> {
   const parsed = path.parse(pattern);
   const segments = pattern.slice(parsed.root.length).split(path.sep);
@@ -80,7 +88,11 @@ async function expandPattern(pattern: string): Promise<string[]> {
       continue;
     }
     if (!segment.includes("*")) {
-      current = current.map((base) => path.join(base, segment));
+      const next = current.map((base) => path.join(base, segment));
+      current = [];
+      for (const candidate of next) {
+        if (await isNonSymlink(candidate)) current.push(candidate);
+      }
       continue;
     }
     const next: string[] = [];

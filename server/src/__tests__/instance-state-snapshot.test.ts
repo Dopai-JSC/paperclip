@@ -81,6 +81,38 @@ describe("instance state snapshots", () => {
     await expect(fs.lstat(path.join(managedDir, "linked-secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
   });
 
+  it("skips manifest paths with symlinked ancestors", async () => {
+    const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-symlink-ancestor-snapshot-test-"));
+    tempDirs.push(homeDir);
+    const managedDir = path.join(homeDir, "instances", "test", "managed");
+    const externalDir = path.join(homeDir, "external");
+    const linkedDir = path.join(managedDir, "linked");
+    await fs.mkdir(managedDir, { recursive: true });
+    await fs.mkdir(externalDir, { recursive: true });
+    await fs.writeFile(path.join(externalDir, "secret.txt"), "secret");
+    await fs.symlink(externalDir, linkedDir);
+    const objects = new Map<string, Buffer>();
+    const provider: StorageProvider = {
+      id: "local_disk",
+      async putObject(input) { const chunks: Buffer[] = []; if (Buffer.isBuffer(input.body)) chunks.push(input.body); else for await (const chunk of input.body) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)); objects.set(input.objectKey, Buffer.concat(chunks)); },
+      async getObject(input) { const body = objects.get(input.objectKey); if (!body) throw new Error("missing"); return { stream: Readable.from(body), contentLength: body.length }; },
+      async headObject(input) { const body = objects.get(input.objectKey); return { exists: Boolean(body), contentLength: body?.length }; },
+      async deleteObject(input) { objects.delete(input.objectKey); },
+    };
+    const service = createInstanceStateSnapshotService({
+      storageProvider: provider,
+      encryptionProvider: createAesStateSnapshotEncryptionProvider(Buffer.alloc(32, 12)),
+      context: { homeDir, instanceId: "test" },
+      manifest: [{ id: "managed", resolve: () => [path.join(linkedDir, "secret.txt")], disposition: "s3_secret", redact: "forbid", consistency: "plain" }],
+    });
+
+    const result = await service.runSnapshot();
+    await fs.rm(managedDir, { recursive: true, force: true });
+    await service.restoreSnapshot(result.objectKey);
+
+    await expect(fs.lstat(path.join(managedDir, "linked", "secret.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("stores nested transcript glob matches in a retention-specific object", async () => {
     const homeDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-retention-test-"));
     tempDirs.push(homeDir);
