@@ -86,30 +86,42 @@ async function expandPattern(pattern: string): Promise<string[]> {
     const next: string[] = [];
     for (const base of current) {
       if (!(await exists(base))) continue;
-      const names = await fs.readdir(base);
+      const entries = await fs.readdir(base, { withFileTypes: true });
       const regex = new RegExp(`^${segment.replace(/\./g, "\\.").replace(/\*\*/g, ".*").replace(/\*/g, "[^/]*")}$`);
-      for (const name of names) if (regex.test(name)) next.push(path.join(base, name));
+      for (const entry of entries) {
+        if (!entry.isSymbolicLink() && regex.test(entry.name)) next.push(path.join(base, entry.name));
+      }
     }
     current = next;
   }
   const found: string[] = [];
-  for (const candidate of current) if (await exists(candidate)) found.push(candidate);
+  for (const candidate of current) {
+    try {
+      if (!(await fs.lstat(candidate)).isSymbolicLink()) found.push(candidate);
+    } catch {
+      // Pattern candidates may disappear between expansion and collection.
+    }
+  }
   return found;
 }
 
 async function copyEntry(entry: StateClassEntry, source: string, destination: string): Promise<void> {
-  const stat = await fs.stat(source);
+  const stat = await fs.lstat(source);
+  if (stat.isSymbolicLink()) return;
   await fs.mkdir(path.dirname(destination), { recursive: true });
-  if (entry.consistency === "sqlite_backup" && stat.isDirectory()) {
+  if (stat.isDirectory()) {
     await fs.mkdir(destination, { recursive: true });
-    for (const child of await fs.readdir(source)) await copyEntry(entry, path.join(source, child), path.join(destination, child));
+    for (const child of await fs.readdir(source)) {
+      await copyEntry(entry, path.join(source, child), path.join(destination, child));
+    }
     return;
   }
   if (entry.consistency === "sqlite_backup" && stat.isFile() && /\.(sqlite|sqlite3|db)$/i.test(source)) {
     await execFileAsync("sqlite3", [source, `.backup '${destination.replace(/'/g, "''")}'`]);
     return;
   }
-  await fs.cp(source, destination, { recursive: true, preserveTimestamps: true });
+  await fs.copyFile(source, destination);
+  await fs.utimes(destination, stat.atime, stat.mtime);
 }
 
 export type InstanceStateSnapshotResult = {
