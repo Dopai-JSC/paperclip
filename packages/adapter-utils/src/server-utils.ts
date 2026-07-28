@@ -129,7 +129,7 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
-const UNRESOLVED_FAILING_CHECK_RULE =
+export const UNRESOLVED_FAILING_CHECK_RULE =
   "If the wake payload reports an unresolved failing check from the previous heartbeat on this issue, treat that exact failure as the primary next action: resume from its context, inspect/edit/rerun the smallest relevant check, and continue until it passes or a real blocker is recorded. A still-failing check is not a valid basis for declaring `done`; do not spend the heartbeat only acknowledging the failure or requesting confirmation unless human input is genuinely required to proceed.";
 
 function expandHomePrefix(value: string): string {

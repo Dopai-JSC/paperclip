@@ -141,6 +141,8 @@ describe("execute", () => {
     });
     const body = JSON.parse(String(init.body));
     expect(body.input).toContain("Do the thing");
+    expect(body.input).toContain("unresolved failing check from the previous heartbeat on this issue");
+    expect(body.input).toContain("A still-failing check is not a valid basis for declaring `done`");
     expect(body.session_id).toBe("paperclip:company:company-1:agent:agent-1:issue:issue-1");
   });
 
