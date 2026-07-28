@@ -324,7 +324,9 @@ function buildInput(ctx: AdapterExecutionContext, paperclipApiUrl: string | null
 function buildRunBody(ctx: AdapterExecutionContext, sessionKey: string | null): Record<string, unknown> {
   const paperclipApiUrl = nonEmpty(ctx.config.paperclipApiUrl);
   const payloadTemplate = parseObject(ctx.config.payloadTemplate);
-  const input = nonEmpty(payloadTemplate.input) ?? buildInput(ctx, paperclipApiUrl);
+  const paperclipInput = buildInput(ctx, paperclipApiUrl);
+  const templateInput = nonEmpty(payloadTemplate.input);
+  const input = templateInput ? `${templateInput}\n\n${paperclipInput}` : paperclipInput;
   const instructions =
     nonEmpty(ctx.config.instructions) ??
     nonEmpty(payloadTemplate.instructions) ??
