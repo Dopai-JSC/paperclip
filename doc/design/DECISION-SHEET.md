@@ -127,3 +127,15 @@ Three defects surfaced by the flattened cards, each fixed at its own layer.
 **Quicklook stuck open after expanding a row.** Reported as "the hover task card gets stuck and keeps displaying even when I hover off". Root cause is a self-sustaining loop in the shared `IssueLinkQuicklook`, not in the decision card: Radix returns focus to the trigger when a popover closes, and that link opens the quicklook `onFocus` — so every dismissal refocused the trigger, which reopened the card. Fixed by declining the focus hand-back (`onCloseAutoFocus` prevented, symmetric with the existing `onOpenAutoFocus`): a preview must not move focus in either direction. Added alongside it, a pointer-escape guard that closes on any pointer move clear of both boxes, since the only other close paths were `mouseleave` on trigger/content and no leave fires when the layout shifts an element out from under a stationary pointer. The guard needs both `:hover` and geometry to agree the pointer is gone before closing, so a resting pointer is never dropped, and exempts focus-opened quicklooks for keyboard users.
 
 Separately, evidence thumbnails in an expanded card no longer carry a task quicklook at all (`disableIssueQuicklook`): `Link` upgrades any /issues/ href into a hover preview, which here popped a text card over the very screenshot being examined, and expanding a row mounts that gallery directly under the pointer.
+
+## Card-level selection ring is keyboard-only (design session, Jul 29 2026)
+
+User: "it seems weird that only cards with see more/less have a focus state and not the rest… disable focus state for decision cards but retain the focus state for each interactive component (within cards) for accessibility purposes."
+
+The card-wide stroke was never a focus state — it is the **keyboard cursor**, marking the row that j/k, e, x and s act on. It leaked into mouse use because `handleToggleExpand` set the selection as a side effect of a click, and only expandable rows have a See more/less toggle to click. Hence the reported inconsistency: clicking one kind of card ringed it, and no other card could ever be ringed.
+
+Fixed by tracking how the selection was made and drawing the ring only for a keyboard-driven one. Clicking still sets the selection, so keyboard actions continue to target the row you just used — it simply draws nothing.
+
+**The ring is deliberately kept for j/k navigation** rather than removed outright, which the literal request would imply. Those keys dismiss and snooze the selected row; with no indicator an operator would be firing destructive actions at an invisible target. Flagged to the user as the one place the card-level state survives, and it is theirs to remove if they want it gone there too.
+
+Focus states on everything inside a card are untouched: the See more/less toggle, decision verbs, the task key, the project link, evidence thumbnails and the row menu all keep their `focus-visible` rings.
