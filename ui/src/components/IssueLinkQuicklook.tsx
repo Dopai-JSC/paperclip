@@ -164,6 +164,19 @@ export const IssueLinkQuicklook = React.forwardRef<
   const instanceId = React.useMemo(() => Symbol("issue-quicklook"), []);
   const open = useIsQuicklookOpen(instanceId);
   const openTimerRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  const triggerRef = React.useRef<HTMLAnchorElement | null>(null);
+  const contentRef = React.useRef<HTMLDivElement | null>(null);
+
+  // Keep the caller's ref working while we also hold our own handle on the
+  // trigger node (needed by the pointer-escape guard below).
+  const setTriggerRef = React.useCallback(
+    (node: HTMLAnchorElement | null) => {
+      triggerRef.current = node;
+      if (typeof ref === "function") ref(node);
+      else if (ref) ref.current = node;
+    },
+    [ref],
+  );
 
   const cancelScheduledOpen = React.useCallback(() => {
     if (openTimerRef.current) {
@@ -200,6 +213,57 @@ export const IssueLinkQuicklook = React.forwardRef<
     };
   }, [cancelScheduledOpen, instanceId]);
 
+  // Pointer-escape guard.
+  //
+  // The only close paths are `mouseleave` on the trigger and on the content,
+  // and a leave event is not guaranteed: when the layout shifts, the element
+  // moves out from under a stationary pointer rather than the pointer moving
+  // off the element, and no leave fires. Expanding a decision row does exactly
+  // that, stranding an open quicklook on screen until something else happens
+  // to open one.
+  //
+  // Rather than enumerate the ways a leave can be missed, re-check the
+  // browser's own hover state on every pointer move and close as soon as the
+  // pointer is over neither the trigger nor the card. Keyboard use is exempt:
+  // a quicklook opened by focus stays put while focus remains inside it.
+  React.useEffect(() => {
+    if (!open) return;
+
+    // Slack around each box, so crossing the 4px gap between the trigger and
+    // the card does not read as leaving.
+    const EDGE_SLACK_PX = 12;
+    const nearBox = (element: Element | null, x: number, y: number) => {
+      if (!element) return false;
+      const rect = element.getBoundingClientRect();
+      return (
+        x >= rect.left - EDGE_SLACK_PX
+        && x <= rect.right + EDGE_SLACK_PX
+        && y >= rect.top - EDGE_SLACK_PX
+        && y <= rect.bottom + EDGE_SLACK_PX
+      );
+    };
+
+    const stillEngaged = (x: number, y: number) => {
+      const trigger = triggerRef.current;
+      const content = contentRef.current;
+      // Two independent signals, and closing needs both to agree the pointer is
+      // gone: `:hover` is authoritative about stacking and overlap, geometry
+      // survives the cases where hover state is not updated. Either one holding
+      // keeps the card open, so a real pointer resting on it is never dropped.
+      if (trigger?.matches(":hover") || content?.matches(":hover")) return true;
+      if (nearBox(trigger, x, y) || nearBox(content, x, y)) return true;
+      // Opened by keyboard: hold while focus is still inside.
+      const active = document.activeElement;
+      return trigger === active || (!!content && !!active && content.contains(active));
+    };
+
+    const onPointerMove = (event: PointerEvent) => {
+      if (!stillEngaged(event.clientX, event.clientY)) close();
+    };
+    document.addEventListener("pointermove", onPointerMove, { passive: true });
+    return () => document.removeEventListener("pointermove", onPointerMove);
+  }, [open, close]);
+
   const prefetchedState = issuePrefetch ? withIssueDetailHeaderSeed(state, issuePrefetch) : state;
   const { data, isLoading } = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issuePathId, { placeholderIssue: issuePrefetch ?? undefined }),
@@ -213,7 +277,7 @@ export const IssueLinkQuicklook = React.forwardRef<
   }, [issuePathId, issuePrefetch, queryClient]);
   const link = (
     <RouterDom.Link
-      ref={ref}
+      ref={setTriggerRef}
       to={to}
       state={prefetchedState}
       className={className}
@@ -266,12 +330,20 @@ export const IssueLinkQuicklook = React.forwardRef<
         {link}
       </PopoverTrigger>
       <PopoverContent
+        ref={contentRef}
         className="w-72 p-3"
         side={issueQuicklookSide}
         align={issueQuicklookAlign}
         onMouseEnter={openNow}
         onMouseLeave={close}
+        // A preview must not move focus in either direction. Opening already
+        // declined to take focus; closing has to decline to hand it back, or
+        // Radix focuses the trigger on the way out — and because this link
+        // opens the quicklook `onFocus`, that focus immediately reopens the
+        // card that was just dismissed. Hovering away then leaves it up
+        // permanently: close, refocus, reopen, forever.
         onOpenAutoFocus={(event) => event.preventDefault()}
+        onCloseAutoFocus={(event) => event.preventDefault()}
       >
         {data ? (
           <IssueQuicklookCard issue={data} linkTo={detailPath} linkState={prefetchedState} compact />

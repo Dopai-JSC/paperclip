@@ -607,6 +607,12 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
           <Link
             key={key}
             to={issueHref}
+            // No task quicklook on evidence. `Link` upgrades any /issues/ href
+            // into a hover preview, which here pops a text card over the very
+            // screenshot being examined — and because expanding a row mounts
+            // this gallery directly under a stationary pointer, the preview
+            // opens unbidden and can outlive the pointer that never entered it.
+            disableIssueQuicklook
             className="block rounded-md focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
             onClick={(e) => e.stopPropagation()}
           >
@@ -621,6 +627,8 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
       {extra > 0 && (issueHref ? (
         <Link
           to={issueHref}
+          // Same gallery, same pointer trap — see the thumbnail note above.
+          disableIssueQuicklook
           onClick={(e) => e.stopPropagation()}
           className="flex h-32 w-24 flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
         >

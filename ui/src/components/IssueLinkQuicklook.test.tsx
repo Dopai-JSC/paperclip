@@ -134,4 +134,87 @@ describe("IssueLinkQuicklook", () => {
 
     expect(document.body.textContent).not.toContain("Quicklook title");
   });
+
+  // Regression: the quicklook could only be closed by a `mouseleave` on the
+  // trigger or the card, and no leave event fires when the layout shifts the
+  // trigger out from under a stationary pointer — expanding a decision row does
+  // exactly that, stranding the card on screen. A pointer move anywhere clear of
+  // both boxes now closes it.
+  function renderQuicklook() {
+    act(() => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter>
+            <IssueLinkQuicklook
+              issuePathId="PAP-1"
+              issuePrefetch={createIssue()}
+              to="/companies/company-1/issues/PAP-1"
+            >
+              PAP-1
+            </IssueLinkQuicklook>
+          </MemoryRouter>
+        </QueryClientProvider>,
+      );
+    });
+    return container.querySelector("a") as HTMLAnchorElement;
+  }
+
+  function movePointerTo(x: number, y: number) {
+    act(() => {
+      document.dispatchEvent(new MouseEvent("pointermove", { clientX: x, clientY: y, bubbles: true }));
+    });
+  }
+
+  it("closes an open quicklook once the pointer moves clear of the trigger and the card", () => {
+    const trigger = renderQuicklook();
+
+    act(() => {
+      trigger.focus();
+    });
+    expect(document.body.textContent).toContain("Quicklook title");
+
+    // jsdom reports zero-size rects, so every box sits at the origin; a move far
+    // from it is unambiguously clear of both the trigger and the card.
+    act(() => {
+      trigger.blur();
+    });
+    movePointerTo(4000, 4000);
+
+    expect(document.body.textContent).not.toContain("Quicklook title");
+  });
+
+  // Regression: Radix returns focus to the trigger when a popover closes, and
+  // this link opens the quicklook `onFocus` — so dismissing it refocused the
+  // trigger, which reopened it, and hovering away left the card up for good.
+  it("does not reopen itself by taking focus back when it closes", () => {
+    const trigger = renderQuicklook();
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(200);
+    });
+    expect(document.body.textContent).toContain("Quicklook title");
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("mouseout", { bubbles: true, relatedTarget: document.body }));
+      vi.runOnlyPendingTimers();
+    });
+
+    expect(document.activeElement).not.toBe(trigger);
+    expect(document.body.textContent).not.toContain("Quicklook title");
+  });
+
+  it("keeps a focus-opened quicklook up while focus stays on the trigger", () => {
+    const trigger = renderQuicklook();
+
+    act(() => {
+      trigger.focus();
+    });
+    expect(document.body.textContent).toContain("Quicklook title");
+
+    // A keyboard user moving the mouse must not dismiss what focus opened.
+    movePointerTo(4000, 4000);
+
+    expect(document.body.textContent).toContain("Quicklook title");
+  });
 });
