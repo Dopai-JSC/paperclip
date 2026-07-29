@@ -260,6 +260,50 @@ describe("AttentionQueueRow", () => {
     expect(container?.textContent?.match(/Alpha/g)).toHaveLength(1);
   });
 
+  // Regression: the meta breadcrumb used to read only `relatedIssue`, so rows
+  // whose subject IS the task (reviews, blocked dependencies) showed no key at
+  // all — the rows most obviously about a task were the ones missing it.
+  it("shows the task key when the subject is the task itself", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "blocker_attention",
+          subject: {
+            kind: "issue",
+            id: "i1",
+            companyId: "c1",
+            title: "Update primary paperclip instance",
+            identifier: "PAP-23",
+            status: "blocked",
+            href: "/PAP/issues/PAP-23",
+          },
+          relatedIssue: null,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const link = Array.from(container?.querySelectorAll("a") ?? []).find((a) => a.textContent === "PAP-23");
+    expect(link).toBeTruthy();
+    expect(link?.getAttribute("href")).toBe("/PAP/issues/PAP-23");
+  });
+
+  it("shows no task key on a row that is not attached to a task", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({ relatedIssue: null })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+    expect(container?.textContent).not.toMatch(/PAP-\d+/);
+  });
+
   it("places the timestamp beside the row menu without a clock icon", () => {
     render(
       <AttentionQueueRow

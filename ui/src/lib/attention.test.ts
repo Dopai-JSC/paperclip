@@ -8,6 +8,7 @@ import {
   attentionDetailLine,
   attentionKind,
   attentionStatus,
+  attentionTaskRef,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
@@ -168,6 +169,12 @@ describe("attentionKind + attentionStatus (flattened decision types)", () => {
     );
   });
 
+  it("keeps blocking and review distinct", () => {
+    expect(attentionStatus(buildItem({ sourceKind: "agent_error_alert" }))).not.toBe(
+      attentionStatus(buildItem({ sourceKind: "approval" })),
+    );
+  });
+
   it("borrows exactly two task statuses — and never keys colour off severity", () => {
     expect(attentionStatus(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocked");
     expect(attentionStatus(buildItem({ sourceKind: "approval" }))).toBe("in_review");
@@ -175,6 +182,114 @@ describe("attentionKind + attentionStatus (flattened decision types)", () => {
     expect(attentionStatus(buildItem({ sourceKind: "failed_run", severity: "critical" }))).toBe(
       attentionStatus(buildItem({ sourceKind: "failed_run", severity: "low" })),
     );
+  });
+});
+
+// The feed stores the task in two different fields depending on what the row is
+// about. Reading only `relatedIssue` silently dropped the key on every row whose
+// subject *is* the task — reviews and blocked dependencies, i.e. the rows most
+// obviously about a task.
+describe("attentionTaskRef", () => {
+  it("reads the task off the subject when the subject IS the task", () => {
+    const item = buildItem({
+      sourceKind: "blocker_attention",
+      subject: {
+        kind: "issue",
+        id: "i1",
+        companyId: "c1",
+        title: "Update primary paperclip instance",
+        identifier: "PAP-23",
+        status: "blocked",
+        href: "/PAP/issues/PAP-23",
+      },
+    });
+    expect(attentionTaskRef(item)).toEqual({ identifier: "PAP-23", href: "/PAP/issues/PAP-23" });
+  });
+
+  it("reads the task off relatedIssue when the subject merely hangs off one", () => {
+    const item = buildItem({
+      sourceKind: "issue_thread_interaction",
+      subject: {
+        kind: "interaction",
+        id: "x1",
+        companyId: "c1",
+        title: "Ship it?",
+        identifier: null,
+        status: "pending",
+        href: "/PAP/issues/PAP-20#interaction-x1",
+      },
+      relatedIssue: {
+        kind: "issue",
+        id: "i2",
+        companyId: "c1",
+        title: "Produce launch video",
+        identifier: "PAP-20",
+        status: "in_review",
+        href: "/PAP/issues/PAP-20",
+      },
+    });
+    expect(attentionTaskRef(item)).toEqual({ identifier: "PAP-20", href: "/PAP/issues/PAP-20" });
+  });
+
+  it("prefers relatedIssue when both are present — it is the record the subject can't describe", () => {
+    const item = buildItem({
+      subject: {
+        kind: "issue",
+        id: "i1",
+        companyId: "c1",
+        title: "Subject task",
+        identifier: "PAP-1",
+        status: "todo",
+        href: "/PAP/issues/PAP-1",
+      },
+      relatedIssue: {
+        kind: "issue",
+        id: "i2",
+        companyId: "c1",
+        title: "Related task",
+        identifier: "PAP-2",
+        status: "todo",
+        href: "/PAP/issues/PAP-2",
+      },
+    });
+    expect(attentionTaskRef(item)?.identifier).toBe("PAP-2");
+  });
+
+  it("returns null for rows genuinely not attached to a task", () => {
+    // A hire approval: subject is the approval itself, no task anywhere.
+    expect(attentionTaskRef(buildItem({ sourceKind: "approval" }))).toBeNull();
+    // An agent error: subject is the agent.
+    expect(
+      attentionTaskRef(
+        buildItem({
+          sourceKind: "agent_error_alert",
+          subject: {
+            kind: "agent",
+            id: "ag1",
+            companyId: "c1",
+            title: "CTO",
+            identifier: null,
+            status: "error",
+            href: "/PAP/agents/ag1",
+          },
+        }),
+      ),
+    ).toBeNull();
+  });
+
+  it("does not borrow a key from a non-task subject that happens to have one", () => {
+    const item = buildItem({
+      subject: {
+        kind: "approval",
+        id: "ap1",
+        companyId: "c1",
+        title: "Sign off",
+        identifier: "APR-9",
+        status: "pending",
+        href: "/PAP/approvals/ap1",
+      },
+    });
+    expect(attentionTaskRef(item)).toBeNull();
   });
 });
 

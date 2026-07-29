@@ -23,6 +23,7 @@ import {
   attentionDetailLine,
   attentionImageUrl,
   attentionStatus,
+  attentionTaskRef,
   isInlineResolvable,
   sourceMeta,
 } from "../lib/attention";
@@ -115,6 +116,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // Colour + glyph are borrowed wholesale from the task status system, so a
   // blocking decision reads exactly like a blocked task (DESIGN.md principle 5).
   const status = attentionStatus(item);
+  // The task this row belongs to, whichever field the feed put it in.
+  const taskRef = attentionTaskRef(item);
   const isHidden = variant === "hidden";
   const inline = !isHidden && isInlineResolvable(item);
   const href = item.subject.href;
@@ -202,15 +205,15 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
             <StatusGlyph status={status} size="md" />
             {meta.label}
           </span>
-          {item.relatedIssue?.identifier && (
+          {taskRef && (
             <>
               <BreadcrumbSeparator />
               <Link
-                to={item.relatedIssue.href ?? "#"}
+                to={taskRef.href ?? "#"}
                 className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
                 onClick={(e) => e.stopPropagation()}
               >
-                {item.relatedIssue.identifier}
+                {taskRef.identifier}
               </Link>
             </>
           )}

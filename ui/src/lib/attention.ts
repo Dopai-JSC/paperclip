@@ -127,6 +127,39 @@ export function attentionStatus(item: AttentionItem): "blocked" | "in_review" {
   return ATTENTION_KIND_STATUS[attentionKind(item)];
 }
 
+/**
+ * The task a row belongs to, wherever the feed happens to put it.
+ *
+ * The feed uses two shapes, and a row that reads only one of them silently
+ * drops the task key on the other:
+ *   • the subject IS the task (review, blocked dependency) → `subject`
+ *     carries the identifier and `relatedIssue` is null;
+ *   • the subject hangs off a task (a thread interaction, an issue-scoped
+ *     approval) → the task arrives separately as `relatedIssue`.
+ *
+ * `relatedIssue` wins when both are present: it is the *other* record, so it
+ * is the one the subject alone can't tell you about.
+ *
+ * Returns null for rows genuinely not attached to a task — a hire approval, an
+ * agent error — which should show no key rather than a borrowed one.
+ *
+ * Known gap (server-side, not resolvable here): an approval can carry
+ * `subject.metadata.issueId` while `relatedIssue` is null. That is a bare UUID
+ * with no key or href, so there is nothing to render; the feed builder has to
+ * populate `relatedIssue` for those.
+ */
+export function attentionTaskRef(item: AttentionItem): { identifier: string; href: string | null } | null {
+  const related = item.relatedIssue;
+  if (related?.identifier) {
+    return { identifier: related.identifier, href: related.href };
+  }
+  const subject = item.subject;
+  if (subject.kind === "issue" && subject.identifier) {
+    return { identifier: subject.identifier, href: subject.href };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // Richer detail line (PAP-13409 §7) — render T1's structured `detail` block into
 // a single secondary line under the title (the caller clamps it to 2 lines).
