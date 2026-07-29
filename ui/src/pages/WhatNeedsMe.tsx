@@ -559,7 +559,7 @@ export function WhatNeedsMe() {
                     />
                   )}
                   {!collapsed && (
-                    <div className="space-y-2">
+                    <div className="space-y-4">
                       {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
                         <AttentionQueueRow
                           key={item.id}
@@ -799,7 +799,7 @@ function Curtain({
         onToggle={onToggle}
         className="text-muted-foreground"
       />
-      {open && <div className="space-y-2">{children}</div>}
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }

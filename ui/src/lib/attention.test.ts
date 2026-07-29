@@ -6,8 +6,8 @@ import {
   attentionBadgeCount,
   attentionDateBucket,
   attentionDetailLine,
-  attentionTone,
-  attentionToneStyle,
+  attentionKind,
+  attentionStatus,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
@@ -18,7 +18,6 @@ import {
   NO_GROUP_SENTINEL,
   planAttentionRenderRows,
   saveAttentionGroupBy,
-  severityBadge,
   severityStyle,
   sortAttentionItems,
   sourceMeta,
@@ -127,7 +126,6 @@ describe("sourceMeta + severityStyle", () => {
     ];
     for (const kind of kinds) {
       expect(sourceMeta(kind).label.length).toBeGreaterThan(0);
-      expect(sourceMeta(kind).icon).toBeTruthy();
     }
   });
 
@@ -136,63 +134,47 @@ describe("sourceMeta + severityStyle", () => {
   });
 });
 
-describe("attentionTone + attentionToneStyle (canonical color map §4)", () => {
-  it("colors plan approvals violet regardless of source kind", () => {
-    const fromApproval = buildItem({
-      sourceKind: "approval",
-      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
+// Supersedes the five-tone map (sky/violet/rose/amber/neutral) + severityBadge:
+// rows now resolve to one of two kinds, each borrowing a task status for its
+// colour and glyph, so the queue and the task list share one vocabulary.
+describe("attentionKind + attentionStatus (flattened decision types)", () => {
+  it("reads anything stuck as blocking", () => {
+    expect(attentionKind(buildItem({ sourceKind: "failed_run" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "blocker_attention" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "recovery_action" }))).toBe("blocking");
+    expect(attentionKind(buildItem({ sourceKind: "budget_alert" }))).toBe("blocking");
+  });
+
+  it("reads anything awaiting a verdict as review", () => {
+    expect(attentionKind(buildItem({ sourceKind: "approval" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "issue_thread_interaction" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "join_request" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "review" }))).toBe("review");
+    expect(attentionKind(buildItem({ sourceKind: "productivity_review" }))).toBe("review");
+  });
+
+  it("keeps plan approvals in the review family whichever surface raised them", () => {
+    const planApproval = (): AttentionItem["detail"] => ({
+      kind: "plan_approval",
+      issueTitle: "I",
+      planTitle: "P",
+      summaryExcerpt: null,
+      images: [],
     });
-    const fromInteraction = buildItem({
-      sourceKind: "issue_thread_interaction",
-      detail: { kind: "plan_approval", issueTitle: "I", planTitle: "P", summaryExcerpt: null, images: [] },
-    });
-    expect(attentionTone(fromApproval)).toBe("violet");
-    expect(attentionTone(fromInteraction)).toBe("violet");
-    expect(attentionToneStyle(fromApproval).accent).toContain("violet");
-  });
-
-  it("colors confirmations / questions / verdicts in the sky family", () => {
-    expect(attentionTone(buildItem({ sourceKind: "approval" }))).toBe("sky");
-    expect(attentionTone(buildItem({ sourceKind: "issue_thread_interaction" }))).toBe("sky");
-    expect(
-      attentionTone(
-        buildItem({
-          sourceKind: "issue_thread_interaction",
-          detail: { kind: "questions", questionCount: 2, firstQuestionText: "?", images: [] },
-        }),
-      ),
-    ).toBe("sky");
-  });
-
-  it("colors failures rose and blocked/recovery/budget amber", () => {
-    expect(attentionTone(buildItem({ sourceKind: "failed_run" }))).toBe("rose");
-    expect(attentionTone(buildItem({ sourceKind: "agent_error_alert" }))).toBe("rose");
-    expect(attentionTone(buildItem({ sourceKind: "blocker_attention" }))).toBe("amber");
-    expect(attentionTone(buildItem({ sourceKind: "recovery_action" }))).toBe("amber");
-    expect(attentionTone(buildItem({ sourceKind: "budget_alert" }))).toBe("amber");
-  });
-
-  it("colors join requests neutral", () => {
-    expect(attentionTone(buildItem({ sourceKind: "join_request" }))).toBe("neutral");
-  });
-
-  it("gives every tone a distinct accent and never keys color off severity", () => {
-    const rose = buildItem({ sourceKind: "failed_run", severity: "low" });
-    const amber = buildItem({ sourceKind: "budget_alert", severity: "critical" });
-    // Same-source rows with opposite severities share one accent (color ≠ severity).
-    expect(attentionToneStyle(buildItem({ sourceKind: "failed_run", severity: "critical" })).accent).toBe(
-      attentionToneStyle(rose).accent,
+    expect(attentionStatus(buildItem({ sourceKind: "approval", detail: planApproval() }))).toBe("in_review");
+    expect(attentionStatus(buildItem({ sourceKind: "issue_thread_interaction", detail: planApproval() }))).toBe(
+      "in_review",
     );
-    expect(attentionToneStyle(rose).accent).not.toBe(attentionToneStyle(amber).accent);
   });
-});
 
-describe("severityBadge", () => {
-  it("only surfaces a badge for Critical/High", () => {
-    expect(severityBadge("critical")?.label).toBe("Critical");
-    expect(severityBadge("high")?.label).toBe("High");
-    expect(severityBadge("medium")).toBeNull();
-    expect(severityBadge("low")).toBeNull();
+  it("borrows exactly two task statuses — and never keys colour off severity", () => {
+    expect(attentionStatus(buildItem({ sourceKind: "agent_error_alert" }))).toBe("blocked");
+    expect(attentionStatus(buildItem({ sourceKind: "approval" }))).toBe("in_review");
+    // Same source, opposite severities → identical status (colour ≠ severity).
+    expect(attentionStatus(buildItem({ sourceKind: "failed_run", severity: "critical" }))).toBe(
+      attentionStatus(buildItem({ sourceKind: "failed_run", severity: "low" })),
+    );
   });
 });
 

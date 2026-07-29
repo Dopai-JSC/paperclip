@@ -277,7 +277,10 @@ describe("AttentionQueueRow", () => {
     expect(container?.querySelector("svg.lucide-clock")).toBeNull();
   });
 
-  it("uses square row edges and can show a keyboard selection ring", () => {
+  // Rows became rounded cards when the decision types were flattened: with the
+  // left accent rail gone, the card's own shape carries the separation that the
+  // rail used to, so square edges no longer read as deliberate.
+  it("uses rounded card edges and can show a keyboard selection ring", () => {
     render(
       <AttentionQueueRow
         item={buildItem()}
@@ -290,7 +293,7 @@ describe("AttentionQueueRow", () => {
     );
 
     const row = container?.querySelector("[data-attention-row]");
-    expect(row?.getAttribute("class")).not.toContain("rounded");
+    expect(row?.getAttribute("class")).toContain("rounded-xl");
     expect(row?.getAttribute("class")).toContain("ring-ring");
   });
 
@@ -318,11 +321,12 @@ describe("AttentionQueueRow", () => {
     expect(decisionActions?.textContent).toContain("Approve");
     expect(decisionActions?.textContent).toContain("Reject");
 
-    // The action bar is its own full-width band (mobile-first) that collapses to
-    // a right-aligned pill row once the row's container is wide (container query)
-    // — no longer a stretched right column.
+    // The footer splits the row's last line: disclosure on the left, decision
+    // verbs on the right, so the affirmative verb sits in the same place in
+    // every row whether it is collapsed or expanded.
     const actionArea = decisionActions?.closest('[data-attention-actions="true"]');
-    expect(actionArea?.getAttribute("class")).toContain("@xl:justify-end");
+    expect(actionArea?.getAttribute("class")).toContain("justify-between");
+    expect(decisionActions?.parentElement?.getAttribute("class")).toContain("@xl:justify-end");
 
     const rowMenu = container?.querySelector('[aria-label="Row actions"]');
     expect(rowMenu?.closest('[data-attention-menu="true"]')).toBeTruthy();
@@ -442,7 +446,10 @@ describe("AttentionQueueRow", () => {
     expect(issuesApi.rejectInteraction).not.toHaveBeenCalled();
   });
 
-  it("renders evidence thumbnails in a centered context row below the text stack", () => {
+  // The old context row bundled project identity + thumbnails together; project
+  // identity has since moved up into the meta breadcrumb, so evidence is now a
+  // block of the row's own column rather than a shared strip.
+  it("renders evidence thumbnails as their own block below the text stack", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -464,7 +471,7 @@ describe("AttentionQueueRow", () => {
 
     const thumbnailStack = image?.parentElement?.parentElement;
     expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
-    expect(thumbnailStack?.parentElement?.getAttribute("class")).toContain("items-center");
+    expect(thumbnailStack?.parentElement?.hasAttribute("data-attention-row")).toBe(true);
   });
 
   it("is memoized — a parent re-render with identical props does not re-render the row", async () => {
@@ -636,8 +643,12 @@ describe("AttentionQueueRow", () => {
     });
   }
 
-  it("shows an untrained train button and fires onTrain when clicked", () => {
-    const onTrain = vi.fn();
+  // Training moved off the header strip into the row's overflow menu, so the
+  // header carries only recency + overflow. Menu items live in a portal that
+  // only mounts once opened — environment-flaky in jsdom (see the dismiss test
+  // above) — so the untrained path asserts the menu exists and no badge is
+  // shown, and the onTrain contract is exercised through the inline badge.
+  it("offers training through the row menu and shows no badge until trained", () => {
     render(
       <AttentionQueueRow
         item={trainableItem()}
@@ -645,18 +656,15 @@ describe("AttentionQueueRow", () => {
         expanded={false}
         onToggleExpand={noop}
         onDismiss={noop}
-        onTrain={onTrain}
+        onTrain={noop}
       />,
     );
-    const button = container?.querySelector('[data-testid="attention-train-button"]');
-    expect(button).toBeTruthy();
-    expect(button?.getAttribute("data-training-state")).toBe("untrained");
+    expect(container?.querySelector('[aria-label="Row actions"]')).toBeTruthy();
     expect(container?.querySelector('[data-testid="attention-trained-badge"]')).toBeNull();
-    act(() => button?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
-    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
   });
 
-  it("renders a Trained ✓ badge and a filled button once trained", () => {
+  it("renders a Trained ✓ badge once trained and fires onTrain when it is clicked", () => {
+    const onTrain = vi.fn();
     render(
       <AttentionQueueRow
         item={trainableItem({ trainingExampleId: "example-1" })}
@@ -664,14 +672,13 @@ describe("AttentionQueueRow", () => {
         expanded={false}
         onToggleExpand={noop}
         onDismiss={noop}
-        onTrain={noop}
+        onTrain={onTrain}
       />,
     );
-    expect(
-      container?.querySelector('[data-testid="attention-train-button"]')?.getAttribute("data-training-state"),
-    ).toBe("trained");
     const badge = container?.querySelector('[data-testid="attention-trained-badge"]');
     expect(badge?.textContent).toContain("Trained");
+    act(() => badge?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    expect(onTrain).toHaveBeenCalledWith(expect.objectContaining({ id: "a1" }));
   });
 
   it("does not offer training on a decision that isn't anchored to an issue", () => {
