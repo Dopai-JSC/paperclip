@@ -1003,7 +1003,10 @@ describe("issue execution policy transitions", () => {
       expect(result.patch.assigneeAgentId).toBe(qaAgentId);
     });
 
-    it("skips a self-review-only stage and completes the workflow", () => {
+    // Dopaios contract (Bước nền): the fork used to auto-skip a review stage whose
+    // only reviewer is the submitter. Dopaios reverses that semantic — self-review
+    // is blocked, the "done" transition must fail closed.
+    it("blocks completing a self-review-only stage instead of skipping it", () => {
       const policy = makePolicy([
         {
           type: "review",
@@ -1011,35 +1014,25 @@ describe("issue execution policy transitions", () => {
         },
       ]);
 
-      const result = applyIssueExecutionPolicyTransition({
-        issue: {
-          status: "in_progress",
-          assigneeAgentId: coderAgentId,
-          assigneeUserId: null,
-          executionPolicy: policy,
-          executionState: null,
-        },
-        policy,
-        requestedStatus: "done",
-        requestedAssigneePatch: {},
-        actor: { agentId: coderAgentId },
-        commentBody: "Done",
-      });
-
-      expect(result.patch).toMatchObject({
-        executionState: {
-          status: "completed",
-          currentStageType: null,
-          currentParticipant: null,
-          returnAssignee: { type: "agent", agentId: coderAgentId },
-          completedStageIds: [policy.stages[0].id],
-        },
-      });
-      expect(result.patch.status).toBeUndefined();
-      expect(result.patch.assigneeAgentId).toBeUndefined();
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_progress",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: null,
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          commentBody: "Done",
+        }),
+      ).toThrowError(/self-review is blocked/);
     });
 
-    it("skips a self-review-only review stage and advances to approval", () => {
+    it("blocks a self-review-only review stage instead of advancing to approval", () => {
       const policy = makePolicy([
         {
           type: "review",
@@ -1051,33 +1044,22 @@ describe("issue execution policy transitions", () => {
         },
       ]);
 
-      const result = applyIssueExecutionPolicyTransition({
-        issue: {
-          status: "in_progress",
-          assigneeAgentId: coderAgentId,
-          assigneeUserId: null,
-          executionPolicy: policy,
-          executionState: null,
-        },
-        policy,
-        requestedStatus: "done",
-        requestedAssigneePatch: {},
-        actor: { agentId: coderAgentId },
-        commentBody: "Done",
-      });
-
-      expect(result.patch).toMatchObject({
-        status: "in_review",
-        assigneeAgentId: null,
-        assigneeUserId: ctoUserId,
-        executionState: {
-          status: "pending",
-          currentStageType: "approval",
-          currentParticipant: { type: "user", userId: ctoUserId },
-          returnAssignee: { type: "agent", agentId: coderAgentId },
-          completedStageIds: [policy.stages[0].id],
-        },
-      });
+      expect(() =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_progress",
+            assigneeAgentId: coderAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: null,
+          },
+          policy,
+          requestedStatus: "done",
+          requestedAssigneePatch: {},
+          actor: { agentId: coderAgentId },
+          commentBody: "Done",
+        }),
+      ).toThrowError(/self-review is blocked/);
     });
   });
 
