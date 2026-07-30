@@ -58,6 +58,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { readAuthCircuit, recordAuthRunOutcome } from "./adapter-auth-circuit.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
@@ -9986,6 +9987,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         occurredAt: new Date(),
       });
     }
+
+    // Dopaios (issue #9539): track consecutive adapter auth failures so a broken
+    // credential trips the circuit instead of fueling a retry storm.
+    const runtimeRow = await db
+      .select({ stateJson: agentRuntimeState.stateJson })
+      .from(agentRuntimeState)
+      .where(eq(agentRuntimeState.agentId, agent.id))
+      .then((rows) => rows[0] ?? null);
+    const authOutcome = recordAuthRunOutcome(runtimeRow?.stateJson ?? {}, {
+      failed: Boolean(result.errorCode),
+      errorCode: result.errorCode ?? null,
+      runId: run.id,
+    });
+    if (authOutcome.changed) {
+      await db
+        .update(agentRuntimeState)
+        .set({ stateJson: authOutcome.stateJson, updatedAt: new Date() })
+        .where(eq(agentRuntimeState.agentId, agent.id));
+    }
+    if (authOutcome.tripped) {
+      logger.warn(
+        {
+          agentId: agent.id,
+          adapterType: agent.adapterType,
+          errorCode: result.errorCode,
+          consecutiveFailures: authOutcome.circuit.consecutiveFailures,
+        },
+        "adapter auth circuit tripped; automatic wakeups are skipped until a successful run or a user-initiated wake",
+      );
+    }
   }
 
   async function startNextQueuedRunForAgent(agentId: string) {
@@ -13370,6 +13401,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         invalidOrgChain: invokability.invalidOrgChain,
         ...invokability.details,
       });
+    }
+
+    // Dopaios (issue #9539): when the adapter auth circuit is open, skip every
+    // automatic wakeup so repeated 401s cannot create a retry storm. A
+    // user-initiated wake still passes and doubles as the manual-resume path.
+    if (opts.requestedByActorType !== "user") {
+      const runtimeStateRow = await db
+        .select({ stateJson: agentRuntimeState.stateJson })
+        .from(agentRuntimeState)
+        .where(eq(agentRuntimeState.agentId, agentId))
+        .then((rows) => rows[0] ?? null);
+      const authCircuit = readAuthCircuit(runtimeStateRow?.stateJson ?? null);
+      if (authCircuit.trippedAt != null) {
+        await writeSkippedRequest("adapter.auth_circuit_open", {
+          payload: {
+            ...(payload ?? {}),
+            authCircuit: {
+              consecutiveFailures: authCircuit.consecutiveFailures,
+              trippedAt: authCircuit.trippedAt,
+              lastErrorCode: authCircuit.lastErrorCode,
+            },
+          },
+        });
+        return null;
+      }
     }
 
     const policy = parseHeartbeatPolicy(agent);
