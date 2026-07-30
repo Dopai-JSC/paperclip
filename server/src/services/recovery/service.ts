@@ -137,6 +137,9 @@ type StrandedRecoveryCause =
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
+  | "provider_quota"
+  | "process_lost"
+  | "codex_output_inactivity_monitor"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
@@ -270,6 +273,13 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
   "budget_exhausted",
   "issue_paused",
   "issue_dependencies_blocked",
+  // Dopaios (issue #9539): auth failures must never be requeued with zero
+  // backoff — the auth circuit breaker in heartbeat owns their recovery.
+  "claude_auth_required",
+  "codex_auth_required",
+  "acpx_auth_required",
+  "gemini_auth_required",
+  "cursor_auth_required",
 ]);
 
 // A continuation cancelled with this code is a *deliberate wait* (the latest run
@@ -3951,7 +3961,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             eq(issues.originId, finding.incidentKey),
             eq(issues.originFingerprint, livenessRecoveryLeafFingerprint(finding)),
           ),
-          visibleIssueCondition(),
+          isNull(issues.hiddenAt),
           eq(issues.status, "done"),
           gte(issues.updatedAt, cutoff),
         ),
