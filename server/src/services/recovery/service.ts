@@ -137,9 +137,6 @@ type StrandedRecoveryCause =
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
-  | "provider_quota"
-  | "process_lost"
-  | "codex_output_inactivity_monitor"
   | typeof SUCCESSFUL_RUN_MISSING_STATE_REASON;
 
 type StrandedPreviousStatus = "todo" | "in_progress" | "in_review";
@@ -151,31 +148,6 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   handoffAttempt: number;
   maxHandoffAttempts: number;
 };
-
-function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
-  const result = parseObject(latestRun?.resultJson);
-  return readNonEmptyString(result.errorFamily);
-}
-
-function isProviderQuotaRecovery(latestRun: LatestIssueRun) {
-  if (latestRun?.errorCode === "provider_quota") return true;
-  if (readRecoveryRunErrorFamily(latestRun) === "provider_quota") return true;
-  if (latestRun?.errorCode !== "adapter_failed") return false;
-  return /(?:usage|rate|quota) limit|quota (?:exceeded|reset)|try again after/i.test(latestRun.error ?? "");
-}
-
-function resolveStrandedRecoveryCause(
-  latestRun: LatestIssueRun,
-  explicitCause?: StrandedRecoveryCause,
-): StrandedRecoveryCause {
-  if (explicitCause) return explicitCause;
-  if (isProviderQuotaRecovery(latestRun)) return "provider_quota";
-  if (latestRun?.errorCode === "process_lost") return "process_lost";
-  if (latestRun?.errorCode === "codex_output_inactivity_monitor") {
-    return "codex_output_inactivity_monitor";
-  }
-  return "stranded_assigned_issue";
-}
 
 function readWorkspaceValidationPayload(latestRun: LatestIssueRun): Record<string, unknown> | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).workspaceValidation);

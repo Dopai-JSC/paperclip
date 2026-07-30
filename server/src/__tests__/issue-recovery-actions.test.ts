@@ -324,61 +324,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
-  // Dopaios note: owner expectations follow tag v2026.707.0 behavior
-  // (resolveStrandedIssueRecoveryOwnerAgentId prefers the assignee's manager;
-  // workspace validation stays with the assignee for manual repair). The
-  // cause-keyed owner playbook from later upstream commits is not cherry-picked.
-  it.each([
-    ["process_lost", undefined, "manager"],
-    ["adapter_failed", "successful_run_missing_state", "manager"],
-    ["codex_output_inactivity_monitor", undefined, "manager"],
-    ["workspace_validation_failed", "workspace_validation_failed", "coder"],
-    ["adapter_failed", undefined, "manager"],
-  ] as const)(
-    "routes %s recovery through the cause-keyed playbook",
-    async (errorCode, explicitCause, expectedOwner) => {
-      const { managerId, coderId, sourceIssue } = await seedCompany();
-      const enqueueWakeup = vi.fn(async () => null);
-      const recovery = recoveryService(db, { enqueueWakeup });
-      const latestRun = {
-        id: randomUUID(),
-        agentId: coderId,
-        status: errorCode === "adapter_failed" && explicitCause === "successful_run_missing_state"
-          ? "succeeded"
-          : "failed",
-        error: `${errorCode} failure`,
-        errorCode,
-        contextSnapshot: { retryReason: "issue_continuation_needed" },
-        livenessState: "needs_followup",
-        resultJson: errorCode === "workspace_validation_failed"
-          ? { workspaceValidation: { reason: "missing_workspace", fingerprint: "workspace:test" } }
-          : null,
-      } as const;
+  // Dopaios note (Buoc nen): upstream's cause-keyed playbook it.each block was
+  // dropped. It asserts owner routing and wake causes introduced by upstream
+  // commits outside the pinned cherry-pick set (#9651/#9635/#9648); at tag
+  // v2026.707.0 stranded escalation defaults to cause stranded_assigned_issue
+  // and manual-repair causes do not enqueue a wake. #9635's own provider-quota
+  // behavior is covered by the monitor tests below and
+  // provider-failure-classification.test.ts.
 
-      await recovery.escalateStrandedAssignedIssue({
-        issue: sourceIssue,
-        previousStatus: "in_progress",
-        latestRun,
-        ...(explicitCause ? { recoveryCause: explicitCause } : {}),
-      });
-
-      const expectedOwnerId = expectedOwner === "coder" ? coderId : managerId;
-      const [action] = await db
-        .select()
-        .from(issueRecoveryActions)
-        .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
-      expect(action?.ownerAgentId).toBe(expectedOwnerId);
-      expect(enqueueWakeup).toHaveBeenCalledWith(
-        expectedOwnerId,
-        expect.objectContaining({
-          reason: "source_scoped_recovery_action",
-          payload: expect.objectContaining({
-            recoveryCause: explicitCause ?? (errorCode === "adapter_failed" ? "stranded_assigned_issue" : errorCode),
-          }),
-        }),
-      );
-    },
-  );
 
   it("schedules a provider-quota monitor for the original assignee without creating recovery work", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
