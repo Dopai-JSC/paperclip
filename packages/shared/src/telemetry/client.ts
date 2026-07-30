@@ -8,10 +8,9 @@ import type {
   TelemetryState,
 } from "./types.js";
 
-const DEFAULT_ENDPOINTS = [
-  "https://telemetry.paperclip.ing/ingest",
-  "https://rusqrrg391.execute-api.us-east-1.amazonaws.com/ingest",
-] as const;
+// Dopaios (Bước nền): no default outbound telemetry endpoints. Telemetry only
+// leaves the machine when an operator explicitly configures an endpoint.
+const DEFAULT_ENDPOINTS = [] as const;
 const BATCH_SIZE = 50;
 const SEND_TIMEOUT_MS = 5_000;
 

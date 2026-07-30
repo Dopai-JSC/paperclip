@@ -178,13 +178,7 @@ Your local database always retains the full vote and trace data regardless of sh
 
 ## Remote sync
 
-Votes you choose to share are sent to the Telemetry Backend immediately from the vote request. The server also keeps a background flush worker so failed traces can retry later. The Telemetry Backend validates the request, then persists the bundle into its configured object storage.
-
-- App server responsibility: build the bundle, POST it to Telemetry Backend, update trace status
-- Telemetry Backend responsibility: authenticate the request, validate payload shape, compress/store the bundle, return the final object key
-- Retry behavior: failed uploads move to `failed` with an error message in `failureReason`, and the worker retries them on later ticks
-- Default endpoint: when no feedback export backend URL is configured, Paperclip falls back to `https://telemetry.paperclip.ing`
-- Important nuance: the uploaded object is a snapshot of the full bundle at vote time. If you fetch a local bundle later and the underlying adapter session file has continued to grow, the local regenerated bundle may be larger than the already-uploaded snapshot for that same trace.
+Remote sync has been removed in this fork (Dopaios Bước nền): there is no outbound share client and no default telemetry endpoint. Votes and traces stay on the local instance; shared traces queued for export are marked `failed` with reason "Feedback export backend is not configured".
 
 Exported objects use a deterministic key pattern so they are easy to inspect:
 

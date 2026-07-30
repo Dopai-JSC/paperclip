@@ -133,8 +133,6 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     storageS3Endpoint: undefined,
     storageS3Prefix: "",
     storageS3ForcePathStyle: false,
-    feedbackExportBackendUrl: "https://telemetry.example.com",
-    feedbackExportBackendToken: "telemetry-token",
     heartbeatSchedulerEnabled: false,
     heartbeatSchedulerIntervalMs: 30000,
     companyDeletionEnabled: false,
@@ -224,10 +222,6 @@ vi.mock("../services/index.js", () => ({
 
 vi.mock("../storage/index.js", () => ({
   createStorageServiceFromConfig: vi.fn(() => ({ id: "storage-service" })),
-}));
-
-vi.mock("../services/feedback-share-client.js", () => ({
-  createFeedbackTraceShareClientFromConfig: vi.fn(() => ({ id: "feedback-share-client" })),
 }));
 
 vi.mock("../services/plugin-worker-manager.js", () => ({

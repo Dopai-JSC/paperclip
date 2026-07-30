@@ -3218,10 +3218,6 @@ export function accessRoutes(
       skills: [
         { name: "paperclip", path: "/api/skills/paperclip" },
         {
-          name: "para-memory-files",
-          path: "/api/skills/para-memory-files"
-        },
-        {
           name: "paperclip-create-agent",
           path: "/api/skills/paperclip-create-agent"
         },

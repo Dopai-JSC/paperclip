@@ -41,9 +41,7 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 
 ## Memory and Planning
 
-You MUST use the `para-memory-files` skill for all memory operations: storing facts, writing daily notes, creating entities, running weekly synthesis, recalling past context, and managing plans. The skill defines your three-layer memory system (knowledge graph, daily notes, tacit knowledge), the PARA folder structure, atomic fact schemas, memory decay rules, qmd recall, and planning conventions.
-
-Invoke it whenever you need to remember, retrieve, or organize anything.
+Keep durable context on the issues themselves: objectives, decisions, owners, and next actions belong in issue comments and documents so any successor can pick up the thread. Do not maintain a private memory store outside the platform.
 
 ## Safety Considerations
 

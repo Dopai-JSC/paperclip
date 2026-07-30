@@ -9,12 +9,12 @@ describe("applyAgentSkillSnapshot", () => {
         lastSaved: [],
         hasHydratedSnapshot: false,
       },
-      ["paperclip", "para-memory-files"],
+      ["paperclip", "paperclip-create-agent"],
     );
 
     expect(result).toEqual({
-      draft: ["paperclip", "para-memory-files"],
-      lastSaved: ["paperclip", "para-memory-files"],
+      draft: ["paperclip", "paperclip-create-agent"],
+      lastSaved: ["paperclip", "paperclip-create-agent"],
       hasHydratedSnapshot: true,
       shouldSkipAutosave: true,
     });
