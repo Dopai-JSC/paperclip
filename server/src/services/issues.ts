@@ -6720,6 +6720,16 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // The receipt baseline must be read under the same row lock as the
+        // write. Otherwise a concurrent update can be mistaken for a change
+        // made by this request.
+        const receiptExisting = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!receiptExisting) return null;
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
@@ -6849,7 +6859,7 @@ export function issueService(db: Db) {
           ? undefined
           : [...new Set(blockedByIssueIds)].sort();
         const changes = buildIssueChanges(
-          existing as unknown as Record<string, unknown>,
+          receiptExisting as unknown as Record<string, unknown>,
           updated as unknown as Record<string, unknown>,
           {
             ...(nextLabelIds !== undefined

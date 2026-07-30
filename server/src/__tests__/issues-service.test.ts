@@ -3558,6 +3558,21 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
     expect(blockersCleared?.blockedByIssueIds).toEqual([]);
     expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
+
+    await db.update(issues).set({
+      title: "Concurrent receipt issue",
+      priority: "medium",
+    }).where(eq(issues.id, issueId));
+    const [titleUpdate, priorityUpdate] = await Promise.all([
+      svc.update(issueId, { title: "Concurrent title" }),
+      svc.update(issueId, { priority: "high" }),
+    ]);
+    expect(titleUpdate?.changes).toEqual({
+      title: { from: "Concurrent receipt issue", to: "Concurrent title" },
+    });
+    expect(priorityUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+    });
   });
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
