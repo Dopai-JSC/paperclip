@@ -324,11 +324,15 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  // Dopaios note: owner expectations follow tag v2026.707.0 behavior
+  // (resolveStrandedIssueRecoveryOwnerAgentId prefers the assignee's manager;
+  // workspace validation stays with the assignee for manual repair). The
+  // cause-keyed owner playbook from later upstream commits is not cherry-picked.
   it.each([
-    ["process_lost", undefined, "coder"],
-    ["adapter_failed", "successful_run_missing_state", "coder"],
-    ["codex_output_inactivity_monitor", undefined, "coder"],
-    ["workspace_validation_failed", "workspace_validation_failed", "manager"],
+    ["process_lost", undefined, "manager"],
+    ["adapter_failed", "successful_run_missing_state", "manager"],
+    ["codex_output_inactivity_monitor", undefined, "manager"],
+    ["workspace_validation_failed", "workspace_validation_failed", "coder"],
     ["adapter_failed", undefined, "manager"],
   ] as const)(
     "routes %s recovery through the cause-keyed playbook",
