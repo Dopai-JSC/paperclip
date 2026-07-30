@@ -1,0 +1,45 @@
+name: supply-chain
+
+on:
+  push:
+    branches: [master, "spike/**", "dopai/**"]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  SYFT_VERSION: v1.50.0
+  OSV_SCANNER_VERSION: v2.4.0
+
+jobs:
+  sbom-and-scan:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install pinned syft
+        run: |
+          curl -sSL -o /tmp/syft.tgz "https://github.com/anchore/syft/releases/download/${SYFT_VERSION}/syft_${SYFT_VERSION#v}_linux_amd64.tar.gz"
+          tar -xzf /tmp/syft.tgz -C /tmp syft
+          sudo mv /tmp/syft /usr/local/bin/syft
+          syft version
+
+      - name: Install pinned osv-scanner
+        run: |
+          curl -sSL -o /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64" || \
+            sudo curl -sSL -o /usr/local/bin/osv-scanner "https://github.com/google/osv-scanner/releases/download/${OSV_SCANNER_VERSION}/osv-scanner_linux_amd64"
+          sudo chmod +x /usr/local/bin/osv-scanner
+          osv-scanner --version
+
+      - name: Generate SBOM (SPDX JSON)
+        run: syft dir:. -o spdx-json=sbom-spdx.json -q
+
+      - name: Upload SBOM artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sbom-spdx
+          path: sbom-spdx.json
+
+      - name: OSV scan of lockfile
+        run: osv-scanner scan source -L pnpm-lock.yaml --format table

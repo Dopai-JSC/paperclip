@@ -160,7 +160,7 @@ describeEmbeddedPostgres("adapter auth circuit breaker (Dopaios, issue #9539)", 
     const { agentId } = await seedAgentFixture();
     const heartbeat = heartbeatService(db);
 
-    const run = await heartbeat.wakeup(agentId, { source: "timer", triggerDetail: "system" });
+    const run = await heartbeat.wakeup(agentId, { source: "on_demand", triggerDetail: "system" });
     expect(run).not.toBeNull();
 
     const wakeups = await db

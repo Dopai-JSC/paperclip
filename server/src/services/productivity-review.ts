@@ -329,7 +329,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           eq(issues.originId, sourceIssueId),
           eq(issues.status, "done"),
-          visibleIssueCondition(),
+          isNull(issues.hiddenAt),
         ),
       )
       .orderBy(desc(issues.createdAt), desc(issues.id))
