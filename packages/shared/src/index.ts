@@ -814,6 +814,8 @@ export type {
   ExternalObjectSummaryItem,
   CompactIssue,
   Issue,
+  IssueChangeReceiptEntry,
+  IssueChanges,
   IssueAssigneeAdapterOverrides,
   IssueBlockerDiagnosticFlag,
   IssueBlockerDiagnosticIssueSummary,

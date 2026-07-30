@@ -203,6 +203,13 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function prefersMinimalIssueUpdateResponse(req: Request) {
+  return (req.get("Prefer") ?? "")
+    .split(",")
+    .some((preference) => preference.trim().toLowerCase() === "return=minimal");
+}
+
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
@@ -8248,6 +8255,8 @@ export function issueRoutes(
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
+        blockedByIssueIds:
+          issue.blockedByIssueIds ?? [...new Set(req.body.blockedByIssueIds as string[])].sort(),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
@@ -9007,7 +9016,19 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(issue, actor.runId);
-    res.json({ ...issueResponse, comment });
+    const changes = issueResponse.changes ?? {};
+    if (prefersMinimalIssueUpdateResponse(req)) {
+      res.setHeader("Preference-Applied", "return=minimal");
+      res.json({
+        id: issueResponse.id,
+        identifier: issueResponse.identifier,
+        updatedAt: issueResponse.updatedAt,
+        changes,
+        comment,
+      });
+      return;
+    }
+    res.json({ ...issueResponse, changes, comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {

@@ -3513,6 +3513,53 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     };
   }
 
+  it("returns authoritative update receipts for row fields and blocker relations", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Receipt issue",
+        description: "old description",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+    ]);
+
+    const fieldUpdate = await svc.update(issueId, {
+      title: "Receipt issue",
+      priority: "high",
+      description: "new description",
+    });
+    expect(fieldUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+      description: { from: "old description", to: "new description", updated: true },
+    });
+
+    const blockersSet = await svc.update(issueId, { blockedByIssueIds: [blockerId, blockerId] });
+    expect(blockersSet?.blockedByIssueIds).toEqual([blockerId]);
+    expect(blockersSet?.changes.blockedByIssueIds).toEqual({ from: [], to: [blockerId] });
+
+    const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
+    expect(blockersCleared?.blockedByIssueIds).toEqual([]);
+    expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
+  });
+
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

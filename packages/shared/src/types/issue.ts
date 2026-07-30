@@ -709,6 +709,14 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+export interface IssueChangeReceiptEntry {
+  from: unknown;
+  to: unknown;
+  updated?: true;
+}
+
+export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
+
 export interface Issue {
   id: string;
   companyId: string;

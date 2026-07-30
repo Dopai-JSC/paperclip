@@ -110,6 +110,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
+import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -6719,6 +6720,14 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
+          nextLabelIds !== undefined
+            ? labelMapForIssues(tx, [id])
+            : Promise.resolve(new Map<string, IssueLabelRow[]>()),
+          blockedByIssueIds !== undefined
+            ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
+            : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
+        ]);
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -6836,6 +6845,31 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        const nextBlockedByIssueIds = blockedByIssueIds === undefined
+          ? undefined
+          : [...new Set(blockedByIssueIds)].sort();
+        const changes = buildIssueChanges(
+          existing as unknown as Record<string, unknown>,
+          updated as unknown as Record<string, unknown>,
+          {
+            ...(nextLabelIds !== undefined
+              ? {
+                  labelIds: {
+                    from: (previousLabelsByIssueId.get(id) ?? []).map((label) => label.id),
+                    to: enriched.labelIds,
+                  },
+                }
+              : {}),
+            ...(nextBlockedByIssueIds !== undefined
+              ? {
+                  blockedByIssueIds: {
+                    from: (previousRelationSummaries.get(id)?.blockedBy ?? []).map((relation) => relation.id),
+                    to: nextBlockedByIssueIds,
+                  },
+                }
+              : {}),
+          },
+        );
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
@@ -6855,7 +6889,11 @@ export function issueService(db: Db) {
               );
           }
         }
-        return enriched;
+        return {
+          ...enriched,
+          ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
+          changes,
+        };
       };
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
