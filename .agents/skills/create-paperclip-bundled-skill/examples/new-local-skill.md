@@ -73,13 +73,18 @@ Note the frontmatter hits every builder rule: description is 40–300 chars,
 
 ## Step 5 — PR
 
-Three-part diff, exactly:
+Four-part diff:
 
 ```
 packages/skills-catalog/catalog/optional/content/simplified-english/SKILL.md
+packages/skills-catalog/catalog/optional/content/simplified-english/examples/rewrite-status-comment.md
 packages/skills-catalog/generated/catalog.json
 packages/skills-catalog/src/shipped-catalog.test.ts
 ```
+
+(The historical PR #10410 predates this skill and shipped as a three-part
+diff without the `examples/` file; a run that follows this skill includes the
+worked example from Step 3 in the same PR.)
 
 PR body links the ASD-STE100 spec as the source and states trust level
 `markdown_only`.

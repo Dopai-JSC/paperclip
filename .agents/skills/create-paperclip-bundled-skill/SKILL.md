@@ -36,8 +36,14 @@ of writing a duplicate from scratch.
 
 Understand exactly what the skill should teach before writing anything.
 
-**Tweets / X links.** Use the `xc` CLI (X API client; credentials are already
-configured — verify with `xc whoami`):
+**Tweets / X links.** Use the `xc` CLI (X API client). Paperclip engineering
+agent environments ship it preinstalled and pre-authenticated; it is not a
+tool you install or mint credentials for yourself. Check availability before
+relying on it:
+
+```sh
+command -v xc && xc whoami    # on PATH and authenticated? if not, use the fallback below
+```
 
 ```sh
 xc get <post-url-or-id> --json        # the post itself (conversation_id, author)
@@ -46,7 +52,8 @@ xc user <username>                    # author context
 xc search '<topic keywords>' -n 30    # related discussion
 ```
 
-If `xc` credentials are missing or the account lacks read access, delegate the
+If `xc` is not on PATH, is unauthenticated, or the account lacks read access
+(the check above fails for any reason), delegate the
 fetch to a teammate with X/Twitter access (e.g. the Content Strategist agent)
 via a child issue: give them the URL and ask for full text of the post + thread
 + any linked content.
