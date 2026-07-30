@@ -1,0 +1,12 @@
+{
+  "template_id": "BOOTSTRAP-PROJECT-TEMPLATE-001",
+  "revision": 1,
+  "note": "Bản mô phỏng cho môi trường spike theo PRD Mục 6.1 (d.316). Blob chuẩn tắc của seed do FS-001 pin khi implement; trong spike, KC pin sha256 của chính file này làm hash template.",
+  "schema": {
+    "project_type": ["internal", "partner"],
+    "delivery_mode": ["greenfield", "brownfield"],
+    "initial_state": "PREPARING",
+    "expected_sops": "danh sách định danh SOP; vắng mặt được chuẩn hóa thành danh sách rỗng (FS-001 EDGE-002)",
+    "defaults": "không có AI/permission/resource mặc định"
+  }
+}

@@ -53,3 +53,14 @@ CI runs `.github/workflows/supply-chain.yml` on every push/PR: SBOM generation
 and OSV scan with the pinned tool versions above. Scan evidence for Bước nền is
 archived in the Dopaios repository under
 `docs/architecture/verification/evidence/buoc-nen/`.
+
+## Dopai-authored fixture catalog (verification batch 1)
+
+`dopaios/fixtures/` is authored by Dopai; it contains no third-party content.
+It encodes the shared canonical fixture catalog (V-09) for verification batch 1
+(KC-01, KC-03, KC-13, KC-14, KC-17). Normative sources are the approved Dopaios
+governance artifacts pinned by git blob in `dopaios/fixtures/catalog.json`;
+component files are pinned by SHA-256 over exact bytes (`.gitattributes`
+disables EOL conversion in that directory). Consistency check:
+`node dopaios/fixtures/validate.mjs`. The catalog record file lives in the
+Dopaios repository under `docs/architecture/verification/evidence/fixtures/`.

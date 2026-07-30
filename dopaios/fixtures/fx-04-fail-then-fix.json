@@ -1,0 +1,49 @@
+{
+  "fixture_group": "FX-04",
+  "title": "Ca chuẩn tắc: một bản nộp không đạt → bản sửa đạt (AC-V1-03)",
+  "label": "test",
+  "sources": [
+    {
+      "artifact_id": "PRD-DOPAIOS-001",
+      "revision": 1,
+      "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4",
+      "path": "docs/product/prd/prd.md (repo dopaios)",
+      "anchors": ["d.391 (AC-V1-03 — chất lượng tách khỏi hoàn thành)"]
+    },
+    {
+      "artifact_id": "FS-003",
+      "revision": 7,
+      "git_blob_sha1": "18b7dd35cd2e236277b8350edde1d24386cfe635",
+      "path": "specs/003-sop-run-skeleton/spec.md (repo dopaios)",
+      "anchors": ["US3-AC5 (work-item rework)", "US5-AC3 (yêu cầu sửa)", "US6-AC1/AC2 (vô hiệu khi target đổi)", "SFR-030 (bản mới không kế thừa quyết định)", "d.1549-1605 (hai bảng transition work-item và phiên bản đầu ra — không đường lùi)"]
+    },
+    {
+      "artifact_id": "FS-002",
+      "revision": 5,
+      "git_blob_sha1": "91b09a6ec7ad10fe904ccddfcc0cacf9f6ae7e59",
+      "path": "specs/002-artifact-ledger/spec.md (repo dopaios)",
+      "anchors": ["d.108-115 vùng trục kép artifact_state × impact_status (tham chiếu cho KC-14 khi tích hợp trục artifact)"]
+    }
+  ],
+  "consumers": {
+    "KC-14": "ca kiểm bắt buộc của hồ sơ KC-14: AI nộp một bản không đạt → sửa thành bản đạt; hai vòng đời hiển thị đúng",
+    "KC-01": "replay chuỗi thử lại: dựng lại đúng hai vòng đời và chuỗi rework của một work-item mẫu",
+    "KC-03": "Approval Record của quyết định yêu cầu sửa ghi artifact đầu tiên cần sửa và bước tái nhập"
+  },
+  "reuses_components_of": "FX-02 (cùng gói fixture: rev1 = bản không đạt về nghiệp vụ, rev2 = bản sửa; hash tại fx-02-run-test-chain.json)",
+  "scenario": [
+    { "step": "S01", "action": "chạy happy_chain FX-02 tới S08: OUT-T1-001@1 ở AWAITING_DECISION tại T2", "expect": "work-item T1 COMPLETED; đầu ra rev1 CHECK_PASSED → AWAITING_DECISION. Đã nộp và qua kiểm tính toàn vẹn KHÔNG tự sinh đạt — quyết định nghiệp vụ chưa có" },
+    { "step": "S02", "action": "record-approval kết quả nghiệp vụ yêu cầu sửa (outcome chuẩn reject kèm điểm tái nhập T1) — gói fixture còn thành phần bản sửa chưa dùng (SFR-022)", "expect": "OUT-T1-001@1 chuyển REJECTED (terminal); Approval Record ghi artifact đầu tiên cần sửa và bước tái nhập T1; work-item rework mới được tạo liên kết work-item và phiên bản trước (US3-AC5); không bước nào sau T2 mở" },
+    { "step": "S03", "action": "work-item rework thực thi thành phần bản sửa của gói qua đúng chuỗi trạng thái chuẩn (CLAIMED → IN_PROGRESS → SUBMITTED trong một transaction)", "expect": "OUT-T1-001@2 vào trục qua DRAFT → SUBMITTED với quan hệ thay thế rev1; bản mới KHÔNG kế thừa trạng thái/quyết định của bản trước (SFR-030)" },
+    { "step": "S04", "action": "self-check + review độc lập của bản sửa (RE-T1-001-R2, reviewer khác executor)", "expect": "rev2 SELF_CHECK → INDEPENDENT_CHECK → CHECK_PASSED; run đang dừng tại T2 nên rev2 chuyển AWAITING_DECISION và hệ thống tạo đúng một Gói quyết định mới + đúng một Yêu cầu quyết định mới (SFR-053)" },
+    { "step": "S05", "action": "record-approval kết quả đạt (approve) trên gói mới của rev2", "expect": "rev2 APPROVED; T3 mở; run hoàn tất theo FX-02 S10" }
+  ],
+  "assertions": [
+    "SUBMITTED/COMPLETED không suy ra đạt: trạng thái work-item và trạng thái phiên bản đầu ra là hai trục độc lập (PRD Mục 3; AC-V1-03)",
+    "rev1 giữ REJECTED terminal; lịch sử rev1 và work-item cũ không bị viết lại (US3-AC5)",
+    "rev2 không kế thừa bất kỳ quyết định nào của rev1 (SFR-030); quyết định nhắm rev1 sau khi rev2 hiện hành bị từ chối (US6-AC3)",
+    "trục phiên bản đầu ra không có đường lùi: mọi trạng thái quyết định của một revision là bất biến sau khi ghi (bảng đầu ra FS-003)",
+    "giao diện/projection đọc phải thể hiện đúng hai vòng đời: rework qua work-item mới + revision mới, không mở lại item/bản cũ",
+    "replay từ lịch sử dựng lại đúng chuỗi: rev1 REJECTED → work-item rework → rev2 APPROVED (KC-01, SQR-003)"
+  ]
+}

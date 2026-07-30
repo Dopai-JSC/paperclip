@@ -1,0 +1,14 @@
+{
+  "session_id": "FIXTURE-REVIEW-SESSION-002",
+  "label": "test",
+  "reviewer": "FIXTURE-REVIEWER-001",
+  "target": {
+    "artifact_id": "OUT-T1-001",
+    "revision": 2,
+    "sha256": "063f8a4ee629f99e0037be9e88aefe9b5c86ef8c3fea7a861ab17bf1350cafbf"
+  },
+  "method": "đối chiếu nội dung với Hợp đồng chất lượng TEST-QC-001 trên đúng byte đã pin",
+  "started_at": "2026-07-30T01:05:00+07:00",
+  "completed_at": "2026-07-30T01:15:00+07:00",
+  "note": "Phiên review fixture của bản sửa (DEV-011/DEV-012 áp cho cả bản sửa — FS-003 d.1407)."
+}

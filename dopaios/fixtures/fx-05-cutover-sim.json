@@ -1,0 +1,87 @@
+{
+  "fixture_group": "FX-05",
+  "title": "Fixture cutover bootstrap→runtime giả lập (AC-V1-10)",
+  "label": "test",
+  "sources": [
+    {
+      "artifact_id": "PRD-DOPAIOS-001",
+      "revision": 1,
+      "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4",
+      "path": "docs/product/prd/prd.md (repo dopaios)",
+      "anchors": ["d.318 (bốn hồ sơ cutover)", "d.319-320 (rollback + chuỗi hash một chiều)", "d.398 (AC-V1-10)"]
+    },
+    {
+      "artifact_id": "ARCH-VERIFICATION-PLAN-DOPAIOS-001",
+      "revision": 4,
+      "git_blob_sha1": "16d44166590ee5cec46b60ea01d52f5626c5a44c",
+      "path": "docs/architecture/verification/verification-plan.md (repo dopaios)",
+      "anchors": ["Mục 5.3 hồ sơ KC-17 (d.301-308)"]
+    },
+    {
+      "artifact_id": "SOP Phát triển phần mềm (trong ART-SDD-PACKAGE-001 revision 1)",
+      "revision": 1,
+      "git_blob_sha1": "686573398213f77686f4764977cdd60b32ae2fc7",
+      "path": "docs/sop/software-development/sop.md (repo dopaios)",
+      "anchors": ["d.922 (hàng PILOT-CUTOVER của bản đồ 5.2)"]
+    }
+  ],
+  "consumers": {
+    "KC-17": "toàn bộ phần thực thi cutover (chạy khi KC-01 và KC-03 ổn định — không thuộc lệnh mở đợt 1)",
+    "KC-03": "điểm phê duyệt PILOT-CUTOVER: Approval Record chỉ duyệt đúng Plan revision/hash"
+  },
+  "note_scope": "Cutover GIẢ LẬP trên fixture — không phải cutover DS-1 thật; các tiền điều kiện DS-1 (FS-005, Product Baseline P1, ADP-3) biểu diễn bằng cờ readiness theo hồ sơ KC-17.",
+  "components": [
+    { "path": "content/cutover-feature-spec-sim.md", "sha256": "ce1abce4b1191dc88649bef2995a3f7e2b2e26c16c0868baab13ec8bcc3ede51", "role": "feature spec giả lập FS-SIM-001@1" },
+    { "path": "content/cutover-plan-doc-sim.md", "sha256": "03c0858630c9c83ecd469ec033ca2f62a5c63f0d9583f2b867c1b1060598ce95", "role": "plan giả lập PLAN-SIM-001@1" },
+    { "path": "content/cutover-tasks-sim.md", "sha256": "fe6d95b84b1f28e2cef4ae656f68e832f08e6b1b98385ba3ef20e9e6f13f79b8", "role": "tasks giả lập TASKS-SIM-001@1" },
+    { "path": "content/cutover-source-snapshot-sim.json", "sha256": "197352be726720b8fb95bbfefd2b09da91c927285f890c2465ab8197166daf77", "role": "source inventory snapshot CUTOVER-SNAPSHOT-SIM-001@1 (ba trạng thái mở)" },
+    { "path": "content/cutover-plan.json", "sha256": "4906bcd2e9f6438a8ff4f758de8da6d89ec46e415f0ab5b6a364c306750625ee", "role": "Cutover Plan CUTOVER-PLAN-SIM-001@1 — bất biến, pin đủ trường theo PRD d.318" },
+    { "path": "content/cutover-reconciliation-mapping.json", "sha256": "3e1a9486e3083f93013ab9e48fdbeb3f70cc949840ae4f7b68f42dfa51eb301b", "role": "Cutover Reconciliation mapping cho nhánh rollback (PRD d.320)" }
+  ],
+  "approval_fixture": {
+    "approval_point": "PILOT-CUTOVER",
+    "decision_authority": "STAFF-HUMAN-DECIDER-001 (vai Orchestrator của fixture)",
+    "target": { "record_id": "CUTOVER-PLAN-SIM-001", "revision": 1, "sha256": "4906bcd2e9f6438a8ff4f758de8da6d89ec46e415f0ab5b6a364c306750625ee" },
+    "rule": "Approval Record PILOT-CUTOVER chỉ duyệt đúng Plan revision/hash; Plan đổi revision thì approval cũ không dùng được (PRD d.318; FS-002 SFR-006/007)"
+  },
+  "readiness_flags": {
+    "fs005_ready": true,
+    "product_baseline_p1": true,
+    "adp3": true,
+    "note": "cờ readiness biểu diễn tiền điều kiện DS-1 trên fixture (hồ sơ KC-17)"
+  },
+  "activation": {
+    "command": "execute-cutover",
+    "activation_idempotency_key": "CUTOVER-ACT-SIM-001",
+    "expected_snapshot_fields": [
+      "pin Cutover Plan và Approval Record đúng revision/hash",
+      "authority Orchestrator",
+      "system actor",
+      "activation event/idempotency key",
+      "bootstrap workflow đã tắt",
+      "kết quả áp từng source state (OPEN-STATE-A imported → WI-SIM-001; OPEN-STATE-B closed kèm evidence; OPEN-STATE-C deferred kèm owner–due–guard)",
+      "runtime workflow duy nhất",
+      "first work item WI-SIM-001"
+    ],
+    "expected_cutover_record_fields": [
+      "effective_at",
+      "state: effective",
+      "authority và execution actor",
+      "tham chiếu Approval Record",
+      "first_runtime_work_item_ref",
+      "runtime_activation_snapshot_ref đúng revision/hash"
+    ]
+  },
+  "cases": [
+    { "case_id": "FX-05-C01", "title": "Guard chặn khi FS-005 chưa sẵn sàng", "given": "readiness_flags.fs005_ready = false", "expect": "guard kích hoạt từ chối; không snapshot, không Cutover Record", "anchor": "KC-17: ít nhất một ca âm riêng cho từng tiền điều kiện; PRD d.331/398" },
+    { "case_id": "FX-05-C02", "title": "Guard chặn khi Product Baseline P1 chưa đạt", "given": "readiness_flags.product_baseline_p1 = false", "expect": "guard từ chối như C01", "anchor": "KC-17; PRD d.331" },
+    { "case_id": "FX-05-C03", "title": "Guard chặn khi ADP-3 chưa đạt", "given": "readiness_flags.adp3 = false", "expect": "guard từ chối như C01", "anchor": "KC-17; PRD d.331" },
+    { "case_id": "FX-05-C04", "title": "Guard chặn khi approval thiếu / sai revision-hash / hết hiệu lực", "given": "ba biến thể: không có Approval Record; approval pin Plan revision khác; approval đã bị vô hiệu", "expect": "guard tiêu thụ đúng approval hợp lệ và từ chối cả ba biến thể", "anchor": "KC-17; PRD d.318" },
+    { "case_id": "FX-05-C05", "title": "Kích hoạt hợp lệ", "given": "mọi cờ readiness đạt + approval hợp lệ trên CUTOVER-PLAN-SIM-001@1", "expect": "runtime thực thi bằng event/idempotency key CUTOVER-ACT-SIM-001; Runtime Activation Snapshot đủ expected_snapshot_fields; Cutover Record state effective đủ expected_cutover_record_fields; bootstrap workflow bị vô hiệu — không còn đường ghi trạng thái song song cho phạm vi đã chuyển", "anchor": "PRD d.318; AC-V1-10" },
+    { "case_id": "FX-05-C06", "title": "Replay không tạo lần kích hoạt thứ hai", "given": "C05 đã effective", "expect": "gửi lại execute-cutover cùng activation_idempotency_key → trả kết quả cũ; KHÔNG có snapshot/record/kích hoạt thứ hai. Đây là phép thử quyết định của AC-V1-10", "anchor": "PRD d.398 (AC-V1-10)" },
+    { "case_id": "FX-05-C07", "title": "Cutover Record thiếu từng ref/actor", "given": "lần lượt bỏ: effective_at; authority; execution actor; tham chiếu Approval Record; first_runtime_work_item_ref; runtime_activation_snapshot_ref (hoặc sai revision/hash)", "expect": "từng biến thể bị từ chối tạo record", "anchor": "KC-17: ca âm từ chối record khi thiếu hoặc sai từng ref/actor; PRD d.318" },
+    { "case_id": "FX-05-C08", "title": "Record không phải effective không kết thúc bootstrap", "given": "Cutover Record ở state rolled-back và ở state completed", "expect": "cả hai KHÔNG kết thúc bootstrap workflow — chỉ Cutover Record effective hợp lệ mới kết thúc bootstrap cho feature", "anchor": "PRD d.318" },
+    { "case_id": "FX-05-C09", "title": "Nhánh rollback — chuỗi hash một chiều", "given": "rollback_condition của Plan xảy ra sau C05", "expect": "thứ tự bắt buộc: (1) Cutover Record revision mới state rolled-back với reconciliation ref null; (2) Reconciliation Record (CUTOVER-RECON-SIM-001) pin đúng revision rolled-back, ánh xạ đúng một lần mọi event/state, residual trỏ action owner–due–guard, không target giả; (3) AI-Reviewer pin đúng mapping revision/hash trong Review Evidence ready; (4) closure chỉ pin mapping revision cũ hơn cùng Review Evidence ready đó; (5) sau closure mới tạo Cutover Record revision kế tiếp pin đúng Reconciliation ID@revision@hash — Reconciliation KHÔNG pin ngược revision này; lịch sử không bị xóa", "anchor": "PRD d.319-320; KC-17" },
+    { "case_id": "FX-05-C10", "title": "Vi phạm thứ tự chuỗi rollback", "given": "ba biến thể: tạo Reconciliation trước khi có record rolled-back; closure pin mapping revision mới hơn Review Evidence đã kiểm; Reconciliation pin revision Cutover kế tiếp (vòng hash)", "expect": "cả ba bị từ chối", "anchor": "PRD d.320" }
+  ]
+}

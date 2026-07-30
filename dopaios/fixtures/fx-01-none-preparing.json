@@ -1,0 +1,173 @@
+{
+  "fixture_group": "FX-01",
+  "title": "Transition NONE → PREPARING và bất biến PREPARING (FS-001)",
+  "label": "test",
+  "sources": [
+    {
+      "artifact_id": "FS-001",
+      "revision": 5,
+      "git_blob_sha1": "3c047c4864c70a160ea8c71d84ea80f55adf2a7b",
+      "path": "specs/001-project-registry/spec.md (repo dopaios)",
+      "anchors": [
+        "d.310-323 (EDGE-001/002, ERR-001/002, REC-001)",
+        "d.339-372 (SFR-002/003/004, SFR-009/010/011)",
+        "d.374-387 (Hợp đồng đầu vào lệnh tạo shell)",
+        "d.389-400 (bảng transition NONE → PREPARING + hàng khóa cửa PREPARING)"
+      ]
+    },
+    {
+      "artifact_id": "PRD-DOPAIOS-001",
+      "revision": 1,
+      "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4",
+      "path": "docs/product/prd/prd.md (repo dopaios)",
+      "anchors": ["d.316 (seed BOOTSTRAP-PROJECT-TEMPLATE-001@1)"]
+    }
+  ],
+  "consumers": {
+    "KC-01": "fixture hành vi đầu tiên: ghi event trước projection, idempotency theo command_id, REC-001 không bản ghi dở dang, replay dựng lại PREPARING",
+    "KC-13": "tiền đề fixture P0: trước approval không được tạo/kích hoạt work-item AI (FS-001 SFR-003)"
+  },
+  "actors": {
+    "STAFF-HUMAN-CREATOR-001": "Staff người active, giữ project-creator",
+    "STAFF-HUMAN-ORCH-001": "Staff người active — được gán Orchestrator",
+    "STAFF-HUMAN-INACTIVE-001": "Staff người trạng thái không-active — ca ERR-001",
+    "ACTOR-NO-CAP-001": "actor không giữ project-creator — ca SFR-004"
+  },
+  "components": [
+    {
+      "path": "content/seed-bootstrap-template.json",
+      "sha256": "e1514832f3a4738e91e02583dfa3e8893f8c101a624f5a7c497762e7ec731e97",
+      "role": "template pin BOOTSTRAP-PROJECT-TEMPLATE-001@1 (bản mô phỏng cho spike; blob chuẩn tắc do FS-001 pin khi implement)"
+    }
+  ],
+  "base_command": {
+    "command": "create-project-shell",
+    "actor": "STAFF-HUMAN-CREATOR-001",
+    "template_ref": {
+      "template_id": "BOOTSTRAP-PROJECT-TEMPLATE-001",
+      "revision": 1,
+      "sha256": "e1514832f3a4738e91e02583dfa3e8893f8c101a624f5a7c497762e7ec731e97"
+    },
+    "payload": {
+      "project_type": "internal",
+      "delivery_mode": "greenfield",
+      "objective_scope": "Project shell fixture cho đợt 1 Pha kiểm chứng kiến trúc Dopaios",
+      "orchestrator": "STAFF-HUMAN-ORCH-001",
+      "expected_sops": []
+    }
+  },
+  "cases": [
+    {
+      "case_id": "FX-01-C01",
+      "title": "Tạo shell hợp lệ",
+      "source_anchor": "FS-001 d.393-395 (hàng NONE → PREPARING); SFR-002",
+      "given": "base_command với command_id CMD-FX01-C01",
+      "when": "gửi lệnh",
+      "then": "shell ở PREPARING; side effect chỉ gồm mã định danh ổn định và audit record; không SOP run, work-item hay quyền nào được tạo thêm"
+    },
+    {
+      "case_id": "FX-01-C02",
+      "title": "Idempotent — cùng command_id cùng payload",
+      "source_anchor": "FS-001 SFR-009 (d.361-364)",
+      "given": "C01 đã xử lý thành công",
+      "when": "gửi lại đúng lệnh C01 (cùng command_id, cùng payload)",
+      "then": "trả kết quả cũ; không shell hoặc transition thứ hai"
+    },
+    {
+      "case_id": "FX-01-C03",
+      "title": "Cùng command_id khác payload",
+      "source_anchor": "FS-001 SFR-010 (d.365-367)",
+      "given": "C01 đã xử lý thành công",
+      "when": "gửi lệnh cùng command_id CMD-FX01-C01 nhưng delivery_mode đổi thành brownfield",
+      "then": "từ chối lệnh và ghi audit"
+    },
+    {
+      "case_id": "FX-01-C04",
+      "title": "Thiếu project_type",
+      "source_anchor": "FS-001 ERR-002 (d.318-320); Hợp đồng đầu vào d.380-387",
+      "given": "base_command bỏ trường project_type, command_id CMD-FX01-C04",
+      "when": "gửi lệnh",
+      "then": "từ chối fail-closed, nêu rõ trường thiếu; không giá trị mặc định ngầm"
+    },
+    {
+      "case_id": "FX-01-C05",
+      "title": "Thiếu delivery_mode",
+      "source_anchor": "FS-001 ERR-002; Hợp đồng đầu vào",
+      "given": "base_command bỏ trường delivery_mode, command_id CMD-FX01-C05",
+      "when": "gửi lệnh",
+      "then": "từ chối, nêu trường thiếu"
+    },
+    {
+      "case_id": "FX-01-C06",
+      "title": "Thiếu mục tiêu/phạm vi sơ bộ",
+      "source_anchor": "FS-001 ERR-002; Hợp đồng đầu vào",
+      "given": "base_command với objective_scope là chuỗi rỗng, command_id CMD-FX01-C06",
+      "when": "gửi lệnh",
+      "then": "từ chối, nêu trường thiếu"
+    },
+    {
+      "case_id": "FX-01-C07",
+      "title": "Thiếu Orchestrator",
+      "source_anchor": "FS-001 ERR-002; Hợp đồng đầu vào",
+      "given": "base_command bỏ trường orchestrator, command_id CMD-FX01-C07",
+      "when": "gửi lệnh",
+      "then": "từ chối, nêu trường thiếu; không bao giờ tồn tại shell thiếu Orchestrator hợp lệ (ERR-001)"
+    },
+    {
+      "case_id": "FX-01-C08",
+      "title": "Thiếu command_id",
+      "source_anchor": "FS-001 ERR-002; Hợp đồng đầu vào",
+      "given": "base_command bỏ trường command_id",
+      "when": "gửi lệnh",
+      "then": "từ chối, nêu trường thiếu"
+    },
+    {
+      "case_id": "FX-01-C09",
+      "title": "expected_sops vắng mặt",
+      "source_anchor": "FS-001 EDGE-002 (d.312-314)",
+      "given": "base_command bỏ trường expected_sops, command_id CMD-FX01-C09",
+      "when": "gửi lệnh",
+      "then": "shell được tạo với danh sách SOP dự kiến rỗng; danh sách rỗng là hợp lệ; không SOP nào được kích hoạt"
+    },
+    {
+      "case_id": "FX-01-C10",
+      "title": "Orchestrator không hợp lệ",
+      "source_anchor": "FS-001 ERR-001 (d.315-317); SFR-011 (d.368-372)",
+      "given": "base_command với orchestrator = STAFF-HUMAN-INACTIVE-001, command_id CMD-FX01-C10",
+      "when": "gửi lệnh",
+      "then": "từ chối lệnh kèm lý do; không tạo shell"
+    },
+    {
+      "case_id": "FX-01-C11",
+      "title": "Template sai hoặc hash không khớp seed",
+      "source_anchor": "FS-001 EDGE-001 (d.310-311)",
+      "given": "base_command với template_ref sha256 bị đổi một ký tự, command_id CMD-FX01-C11",
+      "when": "gửi lệnh",
+      "then": "chặn và audit; không tạo shell"
+    },
+    {
+      "case_id": "FX-01-C12",
+      "title": "Actor không giữ project-creator",
+      "source_anchor": "FS-001 SFR-004 (d.346-347)",
+      "given": "base_command với actor = ACTOR-NO-CAP-001, command_id CMD-FX01-C12",
+      "when": "gửi lệnh",
+      "then": "chặn hành động và ghi audit"
+    },
+    {
+      "case_id": "FX-01-C13",
+      "title": "Khóa cửa PREPARING — chặn mọi lệnh mở quy trình",
+      "source_anchor": "FS-001 SFR-003 (d.343-345); bảng transition hàng 2 (d.396)",
+      "given": "shell của C01 đang PREPARING",
+      "when": "lần lượt thử: tạo SOP run gắn Project; tạo work-item AI gắn Project; tạo Phiên chạy AI gắn Project",
+      "then": "cả ba bị chặn và audit từng lần; trạng thái shell không đổi. Đây là tiền đề fixture P0 của KC-13: trước approval không được tạo/kích hoạt work-item AI"
+    },
+    {
+      "case_id": "FX-01-C14",
+      "title": "Gián đoạn giữa chừng — REC-001",
+      "source_anchor": "FS-001 REC-001 (d.321-323)",
+      "given": "tiêm lỗi giữa chừng khi đang xử lý create-project-shell với command_id CMD-FX01-C14",
+      "when": "hệ thống khôi phục rồi gửi lại lệnh cùng command_id cùng payload",
+      "then": "không bao giờ quan sát được shell dở dang; sau gửi lại có đúng một shell"
+    }
+  ]
+}

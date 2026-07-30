@@ -1,0 +1,63 @@
+{
+  "record_type": "cutover-plan",
+  "plan_id": "CUTOVER-PLAN-SIM-001",
+  "revision": 1,
+  "label": "test",
+  "immutable": true,
+  "feature_id": "FS-SIM-001",
+  "pins": {
+    "feature_spec": {
+      "artifact_id": "FS-SIM-001",
+      "revision": 1,
+      "sha256": "ce1abce4b1191dc88649bef2995a3f7e2b2e26c16c0868baab13ec8bcc3ede51"
+    },
+    "plan": {
+      "artifact_id": "PLAN-SIM-001",
+      "revision": 1,
+      "sha256": "03c0858630c9c83ecd469ec033ca2f62a5c63f0d9583f2b867c1b1060598ce95"
+    },
+    "tasks": {
+      "artifact_id": "TASKS-SIM-001",
+      "revision": 1,
+      "sha256": "fe6d95b84b1f28e2cef4ae656f68e832f08e6b1b98385ba3ef20e9e6f13f79b8"
+    }
+  },
+  "first_runtime_work_item_ref": "WI-SIM-001",
+  "planned_effective_at": "2026-07-31T09:00:00+07:00",
+  "source_inventory_snapshot": {
+    "snapshot_id": "CUTOVER-SNAPSHOT-SIM-001",
+    "revision": 1,
+    "sha256": "197352be726720b8fb95bbfefd2b09da91c927285f890c2465ab8197166daf77"
+  },
+  "open_states": [
+    {
+      "state_id": "OPEN-STATE-A",
+      "source": "bootstrap-board-sim",
+      "snapshot_ref": "CUTOVER-SNAPSHOT-SIM-001@1",
+      "disposition": "imported",
+      "target": "WI-SIM-001"
+    },
+    {
+      "state_id": "OPEN-STATE-B",
+      "source": "bootstrap-board-sim",
+      "snapshot_ref": "CUTOVER-SNAPSHOT-SIM-001@1",
+      "disposition": "closed",
+      "evidence": "bằng chứng hoàn thành ngoài runtime, pin trong hồ sơ đóng của OPEN-STATE-B"
+    },
+    {
+      "state_id": "OPEN-STATE-C",
+      "source": "bootstrap-board-sim",
+      "snapshot_ref": "CUTOVER-SNAPSHOT-SIM-001@1",
+      "disposition": "deferred",
+      "owner": "STAFF-HUMAN-DECIDER-001",
+      "due": "2026-08-15T17:00:00+07:00",
+      "guard": "chặn tuyên bố hoàn tất phạm vi FS-SIM-001 tới khi OPEN-STATE-C có disposition mới"
+    }
+  ],
+  "rollback_condition": "WI-SIM-001 không tạo được trong runtime, hoặc phát hiện đường ghi trạng thái song song cho phạm vi đã chuyển trong 24 giờ sau effective",
+  "rollback_target": "khôi phục bootstrap-board-sim theo CUTOVER-SNAPSHOT-SIM-001@1 làm nguồn trạng thái duy nhất",
+  "invariants": [
+    "Plan bất biến: mọi sửa đổi tạo revision mới, Approval Record PILOT-CUTOVER chỉ duyệt đúng Plan revision/hash (PRD Mục 6.1 d.318)",
+    "mỗi trạng thái mở có đúng một disposition imported | closed | deferred"
+  ]
+}

@@ -1,0 +1,21 @@
+{
+  "catalog": "Danh mục fixture chuẩn tắc dùng chung — đợt 1 Pha kiểm chứng kiến trúc Dopaios (V-09)",
+  "version": 1,
+  "label": "test",
+  "hash_convention": "Thành phần fixture pin sha256 hex trên đúng byte của file trong repo; .gitattributes của thư mục đặt '* -text' để byte ổn định trên mọi nền tảng (Windows/WSL2). Nguồn chuẩn tắc (spec/PRD/SOP) pin bằng git-sha1 blob theo quy ước repo dopaios.",
+  "source_pins": [
+    { "artifact_id": "FS-001", "revision": 5, "git_blob_sha1": "3c047c4864c70a160ea8c71d84ea80f55adf2a7b", "approved": "2026-07-28" },
+    { "artifact_id": "FS-002", "revision": 5, "git_blob_sha1": "91b09a6ec7ad10fe904ccddfcc0cacf9f6ae7e59", "approved": "2026-07-29" },
+    { "artifact_id": "FS-003", "revision": 7, "git_blob_sha1": "18b7dd35cd2e236277b8350edde1d24386cfe635", "approved": "2026-07-30" },
+    { "artifact_id": "PRD-DOPAIOS-001", "revision": 1, "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4", "approved": "2026-07-28" },
+    { "artifact_id": "SOP Phát triển phần mềm (sop.md, thuộc ART-SDD-PACKAGE-001 revision 1, manifest 6c913c6e57e564d138172de9dc00642665d05619)", "revision": 1, "git_blob_sha1": "686573398213f77686f4764977cdd60b32ae2fc7", "approved": "2026-07-28" },
+    { "artifact_id": "ARCH-VERIFICATION-PLAN-DOPAIOS-001", "revision": 4, "git_blob_sha1": "16d44166590ee5cec46b60ea01d52f5626c5a44c", "approved": "2026-07-30 (Approval Record record-revision 2)" }
+  ],
+  "groups": [
+    { "id": "FX-01", "file": "fx-01-none-preparing.json", "title": "Transition NONE → PREPARING và bất biến PREPARING (FS-001)", "serves": ["KC-01", "KC-13"] },
+    { "id": "FX-02", "file": "fx-02-run-test-chain.json", "title": "Chuỗi run test chuẩn tắc của FS-003", "serves": ["KC-01", "KC-03", "KC-13", "KC-14"] },
+    { "id": "FX-03", "file": "fx-03-ac-fr-24-3.json", "title": "Danh sách điểm phê duyệt AC-FR-24.3 (+ P0-01) và hợp đồng outcome", "serves": ["KC-03", "KC-17"] },
+    { "id": "FX-04", "file": "fx-04-fail-then-fix.json", "title": "Ca một bản không đạt → bản sửa đạt (AC-V1-03)", "serves": ["KC-14", "KC-01", "KC-03"] },
+    { "id": "FX-05", "file": "fx-05-cutover-sim.json", "title": "Fixture cutover bootstrap→runtime giả lập (AC-V1-10)", "serves": ["KC-17", "KC-03"] }
+  ]
+}

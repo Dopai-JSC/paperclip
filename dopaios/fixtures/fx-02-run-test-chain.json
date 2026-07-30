@@ -1,0 +1,94 @@
+{
+  "fixture_group": "FX-02",
+  "title": "Chuỗi run test chuẩn tắc của FS-003 (walking skeleton)",
+  "label": "test",
+  "sources": [
+    {
+      "artifact_id": "FS-003",
+      "revision": 7,
+      "git_blob_sha1": "18b7dd35cd2e236277b8350edde1d24386cfe635",
+      "path": "specs/003-sop-run-skeleton/spec.md (repo dopaios)",
+      "anchors": [
+        "d.341-713 (US1-US7 với toàn bộ acceptance ID)",
+        "d.1345-1373 (Deviation register DEV-001…017 — chỉ áp cho record nhãn test)",
+        "d.1375-1481 (Hợp đồng đầu vào các lệnh)",
+        "d.1483-1629 (5 bảng transition: định nghĩa SOP, run, work-item, phiên bản đầu ra, Yêu cầu hành động/quyết định)",
+        "d.1631-1647 (SQR-001…004)"
+      ]
+    },
+    {
+      "artifact_id": "FS-002",
+      "revision": 5,
+      "git_blob_sha1": "91b09a6ec7ad10fe904ccddfcc0cacf9f6ae7e59",
+      "path": "specs/002-artifact-ledger/spec.md (repo dopaios)",
+      "anchors": ["d.489-516 (đăng ký + duyệt SOP nghiệp vụ test trong sổ cái trước khi tạo định nghĩa runtime)"]
+    }
+  ],
+  "consumers": {
+    "KC-01": "fixture tối thiểu bắt buộc của hồ sơ KC-01: replay dựng đủ bảy loại trạng thái (SQR-003), transaction nguyên tử đa trục (SFR-048/049), idempotency command_id",
+    "KC-03": "điểm phê duyệt T2: Gói quyết định, Yêu cầu quyết định, Approval Record, ranh Gate Record",
+    "KC-13": "tự chuyển bước máy-kiểm và dừng đúng điểm cần người (SFR-014); kích hoạt idempotent (SFR-011)",
+    "KC-14": "nền cho ca không đạt → sửa đạt (FX-04)"
+  },
+  "actors": {
+    "STAFF-HUMAN-PUBLISHER-001": "Staff người active, giữ sop-publisher",
+    "STAFF-HUMAN-DECIDER-001": "Staff người active — người quyết định của run (pin khi request-test-run)",
+    "STAFF-HUMAN-POD-001": "Staff người active — Pod-của-run",
+    "FIXTURE-EXECUTOR-001": "executor fixture của gói (không phải Staff người — SFR-021, DEV-010)",
+    "FIXTURE-REVIEWER-001": "reviewer fixture, khác executor (SFR-019/020)"
+  },
+  "components": [
+    { "path": "content/sop-business-test.md", "sha256": "2914457ccf8dd9d1a7cce244d9489289b6137aa5911433ae1e9223771719e03a", "role": "SOP nghiệp vụ test SOP-TEST-001@1 — artifact đăng ký + duyệt trong sổ cái FS-002" },
+    { "path": "content/sop-test-definition.json", "sha256": "879affe422836690b374ab0f72a7e573372d0f2ecc87648dde8baba88ff39b92", "role": "định nghĩa SOP runtime SOPDEF-TEST-001@1 (T1 sản xuất, T2 điểm phê duyệt, T3 đóng máy-kiểm)" },
+    { "path": "content/sop-test-definition-mismatch.json", "sha256": "64287c102ff44e8175862cdadd2790d801dd96793b24879fe7331b72ceb6f220", "role": "biến thể lệch vai quyết định — ca US1-AC3, contract suite phải chặn" },
+    { "path": "content/t1-output-rev1.md", "sha256": "d1e90f81db0b38d3782a38aabaf5c1bedf69de45d08df1e3f317d42bf8d3a4d6", "role": "đầu ra OUT-T1-001@1 (cố ý thiếu Mục B — dùng tiếp cho FX-04)" },
+    { "path": "content/t1-selfcheck-rev1.json", "sha256": "30ea3b6e72a1cd61b6b4bc6ec7058a17d58a47fe775ca467b52d4fb68a83aab7", "role": "self-check của OUT-T1-001@1" },
+    { "path": "content/review-session-rev1.json", "sha256": "56468593469234543f45f8ab2b43ad14cfda3e7719a2833178c9d0dad07f6b0b", "role": "Phiên review fixture FIXTURE-REVIEW-SESSION-001 (DEV-012/DEV-016)" },
+    { "path": "content/t1-review-evidence-rev1.json", "sha256": "7b3d609c6fce5af9252724a715dc95b383a26d1f9f6a8f7589d00810f75e1f85", "role": "Review Evidence RE-T1-001-R1 kết luận ready, reviewer khác executor" },
+    { "path": "content/t1-output-rev2.md", "sha256": "063f8a4ee629f99e0037be9e88aefe9b5c86ef8c3fea7a861ab17bf1350cafbf", "role": "thành phần bản sửa: đầu ra OUT-T1-001@2" },
+    { "path": "content/t1-selfcheck-rev2.json", "sha256": "7787602e2f2483ba41c3e96f81a3eabc1aa7a766456b8c0b48c8f13ffbc6eda8", "role": "self-check của bản sửa" },
+    { "path": "content/review-session-rev2.json", "sha256": "748ee5de3737ac95748e254c5a3366b627fa3900d3cd50193c71ff55fbcf1fa6", "role": "Phiên review fixture của bản sửa" },
+    { "path": "content/t1-review-evidence-rev2.json", "sha256": "bcaf5f4368fac9deda76c14425ae004958bb2703bdfced06f55c6a148029d2d5", "role": "Review Evidence của bản sửa (DEV-011: binding trên chính phiên bản đầu ra)" }
+  ],
+  "fixture_package": {
+    "note": "Gói fixture theo Hợp đồng đầu vào của yêu cầu chạy thử (FS-003 d.1398-1409); mọi thành phần pin sha256 ở components",
+    "executor": "FIXTURE-EXECUTOR-001",
+    "decider": "STAFF-HUMAN-DECIDER-001",
+    "pod": "STAFF-HUMAN-POD-001",
+    "base_components": ["t1-output-rev1.md", "t1-selfcheck-rev1.json", "t1-review-evidence-rev1.json", "review-session-rev1.json"],
+    "revision_components": ["t1-output-rev2.md", "t1-selfcheck-rev2.json", "t1-review-evidence-rev2.json", "review-session-rev2.json"],
+    "forbidden_fields": ["target Project — lệnh chứa target Project bị từ chối (SFR-013)"]
+  },
+  "happy_chain": [
+    { "step": "S01", "action": "đăng ký SOP-TEST-001@1 vào sổ cái FS-002 rồi duyệt approved", "expect": "artifact_state approved, impact_status clear", "anchor": "FS-003 US1 (d.349-355); FS-002 bảng artifact_state" },
+    { "step": "S02", "action": "create-sop-definition SOPDEF-TEST-001 pin SOP-TEST-001@1@2914457c…", "expect": "định nghĩa ở draft với ID ổn định, revision, audit", "anchor": "US1-AC1" },
+    { "step": "S03", "action": "publish-sop-definition revision draft mới nhất; contract suite chạy trên đúng cặp revision/hash", "expect": "published; kết quả suite được pin làm bằng chứng", "anchor": "US1-AC2; SFR-003/004" },
+    { "step": "S04", "action": "request-test-run pin định nghĩa, decider, pod, gói fixture đúng hash", "expect": "đúng một run nhãn test ở NOT_ACTIVATED", "anchor": "US2-AC1; bảng run hàng request-test-run" },
+    { "step": "S05", "action": "activate-sop-run (runtime tự động, mọi guard máy-kiểm đạt)", "expect": "run RUNNING; đúng một work-item T1 qua PROPOSED → ACCEPTED trong cùng transaction kích hoạt (SFR-017); kích hoạt đúng một lần cho mỗi run (SFR-011)", "anchor": "US2-AC2" },
+    { "step": "S06", "action": "run-fixture-execution với gói hợp lệ", "expect": "work-item CLAIMED → IN_PROGRESS → SUBMITTED trong một transaction nguyên tử (SFR-049); phiên bản đầu ra vào trục qua DRAFT → SUBMITTED cùng transaction; lỗi giữa chừng đưa về READY", "anchor": "US3-AC1" },
+    { "step": "S07", "action": "validate-self-check rồi run-fixture-review với RE-T1-001-R1", "expect": "work-item UNDER_REVIEW → COMPLETED; đầu ra SELF_CHECK → INDEPENDENT_CHECK → CHECK_PASSED (SFR-019/044)", "anchor": "US3-AC2" },
+    { "step": "S08", "action": "advance-step tới T2", "expect": "đầu ra AWAITING_DECISION; Gói quyết định đủ trường SFR-024 + Yêu cầu quyết định loại decision được tạo, định tuyến decider; run dừng chờ — không bước nào sau T2 mở", "anchor": "US3-AC3; US4-AC1/AC3" },
+    { "step": "S09", "action": "acknowledge-request rồi record-approval kết quả đạt (approve)", "expect": "Approval Record pin refs byte-equivalent với gói (SFR-028); đầu ra APPROVED; Yêu cầu chuyển DECIDED cùng transaction (SFR-048); T3 mở (SFR-029)", "anchor": "US5-AC1; bảng đầu ra hàng approve" },
+    { "step": "S10", "action": "complete-sop-run khi mọi nghĩa vụ có terminal disposition", "expect": "run COMPLETED", "anchor": "bảng run hàng complete; SFR-016" }
+  ],
+  "negative_cases": [
+    { "case_id": "FX-02-N01", "title": "Publish định nghĩa lệch SOP nghiệp vụ", "expect": "contract suite phát hiện lệch, chặn kèm khác biệt, giữ draft, audit", "anchor": "US1-AC3", "component": "sop-test-definition-mismatch.json" },
+    { "case_id": "FX-02-N02", "title": "Chạy thử định nghĩa draft/retired hoặc suite hết hiệu lực", "expect": "từ chối và audit", "anchor": "US1-AC5; SFR-040" },
+    { "case_id": "FX-02-N03", "title": "Publish nhắm revision draft cũ hơn", "expect": "từ chối — target phải là draft mới nhất", "anchor": "US1-AC7" },
+    { "case_id": "FX-02-N04", "title": "Idempotency request-test-run", "expect": "cùng command_id cùng nội dung trả kết quả cũ, không run/work-item thứ hai; khác nội dung bị từ chối + audit", "anchor": "US2-AC3; SFR-038/039" },
+    { "case_id": "FX-02-N05", "title": "Kích hoạt nhắm Project hoặc production run", "expect": "chặn + audit; slice không có đường kích hoạt production", "anchor": "US2-AC4; SFR-013" },
+    { "case_id": "FX-02-N06", "title": "Gán work-item sản xuất cho Staff người", "expect": "chặn + audit", "anchor": "US2-AC5; SFR-021" },
+    { "case_id": "FX-02-N07", "title": "Gói fixture hỏng — bốn biến thể", "expect": "từ chối kèm lý do, trạng thái không đổi, audit: (a) sai hash thành phần; (b) thiếu Review Evidence; (c) Review Evidence kết luận not-ready; (d) reviewer trùng executor", "anchor": "US3-AC4; SFR-020" },
+    { "case_id": "FX-02-N08", "title": "Quyết định bởi actor không phải decider được pin", "expect": "chặn + audit", "anchor": "US5-AC5; SFR-042" },
+    { "case_id": "FX-02-N09", "title": "Approve khi còn non-waivable blocker hoặc thiếu bằng chứng bắt buộc", "expect": "chặn approve và approve-with-conditions kèm lý do; không record hiệu lực nào được tạo", "anchor": "US5-AC2; SFR-027" },
+    { "case_id": "FX-02-N10", "title": "Yêu cầu tạo Gate Record tại T2", "expect": "không Gate Record nào được tạo; yêu cầu bị chặn kèm audit — chỉ Approval Record tồn tại cho điểm này", "anchor": "US5-AC6; SFR-035" },
+    { "case_id": "FX-02-N11", "title": "request-more-information tại T2", "expect": "Approval Record outcome RMI + Yêu cầu clarification định tuyến Pod-của-run; đầu ra giữ AWAITING_DECISION; câu trả lời hợp lệ tạo gói revision mới supersede; target đã đổi thì không tạo gói mới", "anchor": "US5-AC7; SFR-046/047" },
+    { "case_id": "FX-02-N12", "title": "Chấp nhận ngoại lệ + condition quá hạn", "expect": "AWC hợp lệ tạo ACCEPTED với condition theo dõi được; condition quá hạn: approval hết hiệu lực phạm vi phụ thuộc, bước bị tái chặn, run quay về điểm phê duyệt (SFR-050), Gói EXCEPTION + Yêu cầu exception được tạo (SFR-034); quyết định trên gói EXCEPTION theo tập kết quả riêng", "anchor": "US5-AC4; bảng đầu ra hàng ACCEPTED" },
+    { "case_id": "FX-02-N13", "title": "Vô hiệu khi target đổi", "expect": "submit-fixture-revision làm gói đang chờ hết hiệu lực; bản cũ REWORK_REQUIRED (hoặc giữ APPROVED/ACCEPTED nhưng approval hết hiệu lực đúng impact set, bước mở bị tái chặn); Yêu cầu liên kết kết thúc SUPERSEDED-TARGET-CHANGED (DEV-009); quyết định nhắm bản cũ bị từ chối; comment/ready/im lặng không thay Approval Record", "anchor": "US6-AC1…AC4; SFR-031/050/053" },
+    { "case_id": "FX-02-N14", "title": "Tái dựng và khôi phục an toàn", "expect": "tái dựng đủ 7 loại trạng thái từ lịch sử bền vững khớp hiện hành (SQR-003); audit không sửa/xóa được (SQR-002); lỗi giữa chừng không để bản ghi dở dang, replay cùng command_id cho đúng một kết quả (SQR-004)", "anchor": "US7-AC1…AC3" },
+    { "case_id": "FX-02-N15", "title": "Hủy run hẹp với disposition đầy đủ", "expect": "cancel-test-run trong cùng transaction: run CANCELLED, work-item CANCELLED không tính sản lượng, disposition tường minh cho từng phiên bản/yêu cầu/condition còn mở — thiếu một disposition thì toàn lệnh thất bại nguyên tử; sau đó mọi lệnh trên record thuộc run bị từ chối; bộ máy quá hạn không kích hoạt nữa", "anchor": "US7-AC4; SFR-051/057/058" }
+  ],
+  "seven_state_types_for_replay": [
+    "định nghĩa SOP", "SOP run", "work-item", "phiên bản đầu ra", "Yêu cầu hành động/quyết định", "Gói quyết định", "Approval Record"
+  ]
+}
