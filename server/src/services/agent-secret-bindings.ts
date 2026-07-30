@@ -140,20 +140,32 @@ export async function syncAgentAdapterEnvBindings(input: {
   companyId: string;
   agentId: string;
   adapterConfig: unknown;
+  allowClearAll?: boolean;
 }) {
   if (input.secretsSvc.syncSecretRefsForTarget) {
-    await input.secretsSvc.syncSecretRefsForTarget(
-      input.companyId,
-      { targetType: "agent", targetId: input.agentId },
-      collectSecretRefs(input.adapterConfig),
-      { replaceAll: true },
-    );
-    await input.secretsSvc.syncUserSecretDeclarationsForTarget?.(
-      input.companyId,
-      { targetType: "agent", targetId: input.agentId },
-      collectUserSecretRefs(input.adapterConfig),
-      { replaceAll: true },
-    );
+    // Dopaios (issue #9539): an adapterConfig rebuilt without env bindings used to
+    // replaceAll-delete every existing binding, silently wiping credentials and
+    // leaving the agent to fail auth on every run. Clearing all bindings now
+    // requires the explicit allowClearAll opt-in; an empty ref set alone never
+    // deletes existing bindings.
+    const secretRefs = collectSecretRefs(input.adapterConfig);
+    if (secretRefs.length > 0 || input.allowClearAll === true) {
+      await input.secretsSvc.syncSecretRefsForTarget(
+        input.companyId,
+        { targetType: "agent", targetId: input.agentId },
+        secretRefs,
+        { replaceAll: true },
+      );
+    }
+    const userSecretRefs = collectUserSecretRefs(input.adapterConfig);
+    if (userSecretRefs.length > 0 || input.allowClearAll === true) {
+      await input.secretsSvc.syncUserSecretDeclarationsForTarget?.(
+        input.companyId,
+        { targetType: "agent", targetId: input.agentId },
+        userSecretRefs,
+        { replaceAll: true },
+      );
+    }
     return;
   }
   const envValue = asRecord(asRecord(input.adapterConfig)?.env);

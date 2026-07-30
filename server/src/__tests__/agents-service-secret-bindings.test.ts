@@ -226,6 +226,52 @@ describeEmbeddedPostgres("agent service secret binding sync", () => {
     });
   });
 
+  // Dopaios regression for upstream issue #9539: an adapterConfig update that no
+  // longer carries any secret_ref (e.g. rebuilt during an upgrade) must not wipe
+  // the agent's existing secret bindings.
+  it("does not delete existing agent secret bindings when an adapterConfig update omits env", async () => {
+    const companyId = await seedCompany();
+    const secrets = secretService(db);
+    const secret = await secrets.create(companyId, {
+      name: `keep-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "keep-value",
+    });
+
+    const created = await agentService(db).create(companyId, {
+      name: "Binding Keeper",
+      role: "engineer",
+      adapterType: "claude_local",
+      adapterConfig: {
+        env: {
+          ANTHROPIC_API_KEY: { type: "secret_ref", secretId: secret.id, version: "latest" },
+        },
+      },
+      runtimeConfig: {},
+      spentMonthlyCents: 0,
+      lastHeartbeatAt: null,
+    });
+
+    await agentService(db).update(created.id, {
+      adapterConfig: {},
+    });
+
+    const bindings = await db
+      .select()
+      .from(companySecretBindings)
+      .where(and(
+        eq(companySecretBindings.companyId, companyId),
+        eq(companySecretBindings.targetType, "agent"),
+        eq(companySecretBindings.targetId, created.id),
+      ));
+
+    expect(bindings).toHaveLength(1);
+    expect(bindings[0]).toMatchObject({
+      secretId: secret.id,
+      configPath: "env.ANTHROPIC_API_KEY",
+    });
+  });
+
   it("backfills missing secret bindings when a legacy pending agent is approved", async () => {
     const companyId = await seedCompany();
     const secrets = secretService(db);
