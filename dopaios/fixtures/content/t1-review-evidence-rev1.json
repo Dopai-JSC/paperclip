@@ -1,0 +1,31 @@
+{
+  "record_type": "review_evidence",
+  "evidence_id": "RE-T1-001-R1",
+  "label": "test",
+  "review_type": "independent-review",
+  "review_scope": "test-fixture",
+  "project_binding": null,
+  "governance_binding": null,
+  "targets": [
+    {
+      "artifact_id": "OUT-T1-001",
+      "revision": 1,
+      "sha256": "d1e90f81db0b38d3782a38aabaf5c1bedf69de45d08df1e3f317d42bf8d3a4d6"
+    }
+  ],
+  "reviewer": "FIXTURE-REVIEWER-001",
+  "reviewer_execution_ref": {
+    "kind": "fixture-review-session",
+    "session_id": "FIXTURE-REVIEW-SESSION-001",
+    "sha256": "56468593469234543f45f8ab2b43ad14cfda3e7719a2833178c9d0dad07f6b0b"
+  },
+  "independence_check": {
+    "created_or_modified_target": false,
+    "conflicting_binding": false,
+    "result": "pass"
+  },
+  "method": "đối chiếu nội dung với Hợp đồng chất lượng TEST-QC-001 trên đúng byte đã pin",
+  "conclusion": "ready",
+  "completed_at": "2026-07-30T00:15:00+07:00",
+  "note": "Review fixture đã xác minh trước, kết luận ready — kiểm tính toàn vẹn và tính độc lập (FS-003 SFR-019/020, DEV-011/DEV-012); kết luận nghiệp vụ đạt/không đạt thuộc người quyết định tại T2."
+}

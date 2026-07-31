@@ -1,0 +1,40 @@
+{
+  "definition_id": "SOPDEF-TEST-001",
+  "revision": 2,
+  "label": "test",
+  "mismatch_note": "Biến thể CỐ Ý LỆCH SOP nghiệp vụ cho ca US1-AC3: vai quyết định của điểm phê duyệt T2 bị đổi thành executor fixture (không phải vai người). Contract suite phải phát hiện lệch, chặn lệnh phát hành kèm khác biệt được nêu, giữ draft và audit (FS-003 US1-AC3; EDGE-001: vai quyết định của điểm kiểm soát phải là vai người).",
+  "business_sop_ref": {
+    "artifact_id": "SOP-TEST-001",
+    "revision": 1,
+    "sha256": "2914457ccf8dd9d1a7cce244d9489289b6137aa5911433ae1e9223771719e03a"
+  },
+  "goal": "SOP test tối thiểu để kiểm chứng lõi run model FS-003 trên fork",
+  "auto_start_condition": "yêu cầu chạy thử hợp lệ theo Hợp đồng đầu vào của lệnh request-test-run (FS-003 d.1398-1409)",
+  "steps": [
+    {
+      "step_id": "T1",
+      "kind": "production",
+      "executor_role": "executor fixture của gói đã pin",
+      "inputs": ["gói fixture đã pin hash khi request-test-run"],
+      "outputs": [{ "output_type": "test-output", "quality_contract": "TEST-QC-001" }],
+      "completion_condition": "work-item COMPLETED với Review Evidence độc lập kết luận ready",
+      "advance_rule": "tự chuyển bước khi mọi điều kiện máy-kiểm được đạt"
+    },
+    {
+      "step_id": "T2",
+      "kind": "approval-point",
+      "decision_role": "FIXTURE-EXECUTOR-001 — CỐ Ý SAI: không phải vai người, lệch SOP nghiệp vụ",
+      "target": "phiên bản đầu ra hiện hành của T1",
+      "allowed_business_outcomes": ["đạt", "yêu cầu sửa", "từ chối", "chấp nhận ngoại lệ"],
+      "request_more_information_available": true,
+      "gate_record": false,
+      "reentry_step": "T1"
+    },
+    {
+      "step_id": "T3",
+      "kind": "closing",
+      "machine_checkable": true,
+      "guard": "Approval Record T2 còn hiệu lực outcome approve hoặc approve-with-conditions"
+    }
+  ]
+}

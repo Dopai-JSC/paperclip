@@ -1,0 +1,24 @@
+{
+  "snapshot_id": "CUTOVER-SNAPSHOT-SIM-001",
+  "revision": 1,
+  "label": "test",
+  "source": "bootstrap-board-sim — nguồn trạng thái bootstrap giả lập của feature FS-SIM-001",
+  "captured_at": "2026-07-30T08:00:00+07:00",
+  "open_states": [
+    {
+      "state_id": "OPEN-STATE-A",
+      "description": "việc dở dang sẽ chuyển vào runtime",
+      "status_at_snapshot": "in-progress"
+    },
+    {
+      "state_id": "OPEN-STATE-B",
+      "description": "việc đã xong ngoài runtime, chỉ cần chốt bằng chứng",
+      "status_at_snapshot": "done-pending-evidence"
+    },
+    {
+      "state_id": "OPEN-STATE-C",
+      "description": "việc hoãn có chủ đích, không chuyển trong đợt cutover này",
+      "status_at_snapshot": "deferred-candidate"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "session_id": "FIXTURE-REVIEW-SESSION-001",
+  "label": "test",
+  "reviewer": "FIXTURE-REVIEWER-001",
+  "target": {
+    "artifact_id": "OUT-T1-001",
+    "revision": 1,
+    "sha256": "d1e90f81db0b38d3782a38aabaf5c1bedf69de45d08df1e3f317d42bf8d3a4d6"
+  },
+  "method": "đối chiếu nội dung với Hợp đồng chất lượng TEST-QC-001 trên đúng byte đã pin",
+  "started_at": "2026-07-30T00:05:00+07:00",
+  "completed_at": "2026-07-30T00:15:00+07:00",
+  "note": "Phiên review fixture (DEV-012/DEV-016) — thành phần gói fixture, pin hash; không phải Phiên chạy AI."
+}

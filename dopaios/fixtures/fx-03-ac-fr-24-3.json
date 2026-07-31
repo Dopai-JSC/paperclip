@@ -1,0 +1,98 @@
+{
+  "fixture_group": "FX-03",
+  "title": "Danh sách điểm phê duyệt theo AC-FR-24.3 (+ P0-01 theo AC-FR-24.2) và hợp đồng outcome",
+  "label": "test",
+  "sources": [
+    {
+      "artifact_id": "PRD-DOPAIOS-001",
+      "revision": 1,
+      "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4",
+      "path": "docs/product/prd/prd.md (repo dopaios)",
+      "anchors": ["d.226 (FR-24)", "d.262 (AC-FR-24.1…24.5)"]
+    },
+    {
+      "artifact_id": "SOP Phát triển phần mềm (trong ART-SDD-PACKAGE-001 revision 1, manifest 6c913c6e57e564d138172de9dc00642665d05619)",
+      "revision": 1,
+      "git_blob_sha1": "686573398213f77686f4764977cdd60b32ae2fc7",
+      "path": "docs/sop/software-development/sop.md (repo dopaios)",
+      "anchors": ["d.905-912 (outcome, non-waivable blockers, luật record)", "d.914-934 (Mục 5.2 — bản đồ điểm phê duyệt P0 đến P4)"]
+    },
+    {
+      "artifact_id": "FS-002",
+      "revision": 5,
+      "git_blob_sha1": "91b09a6ec7ad10fe904ccddfcc0cacf9f6ae7e59",
+      "path": "specs/002-artifact-ledger/spec.md (repo dopaios)",
+      "anchors": ["d.499-509 (SFR-005/006 — trường Approval Record)", "d.530-538 (SFR-013/014 — separation rule fail-closed)", "d.573-615 (SFR-022…029 — luật outcome/scope/supersede/impact)", "d.663-708 (hai bảng transition artifact_state × impact_status)"]
+    },
+    {
+      "artifact_id": "FS-003",
+      "revision": 7,
+      "git_blob_sha1": "18b7dd35cd2e236277b8350edde1d24386cfe635",
+      "path": "specs/003-sop-run-skeleton/spec.md (repo dopaios)",
+      "anchors": ["d.1446-1466 (Hợp đồng đầu vào record-approval, ánh xạ kết quả nghiệp vụ → outcome chuẩn)", "SFR-035 (điểm không phải Cổng không bao giờ có Gate Record)"]
+    }
+  ],
+  "consumers": {
+    "KC-03": "danh sách fixture bắt buộc đúng AC-FR-24.3; hợp đồng outcome và các ca chặn",
+    "KC-17": "điểm PILOT-CUTOVER — phần phê duyệt thuộc KC-03, phần thực thi thuộc KC-17 (FX-05)"
+  },
+  "approval_points": [
+    {
+      "point_id": "P0-01",
+      "list_membership": "AC-FR-24.2 — không thuộc danh sách AC-FR-24.3",
+      "direct_action": true,
+      "gate_record": false,
+      "summary": "Hành động khởi tạo trực tiếp của Orchestrator: chọn mục tiêu ban đầu, Pod, Team Manifest bootstrap, quyền, tài nguyên, capacity, chi phí, mức tự chủ. Không phải Gói quyết định do AI tạo; hệ thống chỉ kiểm quyền và tính đủ điều kiện trước khi ghi.",
+      "when_not_approved": "không tạo hoặc kích hoạt work-item AI",
+      "sop_anchor": "d.918, d.912"
+    },
+    { "point_id": "P0-05", "gate_record": false, "summary": "Mở Project — Project Charter và Gói quyết định do AI-Lead hợp nhất từ P0-02/P0-03; AI-Reviewer kiểm nguồn, giả định, rủi ro, Team Manifest bootstrap.", "when_not_approved": "quay lại P0-01/P0-02/P0-03 theo artifact đầu tiên sai", "sop_anchor": "d.919" },
+    { "point_id": "P1-10", "gate_record": false, "summary": "Duyệt baseline sản phẩm — Brief/Addendum, PRD, Architecture/ADR, Quality Profile, chiến lược kiểm chứng, roadmap Release, Team Manifest delivery; mỗi artifact pin trong Approval Record.", "when_not_approved": "quay lại artifact đầu tiên sai trong P1; chưa được kích hoạt Release", "sop_anchor": "d.920" },
+    { "point_id": "INPUT-DISPOSITION", "gate_record": false, "summary": "Phân loại vùng nguồn — Orchestrator ghi Approval Record cho đúng region/scope; runtime tạo Input Disposition Record khớp tuyệt đối; chỉ region accepted còn hiệu lực được dùng.", "when_not_approved": "region giữ reviewing/clarifying, phần phụ thuộc bị chặn; không tự tạo Disposition Record thay quyết định", "sop_anchor": "d.921" },
+    { "point_id": "PILOT-CUTOVER", "gate_record": false, "summary": "Chuyển feature vào runtime pilot — Orchestrator duyệt đúng Cutover Plan revision/hash; runtime thực thi idempotent, tạo Runtime Activation Snapshot và Cutover Record effective. Phần thực thi kiểm tại FX-05/KC-17.", "when_not_approved": "giữ feature trong bootstrap; không nhập state hay kích hoạt work item", "sop_anchor": "d.922" },
+    { "point_id": "B0-12", "gate_name": "Cổng A", "gate_record": true, "summary": "Duyệt Release Spec Baseline và Gói quyết định đặc tả/thiết kế; mở B1.", "when_not_approved": "quay lại đúng bước B0 hoặc nguồn thượng nguồn sai", "sop_anchor": "d.923" },
+    { "point_id": "B1-08", "gate_name": "Cổng B", "gate_record": true, "summary": "Duyệt build/code/config/migration so với baseline; khóa build được phép kiểm; mở B2.", "when_not_approved": "quay lại B1 hoặc B0 theo artifact đầu tiên sai", "sop_anchor": "d.924" },
+    { "point_id": "B2-06", "gate_name": "Cổng C", "gate_record": true, "summary": "Duyệt kết quả kiểm thử đúng build (Test Map, bằng chứng kiểm sản phẩm chạy thật, regression, security/NFR); mở B3/UAT.", "when_not_approved": "quay lại B2/B1/B0 theo Failure Record và artifact đầu tiên sai", "sop_anchor": "d.925" },
+    { "point_id": "B3-04", "gate_record": false, "summary": "Nghiệm thu — UAT evidence, finding, Gói quyết định, draft Acceptance Record; ghi Acceptance Record và cho phép chuẩn bị phát hành.", "when_not_approved": "quay lại B0/B1/B2/B3-01 theo nguyên nhân; chưa được trình go/no-go", "sop_anchor": "d.926" },
+    { "point_id": "R-03", "gate_record": false, "summary": "Go/no-go — Release Package, proposal pending-decision, ba Gate Record, Acceptance Record, quyền triển khai, Rollback Plan; approval pin proposal, runtime tạo revision authorized rồi mới cho phép R-04.", "when_not_approved": "no-go hoặc RMI quay lại artifact đầu tiên sai; không tạo revision authorized, không triển khai", "sop_anchor": "d.927" },
+    { "point_id": "ROLLBACK-CONDITIONAL", "gate_record": false, "summary": "Rollback có điều kiện (sau R-04/R-05) — quyết định trên Deployment Record, bằng chứng xác minh sau phát hành, phương án tiếp tục/rework/rollback; AI không tự rollback.", "when_not_approved": "giữ phần bị ảnh hưởng ở trạng thái chặn, bảo toàn evidence và chuyển cấp", "sop_anchor": "d.928" },
+    { "point_id": "T-03", "gate_record": false, "summary": "Kết thúc sớm tại P0/P1/P2 — Project Termination Record proposal với disposition đầy đủ; approval pin proposal, runtime tạo Termination revision effective rồi mới đi thẳng P4 với closure_type phù hợp.", "when_not_approved": "quay lại T-01 hoặc artifact nguồn cần sửa; Project không được ghi completed", "sop_anchor": "d.930" },
+    { "point_id": "P3-06", "gate_record": false, "summary": "Bàn giao Project — Project Handover Record và các package xuyên Release; Pod phối hợp bên nhận; xác nhận bàn giao mở P4.", "when_not_approved": "sửa hồ sơ trong P3; thiếu kết quả sản phẩm thì tạo Change Record và quay lại P2", "sop_anchor": "d.931" },
+    { "point_id": "P4-03", "gate_record": false, "summary": "Đóng Project — Closure Record proposal; approval pin proposal, runtime tạo Closure revision closed, đóng Project, kết thúc SOP; không mở lại.", "when_not_approved": "quay lại P4-01/P4-02; không tạo revision closed khi chưa thu hồi/chuyển giao quyền và tài nguyên", "sop_anchor": "d.932" }
+  ],
+  "notes": [
+    "C4 (cho phép xử lý khẩn cấp) có trong bản đồ SOP Mục 5.2 (d.929) nhưng KHÔNG thuộc danh sách AC-FR-24.3 — không thuộc phạm vi fixture bắt buộc của KC-03 đợt này.",
+    "Chỉ ba điểm B0-12/B1-08/B2-06 có gate_record=true (AC-FR-24.1, AC-FR-24.5; FS-003 SFR-035). Ranh FS-002: chỉ phủ phê duyệt artifact quản trị ngoài Project (SFR-021) — phần dương của ba cổng và Product Baseline thuộc DS-2, fixture KC-03 tự dựng trên fork."
+  ],
+  "outcome_contract": {
+    "standard_outcomes": ["approve", "reject", "approve-with-conditions", "request-more-information"],
+    "business_to_standard_mapping": "đạt→approve; từ chối→reject; yêu cầu sửa→reject kèm điểm tái nhập; chấp nhận ngoại lệ→approve-with-conditions; request-more-information không kèm kết quả nghiệp vụ — luôn khả dụng tại mọi điểm phê duyệt (SOP Mục 5.1; FS-003 d.1462)",
+    "rules": [
+      "im lặng, comment rời rạc, trạng thái work-item hoặc kết luận ready không thay Approval Record (SOP d.905)",
+      "approve-with-conditions bị từ chối khi non_waivable_blockers khác rỗng hoặc có condition blocks_next_step: true (FS-002 SFR-022)",
+      "chỉ approval bao phủ toàn bộ revision mới chuyển artifact_state approved; một revision chỉ có một artifact_state (FS-002 SFR-023)",
+      "approve-with-conditions theo vùng chỉ hợp lệ trên loại artifact có schema region/scope riêng — revision giữ in-review, hiệu lực giới hạn trong approved_scope (FS-002 SFR-024/025)",
+      "approve với approved_scope không phủ toàn revision bị từ chối kèm hướng dẫn (FS-002 SFR-026)",
+      "submit-for-review/record-approval nhắm revision không phải mới nhất bị từ chối (FS-002 SFR-027)",
+      "revision mới approved làm mọi revision cũ chưa terminal chuyển superseded trong cùng side effect nguyên tử (FS-002 SFR-028)",
+      "khi từ chối hoặc RMI, record chỉ rõ artifact đầu tiên cần sửa và bước tái nhập (SOP d.908)",
+      "target/build/evidence thuộc phạm vi quyết định đổi sau approval thì approval hết hiệu lực trong đúng impact set (SOP d.909; FS-002 SFR-006/007)",
+      "condition quá hạn: approval mất hiệu lực cho phạm vi phụ thuộc, impact_status chuyển impact-pending, lịch sử lifecycle không viết lại (FS-002 SFR-015/016; SOP d.906)"
+    ],
+    "record_required_fields": "người/vai duyệt, thời điểm, phạm vi, kết quả, finding và ngoại lệ còn mở, non_waivable_blockers, impact set, artifact hạ nguồn đã kiểm, pin đúng ID@revision@hash target (FS-002 SFR-005/006); thêm theo hồ sơ KC-03: decision ask, điều kiện kèm closure_criteria và blocks_next_step, bước được mở, re-entry point, expiry/invalidation, actor"
+  },
+  "blocking_cases": [
+    { "case_id": "FX-03-B01", "title": "Tự duyệt — requester = decider", "expect": "separation rule áp dụng: actor ghi quyết định chính là Staff tạo revision target → chặn + audit (FS-002 SFR-013)" },
+    { "case_id": "FX-03-B02", "title": "Separation rule chưa pin hoặc không hợp lệ", "expect": "chặn MỌI lệnh ghi quyết định cho loại artifact đó kèm lý do cấu hình — fail-closed (FS-002 SFR-014; PRD Mục 6.3)" },
+    { "case_id": "FX-03-B03", "title": "Một người giữ nhiều capability (điểm nóng KC-03)", "expect": "v1 CTO giữ đồng thời product-governance và governance-approver (FS-001): engine vẫn thực thi requester≠decider theo Staff tạo revision, không theo capability — người giữ hai capability tạo revision thì không tự duyệt được revision đó; revision do người khác tạo thì duyệt được" },
+    { "case_id": "FX-03-B04", "title": "Thiếu review độc lập", "expect": "output AI trình duyệt thiếu chuỗi tự kiểm/kiểm chéo → AI-Lead → AI-Reviewer bị chặn (AC-FR-24.2)" },
+    { "case_id": "FX-03-B05", "title": "Approval sai target", "expect": "dùng Approval Record cho target có ID/revision/hash khác record đã pin → chặn + audit (FS-002 SFR-007)" },
+    { "case_id": "FX-03-B06", "title": "Comment thay approval", "expect": "comment/kết luận ready/im lặng không tạo record, không chuyển bước (SOP d.905; FS-003 US6-AC4)" },
+    { "case_id": "FX-03-B07", "title": "Gate Record ngoài A/B/C", "expect": "yêu cầu tạo Gate Record tại điểm không phải Cổng bị chặn + audit (FS-003 SFR-035; AC-FR-24.5)" },
+    { "case_id": "FX-03-B08", "title": "Product Baseline thiếu approval", "expect": "Product Baseline chưa có Approval Record hợp lệ không có hiệu lực; phần phụ thuộc bị chặn (P1-10)" },
+    { "case_id": "FX-03-B09", "title": "AWC với non-waivable blocker", "expect": "approve-with-conditions khi non_waivable_blockers khác rỗng hoặc condition blocks_next_step: true → từ chối + audit (FS-002 SFR-022)" },
+    { "case_id": "FX-03-B10", "title": "Approve scope không phủ toàn revision", "expect": "từ chối kèm hướng dẫn AWC theo vùng hoặc tách revision/artifact (FS-002 SFR-026)" },
+    { "case_id": "FX-03-B11", "title": "Quyết định nhắm revision lịch sử", "expect": "từ chối + audit (FS-002 SFR-027)" },
+    { "case_id": "FX-03-B12", "title": "Target đổi sau approval", "expect": "quyết định cũ hết hiệu lực trong đúng impact set, impact_status chuyển theo luật gộp SFR-029, tạo impact set (FS-002 SFR-006/010/029)" }
+  ]
+}

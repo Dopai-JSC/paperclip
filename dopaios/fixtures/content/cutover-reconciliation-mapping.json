@@ -1,0 +1,37 @@
+{
+  "record_type": "cutover-reconciliation-mapping",
+  "mapping_id": "CUTOVER-RECON-SIM-001",
+  "revision": 1,
+  "label": "test",
+  "pins_cutover_record": {
+    "record_id": "CUTOVER-REC-SIM-001",
+    "revision": 2,
+    "state": "rolled-back",
+    "note": "Reconciliation pin đúng revision rolled-back (reconciliation ref của revision đó là null tại thời điểm tạo); KHÔNG pin revision kế tiếp — revision kế tiếp pin ngược Reconciliation này để tránh vòng hash (PRD Mục 6.1 d.320)"
+  },
+  "mappings": [
+    {
+      "event": "EVT-SIM-ACTIVATION",
+      "mapped_to": "trạng thái bootstrap của FS-SIM-001 được khôi phục làm nguồn duy nhất",
+      "mapping_count": 1
+    },
+    {
+      "event": "EVT-SIM-WI-CREATED (WI-SIM-001)",
+      "mapped_to": "WI-SIM-001 đóng với disposition chờ đợt cutover kế tiếp",
+      "mapping_count": 1
+    }
+  ],
+  "residuals": [
+    {
+      "residual_id": "RES-SIM-001",
+      "action_owner": "STAFF-HUMAN-DECIDER-001",
+      "due": "2026-08-02T17:00:00+07:00",
+      "guard": "chặn kích hoạt lại cutover cho FS-SIM-001 tới khi residual này đóng",
+      "note": "residual không có target giả — trỏ action owner–due–guard (PRD Mục 6.1 d.320)"
+    }
+  ],
+  "invariants": [
+    "mọi event/state phát sinh sau activation có đúng một mapping hoặc một residual",
+    "lịch sử không bị xóa"
+  ]
+}

@@ -1,0 +1,17 @@
+{
+  "selfcheck_id": "SC-T1-001-R2",
+  "label": "test",
+  "target": {
+    "artifact_id": "OUT-T1-001",
+    "revision": 2,
+    "sha256": "063f8a4ee629f99e0037be9e88aefe9b5c86ef8c3fea7a861ab17bf1350cafbf"
+  },
+  "executed_by": "FIXTURE-EXECUTOR-001",
+  "checks": [
+    { "check": "nội dung đúng hash đã pin trong gói fixture", "result": "pass" },
+    { "check": "đúng loại đầu ra test-output theo TEST-QC-001", "result": "pass" },
+    { "check": "đủ hai mục nội dung bắt buộc Mục A và Mục B", "result": "pass" }
+  ],
+  "result": "pass",
+  "completed_at": "2026-07-30T01:00:00+07:00"
+}

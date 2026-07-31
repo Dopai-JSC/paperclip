@@ -1,0 +1,56 @@
+{
+  "definition_id": "SOPDEF-TEST-001",
+  "revision": 1,
+  "label": "test",
+  "business_sop_ref": {
+    "artifact_id": "SOP-TEST-001",
+    "revision": 1,
+    "sha256": "2914457ccf8dd9d1a7cce244d9489289b6137aa5911433ae1e9223771719e03a",
+    "note": "SOP nghiệp vụ test đã approved trong sổ cái FS-002 trước khi tạo định nghĩa (FS-003 US1); không nhận tham chiếu latest"
+  },
+  "goal": "SOP test tối thiểu để kiểm chứng lõi run model FS-003 trên fork",
+  "auto_start_condition": "yêu cầu chạy thử hợp lệ theo Hợp đồng đầu vào của lệnh request-test-run (FS-003 d.1398-1409)",
+  "steps": [
+    {
+      "step_id": "T1",
+      "kind": "production",
+      "executor_role": "executor fixture của gói đã pin (không phải Staff người — FS-003 SFR-021, DEV-010)",
+      "inputs": ["gói fixture đã pin hash khi request-test-run"],
+      "outputs": [{ "output_type": "test-output", "quality_contract": "TEST-QC-001" }],
+      "completion_condition": "work-item COMPLETED với Review Evidence độc lập kết luận ready (FS-003 SFR-019/044)",
+      "advance_rule": "tự chuyển bước khi mọi điều kiện máy-kiểm được đạt (FS-003 SFR-014)"
+    },
+    {
+      "step_id": "T2",
+      "kind": "approval-point",
+      "decision_role": "người quyết định của run — Staff người đang hoạt động, pin khi request-test-run (FS-003 DEV-004/DEV-006)",
+      "target": "phiên bản đầu ra hiện hành của T1",
+      "allowed_business_outcomes": ["đạt", "yêu cầu sửa", "từ chối", "chấp nhận ngoại lệ"],
+      "request_more_information_available": true,
+      "gate_record": false,
+      "gate_record_note": "T2 không phải Cổng A/B/C — mọi yêu cầu tạo Gate Record bị chặn (FS-003 US5-AC6, SFR-035)",
+      "reentry_step": "T1"
+    },
+    {
+      "step_id": "T3",
+      "kind": "closing",
+      "machine_checkable": true,
+      "guard": "Approval Record T2 còn hiệu lực outcome approve hoặc approve-with-conditions (FS-003 SFR-029)"
+    }
+  ],
+  "quality_contracts": [
+    {
+      "contract_id": "TEST-QC-001",
+      "output_type": "test-output",
+      "criteria": [
+        "nội dung đúng hash đã pin trong gói fixture",
+        "đủ hai mục nội dung bắt buộc Mục A và Mục B"
+      ],
+      "evidence_required": ["self-check của executor", "Review Evidence độc lập kết luận ready, reviewer khác executor"],
+      "self_check_role": "FIXTURE-EXECUTOR-001",
+      "independent_review_role": "FIXTURE-REVIEWER-001",
+      "dev_ref": "DEV-017 — vai fixture thay AI-ROLE, chỉ áp cho Hợp đồng chất lượng của định nghĩa SOP test",
+      "label": "test"
+    }
+  ]
+}
