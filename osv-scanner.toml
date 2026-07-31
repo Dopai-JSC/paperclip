@@ -1,0 +1,83 @@
+# Baseline chấp nhận rủi ro có kiểm soát cho gate osv-scanner (supply-chain.yml).
+# Mọi mục ở đây là disposition đã được CTO duyệt, khớp hồ sơ 08 Bước nền
+# (docs/architecture/verification/evidence/buoc-nen/08-chuoi-cung-ung.md, repo dopaios)
+# và hồ sơ chuỗi cung ứng đợt 1. Advisory MỚI của các package KHÁC vẫn làm gate đỏ.
+# Xem lại toàn bộ baseline khi đồng bộ upstream hoặc trước khi khóa kiến trúc.
+
+# tar 6.2.1 — dependency bắc cầu; mọi bản vá nằm ở major 7.x (nhảy major 6→7).
+# Disposition hồ sơ 08: không ép override để giữ hành vi tại tag v2026.707.0;
+# xử lý khi upstream nâng hoặc khi KC liên quan đụng đường dùng tar.
+[[PackageOverrides]]
+name = "tar"
+version = "6.2.1"
+ecosystem = "npm"
+ignore = true
+reason = "Vá đòi nhảy major 6→7; giữ hành vi tại tag theo disposition hồ sơ 08 Bước nền; xem lại khi đồng bộ upstream."
+
+# vite 7.3.1 — vite nội bộ do vitest 4.1.8 kéo theo, chỉ chạy trong dev/test-runner,
+# không vào runtime; bản vite build UI đã ở 6.4.3 (đã vá). Override vite@^7.0.0 → 7.3.5
+# đã khai trong package.json nhưng không khớp specifier khai báo của vitest
+# (đúng ghi nhận của hồ sơ 08); xử lý đúng đắn là nâng vitest khi upstream nâng.
+[[PackageOverrides]]
+name = "vite"
+version = "7.3.1"
+ecosystem = "npm"
+ignore = true
+reason = "Vite nội bộ của vitest, chỉ dev/test-runner, không vào runtime; nâng vitest khi upstream nâng (disposition hồ sơ 08 Bước nền)."
+
+# @anthropic-ai/sdk 0.81.0 — GHSA-p7fg-763f-g4gf (4.8), vá tại 0.91.1: nhảy nhiều
+# minor 0.x trên đường tích hợp AI lõi của fork. Không bump ngoài KC: KC-02 sở hữu
+# quyết định engine/adapter (đang đánh giá Agent SDK 0.3.220) — xử trong KC-02.
+[[PackageOverrides]]
+name = "@anthropic-ai/sdk"
+version = "0.81.0"
+ecosystem = "npm"
+ignore = true
+reason = "Vá đòi nhảy 0.81→0.91 trên đường tích hợp AI lõi; quyết định thuộc KC-02 (engine/adapter); xem lại khi KC-02 kết luận."
+
+# @hono/node-server 1.19.13 — GHSA-frvp-7c67-39w9 (5.9), vá tại 2.0.5: nhảy major
+# của HTTP server adapter runtime. Giữ hành vi tại tag; xem lại khi đồng bộ upstream.
+[[PackageOverrides]]
+name = "@hono/node-server"
+version = "1.19.13"
+ecosystem = "npm"
+ignore = true
+reason = "Vá đòi nhảy major 1→2 của server adapter runtime; giữ hành vi tại tag; xem lại khi đồng bộ upstream."
+
+# @tootallnate/once 1.1.2 — GHSA-vpq2-c234-7xj6 (3.3), vá tại 2.0.1: dependency bắc
+# cầu legacy (chuỗi http-proxy-agent cũ), vá đòi nhảy major.
+[[PackageOverrides]]
+name = "@tootallnate/once"
+version = "1.1.2"
+ecosystem = "npm"
+ignore = true
+reason = "Transitive legacy, vá đòi nhảy major 1→2; mức 3.3 thấp; xem lại khi đồng bộ upstream."
+
+# esbuild 0.18.20 — GHSA-67mh-4wv8-2f99 (5.3, CORS của dev-server): bản bắc cầu cũ
+# chỉ dùng lúc build/dev, không vào runtime; vá 0.25.0 vượt ranh breaking của 0.x.
+# Instance 0.27.7 đã được override lên 0.28.1 (đúng range devDependency gốc).
+[[PackageOverrides]]
+name = "esbuild"
+version = "0.18.20"
+ecosystem = "npm"
+ignore = true
+reason = "Transitive build-time, lỗ hổng chỉ ảnh hưởng dev-server; vá vượt ranh breaking 0.x; xem lại khi đồng bộ upstream."
+
+# brace-expansion 1.1.16 — GHSA-mh99-v99m-4gvg (7.5, DoS out-of-memory qua expand()
+# không giới hạn độ dài kết quả): dòng 1.x KHÔNG có bản vá — fix duy nhất là 5.0.8
+# (kiểm OSV API 30/07/2026). 1.x là transitive của chuỗi minimatch legacy, không
+# nhảy major được; instance 5.0.6 đã override lên 5.0.8. Đầu vào glob của spike là
+# cấu hình cục bộ, không phải input không tin cậy.
+[[PackageOverrides]]
+name = "brace-expansion"
+version = "1.1.16"
+ecosystem = "npm"
+ignore = true
+reason = "Dòng 1.x không có bản vá (fix duy nhất 5.0.8 — nhảy major, kẹt chuỗi minimatch legacy); GHSA-3jxr đã vá bằng 1.1.16; xem lại khi đồng bộ upstream."
+
+# react-router 7.18.0 — GHSA-qwww-vcr4-c8h2 (7.1) ảnh hưởng 7.12.0 ≤ v < 8.3.0,
+# bản vá chỉ có ở major 8.3.0 (kiểm OSV API 30/07/2026). Đã nâng 7.16.0 → 7.18.0
+# vá 4 advisory còn lại của react-router; không nhảy major trên fork đóng băng.
+[[IgnoredVulns]]
+id = "GHSA-qwww-vcr4-c8h2"
+reason = "Bản vá chỉ có ở react-router 8.3.0 (nhảy major); đã nâng 7.18.0 vá các advisory khác; xem lại khi đồng bộ upstream hoặc trước khóa kiến trúc."
