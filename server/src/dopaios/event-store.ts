@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { sql, eq } from "drizzle-orm";
+import { sql, eq, getTableName } from "drizzle-orm";
 import {
   createDb,
   dopaiosCommands,
@@ -364,11 +364,10 @@ const PROJECTION_TABLES = [
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {
   const snapshot: Record<string, unknown[]> = {};
   for (const table of PROJECTION_TABLES) {
-    const name = (table as unknown as { [key: symbol]: unknown; _: { name: string } })._.name;
     const rows = (await db.execute(
       sql`SELECT * FROM ${table} ORDER BY 1, 2`,
     )) as unknown as unknown[];
-    snapshot[name] = rows as unknown[];
+    snapshot[getTableName(table)] = [...rows];
   }
   return snapshot;
 }
