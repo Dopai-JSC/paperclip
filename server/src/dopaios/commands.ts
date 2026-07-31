@@ -492,6 +492,117 @@ export async function recordApproval(
   });
 }
 
+// Retry–continue–reassign chain of a sample work item (PRD Mục 3): each hop is
+// its own event on the same stream, history is appended, never merged or
+// rewritten; reassignment changes the executor explicitly.
+export async function interruptRetryReassign(
+  db: Db,
+  commandId: string,
+  payload: { workItemId: string; firstExecutor: string; secondExecutor: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const workItem = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_work_items WHERE id = ${p["workItemId"]}`,
+      );
+      if (!workItem || workItem.state !== "ACCEPTED") {
+        throw new CommandRejectedError("DEV-010", "Work item is not ACCEPTED");
+      }
+      const stream = `dopaiosWorkItem-${p["workItemId"]}`;
+      const hops: Array<{ state: string; executor?: string }> = [
+        { state: "CLAIMED", executor: p["firstExecutor"] as string },
+        { state: "IN_PROGRESS" },
+        { state: "INTERRUPTED" },
+        { state: "IN_PROGRESS" }, // retry: tiếp tục cùng executor, không mất lịch sử
+        { state: "INTERRUPTED" },
+        { state: "CLAIMED", executor: p["secondExecutor"] as string }, // giao lại
+        { state: "IN_PROGRESS" },
+        { state: "SUBMITTED" },
+      ];
+      for (const hop of hops) {
+        await ctx.emit({
+          streamName: stream,
+          type: "WorkItemStateChanged",
+          data: { workItemId: p["workItemId"], ...hop },
+          metadata: { chain: "retry-continue-reassign" },
+        });
+      }
+      return { workItemId: p["workItemId"] as string, state: "SUBMITTED", hops: hops.length };
+    },
+  });
+}
+
+// Product Baseline pins concrete (id, revision, sha256) triples — never
+// "latest" (FS-002). Every pinned item must exist in the artifact ledger with
+// exactly that hash and an approved state, checked on the same snapshot.
+export async function pinProductBaseline(
+  db: Db,
+  commandId: string,
+  payload: {
+    baselineId: string;
+    revision: number;
+    pinnedBy: string;
+    items: Array<{ artifactId: string; revision: number; sha256: string }>;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const items = p["items"] as Array<{ artifactId: string; revision: number; sha256: string }>;
+      for (const item of items) {
+        const artifact = await one<{ sha256: string; artifact_state: string }>(
+          ctx,
+          sql`SELECT sha256, artifact_state FROM dopaios_artifacts
+              WHERE id = ${item.artifactId} AND revision = ${item.revision}`,
+        );
+        if (!artifact || artifact.artifact_state !== "approved") {
+          throw new CommandRejectedError("ERR-BASELINE-ITEM", `Artifact ${item.artifactId}@${item.revision} is not approved`);
+        }
+        if (artifact.sha256 !== item.sha256) {
+          throw new CommandRejectedError("ERR-BASELINE-HASH", `Artifact ${item.artifactId}@${item.revision} hash mismatch`);
+        }
+      }
+      await ctx.emit({
+        streamName: `dopaiosBaseline-${p["baselineId"]}`,
+        type: "BaselinePinned",
+        data: {
+          baselineId: p["baselineId"],
+          revision: p["revision"],
+          items,
+          pinnedBy: p["pinnedBy"],
+        },
+        expectedVersion: -1,
+      });
+      return { baselineId: p["baselineId"] as string, itemCount: items.length };
+    },
+  });
+}
+
+// Artifact impact axis (FS-002 trục kép): a source change marks dependents
+// impact-pending without touching artifact_state.
+export async function markArtifactImpact(
+  db: Db,
+  commandId: string,
+  payload: { artifactId: string; revision: number; impactStatus: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      await ctx.emit({
+        streamName: `dopaiosArtifact-${p["artifactId"]}`,
+        type: "ArtifactImpactChanged",
+        data: { artifactId: p["artifactId"], revision: p["revision"], impactStatus: p["impactStatus"] },
+      });
+      return { artifactId: p["artifactId"] as string, impactStatus: p["impactStatus"] as string };
+    },
+  });
+}
+
 // fx-02 S10: complete-sop-run once every obligation has a terminal
 // disposition (open action requests block completion).
 export async function completeSopRun(

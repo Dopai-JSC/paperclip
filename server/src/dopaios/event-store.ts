@@ -13,6 +13,7 @@ import {
   dopaiosActionRequests,
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
+  dopaiosProductBaselines,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -244,6 +245,21 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ artifactState: d["artifactState"] })
         .where(sql`${dopaiosArtifacts.id} = ${d["artifactId"]} AND ${dopaiosArtifacts.revision} = ${d["revision"]}`);
       break;
+    case "ArtifactImpactChanged":
+      await tx
+        .update(dopaiosArtifacts)
+        .set({ impactStatus: d["impactStatus"] })
+        .where(sql`${dopaiosArtifacts.id} = ${d["artifactId"]} AND ${dopaiosArtifacts.revision} = ${d["revision"]}`);
+      break;
+    case "BaselinePinned":
+      await tx.insert(dopaiosProductBaselines).values({
+        id: d["baselineId"],
+        revision: d["revision"],
+        state: "pinned",
+        items: d["items"],
+        pinnedBy: d["pinnedBy"],
+      });
+      break;
     case "SopDefinitionCreated":
       await tx.insert(dopaiosSopDefinitions).values({
         id: d["definitionId"],
@@ -368,6 +384,7 @@ const PROJECTION_TABLES = [
   dopaiosActionRequests,
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
+  dopaiosProductBaselines,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

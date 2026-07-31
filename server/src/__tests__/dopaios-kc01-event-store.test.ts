@@ -23,6 +23,9 @@ import {
   completeSopRun,
   createProjectShell,
   createSopDefinition,
+  interruptRetryReassign,
+  markArtifactImpact,
+  pinProductBaseline,
   publishSopDefinition,
   recordApproval,
   registerActor,
@@ -350,6 +353,87 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
     });
   });
 
+  it("retry–continue–reassign: the sample work-item chain is append-only and replayable", async () => {
+    await requestTestRun(db, "CMD-FX02-S04-R2", {
+      runId: "RUN-T-002",
+      definitionRef: { definitionId: "SOPDEF-TEST-001", revision: 1 },
+      decider: fx02.fixture_package.decider,
+      pod: fx02.fixture_package.pod,
+      fixturePackage: { executor: fx02.fixture_package.executor },
+    });
+    await activateSopRun(db, "CMD-FX02-S05-R2", { runId: "RUN-T-002", workItemId: "WI-R-001" });
+    const chain = await interruptRetryReassign(db, "CMD-CHAIN-001", {
+      workItemId: "WI-R-001",
+      firstExecutor: fx02.fixture_package.executor,
+      secondExecutor: "FIXTURE-EXECUTOR-002",
+    });
+    expect(chain).toMatchObject({ state: "SUBMITTED", hops: 8 });
+
+    const events = await readStream(db, "dopaiosWorkItem-WI-R-001");
+    const states = events
+      .filter((event) => event.type === "WorkItemStateChanged")
+      .map((event) => event.data["state"]);
+    expect(states).toEqual([
+      "ACCEPTED",
+      "CLAIMED",
+      "IN_PROGRESS",
+      "INTERRUPTED",
+      "IN_PROGRESS",
+      "INTERRUPTED",
+      "CLAIMED",
+      "IN_PROGRESS",
+      "SUBMITTED",
+    ]);
+    const rows = (await db.execute(
+      sql`SELECT state, executor FROM dopaios_work_items WHERE id = 'WI-R-001'`,
+    )) as unknown as Array<{ state: string; executor: string }>;
+    expect(rows[0]).toEqual({ state: "SUBMITTED", executor: "FIXTURE-EXECUTOR-002" });
+  });
+
+  it("product baseline pins exact revisions and hashes; wrong hash or unapproved artifact is rejected", async () => {
+    await expect(
+      pinProductBaseline(db, "CMD-BASE-BADHASH", {
+        baselineId: "PB-001",
+        revision: 1,
+        pinnedBy: fx02.fixture_package.decider,
+        items: [{ artifactId: "SOP-TEST-001", revision: 1, sha256: "0".repeat(64) }],
+      }),
+    ).rejects.toMatchObject({ code: "ERR-BASELINE-HASH" });
+    await expect(
+      pinProductBaseline(db, "CMD-BASE-MISSING", {
+        baselineId: "PB-001",
+        revision: 1,
+        pinnedBy: fx02.fixture_package.decider,
+        items: [{ artifactId: "SOP-KHONG-TON-TAI", revision: 9, sha256: sopSha256 }],
+      }),
+    ).rejects.toMatchObject({ code: "ERR-BASELINE-ITEM" });
+
+    const pinned = await pinProductBaseline(db, "CMD-BASE-001", {
+      baselineId: "PB-001",
+      revision: 1,
+      pinnedBy: fx02.fixture_package.decider,
+      items: [{ artifactId: "SOP-TEST-001", revision: 1, sha256: sopSha256 }],
+    });
+    expect(pinned).toMatchObject({ itemCount: 1 });
+    const rows = (await db.execute(
+      sql`SELECT state, items FROM dopaios_product_baselines WHERE id = 'PB-001' AND revision = 1`,
+    )) as unknown as Array<{ state: string; items: Array<{ sha256: string }> }>;
+    expect(rows[0]?.state).toBe("pinned");
+    expect(rows[0]?.items[0]?.sha256).toBe(sopSha256);
+  });
+
+  it("artifact dual axis: impact status changes without touching artifact_state", async () => {
+    await markArtifactImpact(db, "CMD-IMPACT-001", {
+      artifactId: "SOP-TEST-001",
+      revision: 1,
+      impactStatus: "impact-pending",
+    });
+    const rows = (await db.execute(
+      sql`SELECT artifact_state, impact_status FROM dopaios_artifacts WHERE id = 'SOP-TEST-001' AND revision = 1`,
+    )) as unknown as Array<{ artifact_state: string; impact_status: string }>;
+    expect(rows[0]).toEqual({ artifact_state: "approved", impact_status: "impact-pending" });
+  });
+
   it("optimistic concurrency: a stale expected version is rejected by the store", async () => {
     await expect(
       executeCommand(db, {
@@ -385,6 +469,7 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
       "dopaios_action_requests",
       "dopaios_decision_packages",
       "dopaios_approval_records",
+      "dopaios_product_baselines",
     ];
     for (const table of sevenTypes) {
       expect(before[table]!.length, `${table} must hold fixture state before replay`).toBeGreaterThan(0);

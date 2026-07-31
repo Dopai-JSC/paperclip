@@ -92,6 +92,18 @@ export const dopaiosDecisionPackages = pgTable("dopaios_decision_packages", {
   refs: jsonb("refs").$type<Record<string, unknown>>().notNull(),
 });
 
+export const dopaiosProductBaselines = pgTable(
+  "dopaios_product_baselines",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    state: text("state").notNull(),
+    items: jsonb("items").$type<Array<Record<string, unknown>>>().notNull(),
+    pinnedBy: text("pinned_by").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
 export const dopaiosApprovalRecords = pgTable("dopaios_approval_records", {
   id: text("id").primaryKey(),
   packageId: text("package_id").notNull(),
