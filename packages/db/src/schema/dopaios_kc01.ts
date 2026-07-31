@@ -92,6 +92,35 @@ export const dopaiosDecisionPackages = pgTable("dopaios_decision_packages", {
   refs: jsonb("refs").$type<Record<string, unknown>>().notNull(),
 });
 
+// KC-02: record Phiên chạy AI theo work-item (PRD Mục 3). Mỗi phiên một
+// stream event riêng — lịch sử không bao giờ gộp; phiên mới liên kết
+// predecessor qua (predecessorId, relation); phiên terminal không mở lại.
+export const dopaiosAiSessions = pgTable("dopaios_ai_sessions", {
+  id: text("id").primaryKey(),
+  workItemId: text("work_item_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  engine: text("engine").notNull(),
+  state: text("state").notNull(),
+  predecessorId: text("predecessor_id"),
+  relation: text("relation"),
+  lastSignalAt: timestamp("last_signal_at"),
+  detectionLatencyMs: integer("detection_latency_ms"),
+  outcome: text("outcome"),
+});
+
+export const dopaiosSessionArtifacts = pgTable(
+  "dopaios_session_artifacts",
+  {
+    sessionId: text("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    kind: text("kind").notNull(),
+    ref: text("ref").notNull(),
+    sha256: text("sha256").notNull(),
+    confirmed: boolean("confirmed").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.sessionId, table.seq] }) }),
+);
+
 export const dopaiosProductBaselines = pgTable(
   "dopaios_product_baselines",
   {

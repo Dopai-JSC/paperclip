@@ -1,0 +1,286 @@
+import { sql } from "drizzle-orm";
+import {
+  type Db,
+  type CommandContext,
+  type CommandResult,
+  executeCommand,
+  CommandRejectedError,
+} from "./event-store.js";
+
+// KC-02 spike: record Phiên chạy AI theo work-item trên event store KC-01,
+// đúng ngữ nghĩa PRD Mục 3:
+//  - mỗi phiên một stream event riêng — lịch sử hai phiên không bao giờ gộp;
+//  - phiên mới liên kết predecessor qua (predecessorId, relation) với
+//    relation ∈ {retry, continue, reassign}; KHÔNG mở lại phiên terminal;
+//  - artifact (checkpoint/output) đã xác nhận lưu là immutable, append-only
+//    theo seq;
+//  - tín hiệu hoạt động (AiSessionSignal) nuôi watchdog phát hiện gián đoạn:
+//    định nghĩa đo NFR-8 của spike = detectedAt − lastSignalAt, ghi vào event
+//    AiSessionInterrupted (detectionLatencyMs) — ngưỡng mục tiêu ≤ 5 phút.
+
+type Json = Record<string, unknown>;
+
+type SessionRow = {
+  state: string;
+  agent_id: string;
+  work_item_id: string;
+  outcome: string | null;
+  last_signal_at: Date | string | null;
+};
+
+async function loadSession(ctx: CommandContext, sessionId: string): Promise<SessionRow | null> {
+  const rows = (await ctx.tx.execute(sql`
+    SELECT state, agent_id, work_item_id, outcome, last_signal_at
+    FROM dopaios_ai_sessions WHERE id = ${sessionId}
+  `)) as unknown as SessionRow[];
+  return rows[0] ?? null;
+}
+
+function sessionStream(sessionId: string): string {
+  return `dopaiosAiSession-${sessionId}`;
+}
+
+export async function startAiSession(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string; workItemId: string; agentId: string; engine: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const workItem = (await ctx.tx.execute(sql`
+        SELECT id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
+      `)) as unknown as Array<{ id: string }>;
+      if (workItem.length === 0) {
+        throw new CommandRejectedError("ERR-WORKITEM", `Work item ${p["workItemId"]} not found`);
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionStarted",
+        data: {
+          sessionId: p["sessionId"],
+          workItemId: p["workItemId"],
+          agentId: p["agentId"],
+          engine: p["engine"],
+        },
+        expectedVersion: -1,
+      });
+      return { sessionId: p["sessionId"] as string, state: "RUNNING" };
+    },
+  });
+}
+
+export async function recordSessionSignal(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionSignal",
+        data: { sessionId: p["sessionId"] },
+      });
+      return { sessionId: p["sessionId"] as string };
+    },
+  });
+}
+
+export async function recordSessionArtifact(
+  db: Db,
+  commandId: string,
+  payload: {
+    sessionId: string;
+    seq: number;
+    kind: string;
+    ref: string;
+    sha256: string;
+    confirmed: boolean;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      const existing = (await ctx.tx.execute(sql`
+        SELECT seq FROM dopaios_session_artifacts
+        WHERE session_id = ${p["sessionId"]} AND seq = ${p["seq"]}
+      `)) as unknown as unknown[];
+      if (existing.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-ARTIFACT-IMMUTABLE",
+          "Artifact seq already recorded — confirmed artifacts are immutable",
+        );
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionArtifactRecorded",
+        data: {
+          sessionId: p["sessionId"],
+          seq: p["seq"],
+          kind: p["kind"],
+          ref: p["ref"],
+          sha256: p["sha256"],
+          confirmed: p["confirmed"],
+        },
+      });
+      return { sessionId: p["sessionId"] as string, seq: p["seq"] as number };
+    },
+  });
+}
+
+// Watchdog interruption. The caller (watchdog tick) supplies its clock; the
+// detection latency is computed against last_signal_at on the SAME snapshot
+// and frozen into the event — this is the NFR-8 measurement of the spike.
+export async function interruptSession(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string; detectedAtMs: number; reason: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      const lastSignal = session.last_signal_at
+        ? new Date(session.last_signal_at).getTime()
+        : 0;
+      const detectionLatencyMs = Math.max(0, (p["detectedAtMs"] as number) - lastSignal);
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionInterrupted",
+        data: {
+          sessionId: p["sessionId"],
+          reason: p["reason"],
+          detectionLatencyMs,
+        },
+      });
+      return { sessionId: p["sessionId"] as string, detectionLatencyMs };
+    },
+  });
+}
+
+export async function completeSession(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string; outcome: "succeeded" | "failed" | "abandoned" },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || (session.state !== "RUNNING" && session.state !== "INTERRUPTED")) {
+        throw new CommandRejectedError(
+          "ERR-SESSION-TERMINAL",
+          "Only RUNNING or INTERRUPTED sessions can reach terminal",
+        );
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionTerminal",
+        data: { sessionId: p["sessionId"], outcome: p["outcome"] },
+      });
+      return { sessionId: p["sessionId"] as string, outcome: p["outcome"] as string };
+    },
+  });
+}
+
+// Successor per PRD Mục 3: a new session linked to its predecessor — never a
+// reopen. Allowed from INTERRUPTED (retry/continue/reassign) or a failed
+// terminal (retry/reassign); a reassign must change the agent.
+export async function createSuccessorSession(
+  db: Db,
+  commandId: string,
+  payload: {
+    sessionId: string;
+    predecessorId: string;
+    relation: "retry" | "continue" | "reassign";
+    agentId: string;
+    engine: string;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const predecessor = await loadSession(ctx, p["predecessorId"] as string);
+      if (!predecessor) {
+        throw new CommandRejectedError("ERR-PREDECESSOR", "Predecessor session not found");
+      }
+      if (predecessor.state === "RUNNING") {
+        throw new CommandRejectedError(
+          "ERR-PREDECESSOR-RUNNING",
+          "Predecessor is still RUNNING — interrupt or complete it first",
+        );
+      }
+      if (predecessor.state === "TERMINAL" && predecessor.outcome === "succeeded") {
+        throw new CommandRejectedError(
+          "ERR-TERMINAL-REOPEN",
+          "A succeeded terminal session never gets a successor",
+        );
+      }
+      if (p["relation"] === "reassign" && p["agentId"] === predecessor.agent_id) {
+        throw new CommandRejectedError("ERR-REASSIGN-SAME-AGENT", "Reassign must change the agent");
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionStarted",
+        data: {
+          sessionId: p["sessionId"],
+          workItemId: predecessor.work_item_id,
+          agentId: p["agentId"],
+          engine: p["engine"],
+          predecessorId: p["predecessorId"],
+          relation: p["relation"],
+        },
+        expectedVersion: -1,
+      });
+      return { sessionId: p["sessionId"] as string, relation: p["relation"] as string };
+    },
+  });
+}
+
+// Watchdog tick: finds RUNNING sessions silent beyond the threshold on the
+// caller's clock and interrupts each one idempotently (command id derived
+// from session + last signal, so a repeated tick cannot double-fire).
+export async function detectStalledSessions(
+  db: Db,
+  input: { thresholdMs: number; nowMs: number },
+): Promise<Array<{ sessionId: string; detectionLatencyMs: number }>> {
+  const stalled = (await db.execute(sql`
+    SELECT id, last_signal_at FROM dopaios_ai_sessions
+    WHERE state = 'RUNNING'
+      AND last_signal_at < to_timestamp(${(input.nowMs - input.thresholdMs) / 1000})
+  `)) as unknown as Array<{ id: string; last_signal_at: Date | string }>;
+
+  const interrupted: Array<{ sessionId: string; detectionLatencyMs: number }> = [];
+  for (const row of stalled) {
+    const lastSignalMs = new Date(row.last_signal_at).getTime();
+    const result = await interruptSession(db, `WATCHDOG-${row.id}-${lastSignalMs}`, {
+      sessionId: row.id,
+      detectedAtMs: input.nowMs,
+      reason: "no-progress",
+    });
+    interrupted.push({
+      sessionId: row.id,
+      detectionLatencyMs: result["detectionLatencyMs"] as number,
+    });
+  }
+  return interrupted;
+}

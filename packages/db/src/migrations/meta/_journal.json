@@ -974,6 +974,13 @@
       "when": 1785475638572,
       "tag": "0504_dopaios_kc01_baselines",
       "breakpoints": true
+    },
+    {
+      "idx": 505,
+      "version": "7",
+      "when": 1785482352893,
+      "tag": "0505_dopaios_kc02_sessions",
+      "breakpoints": true
     }
   ]
 }

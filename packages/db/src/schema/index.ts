@@ -114,4 +114,6 @@ export {
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
   dopaiosProductBaselines,
+  dopaiosAiSessions,
+  dopaiosSessionArtifacts,
 } from "./dopaios_kc01.js";
