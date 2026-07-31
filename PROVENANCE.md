@@ -54,6 +54,20 @@ and OSV scan with the pinned tool versions above. Scan evidence for Bước nề
 archived in the Dopaios repository under
 `docs/architecture/verification/evidence/buoc-nen/`.
 
+## message-db blueprint copy (KC-01)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/message-db/message-db |
+| Pin | commit `25da82b044f94416202ac3daa1866791b385badc` (default-branch HEAD at copy time; nearest tag v1.3.0 = `e6999a6bd95`) |
+| Copied | 2026-07-31, verbatim `database/` + `MIT-License.txt` + `VERSION.txt` into `dopaios/message-db/` |
+| License | MIT |
+| Role | Reference blueprint for the KC-01 event store (verification plan Appendix A, option B: copy schema/functions into the repo and own migrations, upstream dormant) |
+
+Ownership rule: Dopaios schema/function changes are made only through
+Dopai-authored migrations (0500+ region); `dopaios/message-db/` stays a pristine
+upstream snapshot for comparison. See `dopaios/message-db/PIN.md`.
+
 ## Dopai-authored fixture catalog (verification batch 1)
 
 `dopaios/fixtures/` is authored by Dopai; it contains no third-party content.
