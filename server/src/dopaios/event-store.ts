@@ -34,6 +34,7 @@ export type DopaiosEvent = {
   type: string;
   position: number;
   globalPosition: number;
+  time: Date;
   data: Record<string, unknown>;
   metadata: Record<string, unknown> | null;
 };
@@ -101,6 +102,7 @@ function mapMessageRow(row: {
   type: string;
   position: string | number;
   global_position: string | number;
+  time: Date | string;
   data: unknown;
   metadata: unknown;
 }): DopaiosEvent {
@@ -110,6 +112,7 @@ function mapMessageRow(row: {
     type: row.type,
     position: Number(row.position),
     globalPosition: Number(row.global_position),
+    time: row.time instanceof Date ? row.time : new Date(row.time),
     data: (row.data ?? {}) as Record<string, unknown>,
     metadata: (row.metadata ?? null) as Record<string, unknown> | null,
   };
@@ -117,7 +120,7 @@ function mapMessageRow(row: {
 
 export async function readStream(db: Db | Tx, streamName: string): Promise<DopaiosEvent[]> {
   const rows = (await db.execute(sql`
-    SELECT id, stream_name, type, position, global_position, data, metadata
+    SELECT id, stream_name, type, position, global_position, time, data, metadata
     FROM message_store.messages
     WHERE stream_name = ${streamName}
     ORDER BY position
@@ -127,7 +130,7 @@ export async function readStream(db: Db | Tx, streamName: string): Promise<Dopai
 
 export async function readAllEvents(db: Db | Tx): Promise<DopaiosEvent[]> {
   const rows = (await db.execute(sql`
-    SELECT id, stream_name, type, position, global_position, data, metadata
+    SELECT id, stream_name, type, position, global_position, time, data, metadata
     FROM message_store.messages
     ORDER BY global_position
   `)) as unknown as Parameters<typeof mapMessageRow>[0][];
@@ -266,9 +269,15 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
       });
       break;
     case "SopRunStateChanged":
+      // completed_at arrived with migration 0503 (schema evolution drill):
+      // derived from the immutable event time, so replay backfills rows that
+      // were projected before the column existed.
       await tx
         .update(dopaiosSopRuns)
-        .set({ state: d["state"] })
+        .set({
+          state: d["state"],
+          ...((d["state"] as string) === "COMPLETED" ? { completedAt: event.time } : {}),
+        })
         .where(eq(dopaiosSopRuns.id, d["runId"]));
       break;
     case "WorkItemCreated":

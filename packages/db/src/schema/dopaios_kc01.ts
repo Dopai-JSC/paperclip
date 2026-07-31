@@ -55,6 +55,7 @@ export const dopaiosSopRuns = pgTable("dopaios_sop_runs", {
   definitionRef: jsonb("definition_ref").$type<Record<string, unknown>>().notNull(),
   decider: text("decider").notNull(),
   pod: text("pod").notNull(),
+  completedAt: timestamp("completed_at"),
 });
 
 export const dopaiosWorkItems = pgTable("dopaios_work_items", {
