@@ -118,4 +118,8 @@ export {
   dopaiosSessionArtifacts,
   dopaiosActivations,
   dopaiosAuthBreakers,
+  dopaiosSeparationPolicies,
+  dopaiosConditions,
+  dopaiosImpactRecords,
+  dopaiosGateRecords,
 } from "./dopaios_kc01.js";

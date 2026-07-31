@@ -18,6 +18,10 @@ import {
   dopaiosSessionArtifacts,
   dopaiosActivations,
   dopaiosAuthBreakers,
+  dopaiosSeparationPolicies,
+  dopaiosConditions,
+  dopaiosImpactRecords,
+  dopaiosGateRecords,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -241,6 +245,7 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         sha256: d["sha256"],
         artifactState: d["artifactState"],
         impactStatus: d["impactStatus"],
+        createdBy: d["createdBy"] ?? null,
       });
       break;
     case "ArtifactStateChanged":
@@ -436,6 +441,8 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         revision: d["revision"],
         state: "OPEN",
         refs: d["refs"],
+        target: d["target"] ?? null,
+        fields: d["fields"] ?? null,
       });
       break;
     case "DecisionPackageStateChanged":
@@ -443,6 +450,16 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .update(dopaiosDecisionPackages)
         .set({ state: d["state"] })
         .where(eq(dopaiosDecisionPackages.id, d["packageId"]));
+      break;
+    // KC-03: đổi trạng thái ĐÚNG một revision của gói (khóa id+revision) —
+    // case cũ theo id giữ nguyên cho replay event KC-01.
+    case "DecisionPackageRevisionStateChanged":
+      await tx
+        .update(dopaiosDecisionPackages)
+        .set({ state: d["state"] })
+        .where(
+          sql`${dopaiosDecisionPackages.id} = ${d["packageId"]} AND ${dopaiosDecisionPackages.revision} = ${d["revision"]}`,
+        );
       break;
     case "ApprovalRecorded":
       await tx.insert(dopaiosApprovalRecords).values({
@@ -452,6 +469,95 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         outcome: d["outcome"],
         pinnedRefs: d["pinnedRefs"],
         actor: d["actor"],
+        targetId: d["targetId"] ?? null,
+        targetRevision: d["targetRevision"] ?? null,
+        targetSha256: d["targetSha256"] ?? null,
+        approvedScope: d["approvedScope"] ?? null,
+        findings: d["findings"] ?? null,
+        nonWaivableBlockers: d["nonWaivableBlockers"] ?? null,
+        impactSet: d["impactSet"] ?? null,
+        downstreamChecked: d["downstreamChecked"] ?? null,
+        openedStep: d["openedStep"] ?? null,
+        reEntryPoint: d["reEntryPoint"] ?? null,
+        expiry: d["expiry"] ?? null,
+        requestedBy: d["requestedBy"] ?? null,
+      });
+      break;
+    // ===== KC-03: approval engine =====
+    case "SeparationPolicyPinned":
+      await tx
+        .insert(dopaiosSeparationPolicies)
+        .values({
+          id: d["policyId"],
+          artifactType: d["artifactType"],
+          revision: d["revision"],
+          policy: d["policy"],
+          pinnedBy: d["pinnedBy"],
+        })
+        .onConflictDoUpdate({
+          target: dopaiosSeparationPolicies.id,
+          set: { revision: d["revision"], policy: d["policy"], pinnedBy: d["pinnedBy"] },
+        });
+      break;
+    case "ConditionOpened":
+      await tx.insert(dopaiosConditions).values({
+        id: d["conditionId"],
+        recordId: d["recordId"],
+        scope: d["scope"],
+        risk: d["risk"],
+        owner: d["owner"],
+        deadline: new Date(d["deadline"] as string),
+        closureCriteria: d["closureCriteria"],
+        compensatingObligation: d["compensatingObligation"] ?? null,
+        blocksNextStep: d["blocksNextStep"],
+        state: "open",
+      });
+      break;
+    case "ConditionClosed":
+      await tx
+        .update(dopaiosConditions)
+        .set({
+          state: "closed",
+          closedBy: d["closedBy"],
+          closedAt: event.time,
+          closureEvidence: d["closureEvidence"],
+        })
+        .where(eq(dopaiosConditions.id, d["conditionId"]));
+      break;
+    case "ConditionOverdueDeclared":
+      await tx
+        .update(dopaiosConditions)
+        .set({ state: "overdue" })
+        .where(eq(dopaiosConditions.id, d["conditionId"]));
+      break;
+    case "ImpactRecordOpened":
+      await tx.insert(dopaiosImpactRecords).values({
+        id: d["impactId"],
+        artifactId: d["artifactId"],
+        artifactRevision: d["artifactRevision"],
+        source: d["source"],
+        sourceRef: d["sourceRef"] ?? null,
+        state: "open",
+      });
+      break;
+    case "ImpactRecordDispositioned":
+      await tx
+        .update(dopaiosImpactRecords)
+        .set({
+          state: "dispositioned",
+          conclusion: d["conclusion"],
+          dispositionedBy: d["dispositionedBy"],
+          basis: d["basis"],
+        })
+        .where(eq(dopaiosImpactRecords.id, d["impactId"]));
+      break;
+    case "GateRecordCreated":
+      await tx.insert(dopaiosGateRecords).values({
+        id: d["gateRecordId"],
+        gateName: d["gateName"],
+        pointId: d["pointId"],
+        runId: d["runId"] ?? null,
+        approvalRecordId: d["approvalRecordId"],
       });
       break;
     default:
@@ -478,6 +584,10 @@ const PROJECTION_TABLES = [
   dopaiosSessionArtifacts,
   dopaiosActivations,
   dopaiosAuthBreakers,
+  dopaiosSeparationPolicies,
+  dopaiosConditions,
+  dopaiosImpactRecords,
+  dopaiosGateRecords,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

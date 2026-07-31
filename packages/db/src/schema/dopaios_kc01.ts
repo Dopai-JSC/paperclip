@@ -36,6 +36,9 @@ export const dopaiosArtifacts = pgTable(
     sha256: text("sha256").notNull(),
     artifactState: text("artifact_state").notNull(),
     impactStatus: text("impact_status").notNull(),
+    // KC-03: separation rule FS-002 SFR-013 tách theo định danh Staff đã TẠO
+    // revision — nullable vì event KC-01 cũ không mang trường này.
+    createdBy: text("created_by"),
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );
@@ -83,14 +86,25 @@ export const dopaiosActionRequests = pgTable("dopaios_action_requests", {
   state: text("state").notNull(),
   runId: text("run_id").notNull(),
   decidedBy: text("decided_by"),
+  // KC-03: Yêu cầu quyết định/exception gắn vào Gói quyết định (SFR-034/047).
+  packageId: text("package_id"),
+  packageRevision: integer("package_revision"),
 });
 
-export const dopaiosDecisionPackages = pgTable("dopaios_decision_packages", {
-  id: text("id").primaryKey(),
-  revision: integer("revision").notNull(),
-  state: text("state").notNull(),
-  refs: jsonb("refs").$type<Record<string, unknown>>().notNull(),
-});
+// KC-03: gói có revision + supersede (FS-003 SFR-047) — khóa (id, revision);
+// target và bộ trường SFR-024 nullable vì event KC-01 cũ không mang chúng.
+export const dopaiosDecisionPackages = pgTable(
+  "dopaios_decision_packages",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    state: text("state").notNull(),
+    refs: jsonb("refs").$type<Record<string, unknown>>().notNull(),
+    target: jsonb("target").$type<Record<string, unknown>>(),
+    fields: jsonb("fields").$type<Record<string, unknown>>(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
 
 // KC-02: record Phiên chạy AI theo work-item (PRD Mục 3). Mỗi phiên một
 // stream event riêng — lịch sử không bao giờ gộp; phiên mới liên kết
@@ -151,6 +165,10 @@ export const dopaiosProductBaselines = pgTable(
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );
 
+// KC-03: đủ bộ trường hợp đồng record-approval (FS-002 bảng d.651-661 +
+// FS-003 SFR-028) — actor của lệnh CHÍNH LÀ người duyệt, không có trường
+// "người duyệt" tách rời (chống mạo danh). Các cột mới nullable vì event
+// ApprovalRecorded của KC-01 không mang chúng.
 export const dopaiosApprovalRecords = pgTable("dopaios_approval_records", {
   id: text("id").primaryKey(),
   packageId: text("package_id").notNull(),
@@ -158,4 +176,71 @@ export const dopaiosApprovalRecords = pgTable("dopaios_approval_records", {
   outcome: text("outcome").notNull(),
   pinnedRefs: jsonb("pinned_refs").$type<Record<string, unknown>>().notNull(),
   actor: text("actor").notNull(),
+  targetId: text("target_id"),
+  targetRevision: integer("target_revision"),
+  targetSha256: text("target_sha256"),
+  approvedScope: jsonb("approved_scope").$type<Record<string, unknown>>(),
+  findings: jsonb("findings").$type<Array<Record<string, unknown>>>(),
+  nonWaivableBlockers: jsonb("non_waivable_blockers").$type<Array<Record<string, unknown>>>(),
+  impactSet: jsonb("impact_set").$type<Array<Record<string, unknown>>>(),
+  downstreamChecked: jsonb("downstream_checked").$type<Array<Record<string, unknown>>>(),
+  openedStep: text("opened_step"),
+  reEntryPoint: text("re_entry_point"),
+  expiry: jsonb("expiry").$type<Record<string, unknown>>(),
+  requestedBy: text("requested_by"),
+});
+
+// ===== KC-03: approval engine =====
+
+// Separation policy (FS-002 SFR-013/014): policy lưu jsonb THÔ — guard kiểm
+// đủ trường tại thời điểm phê duyệt, cho phép fixture pin policy thiếu trường
+// để chứng minh fail-closed chặn mọi lệnh của loại đó.
+export const dopaiosSeparationPolicies = pgTable("dopaios_separation_policies", {
+  id: text("id").primaryKey(),
+  artifactType: text("artifact_type").notNull(),
+  revision: integer("revision").notNull(),
+  policy: jsonb("policy").$type<Record<string, unknown>>().notNull(),
+  pinnedBy: text("pinned_by").notNull(),
+});
+
+// Condition của approve-with-conditions (FS-002 SFR-015/033, FS-003 SFR-055):
+// đủ trường bắt buộc của SFR-033; state: open | closed | overdue.
+export const dopaiosConditions = pgTable("dopaios_conditions", {
+  id: text("id").primaryKey(),
+  recordId: text("record_id").notNull(),
+  scope: jsonb("scope").$type<Record<string, unknown>>().notNull(),
+  risk: text("risk").notNull(),
+  owner: text("owner").notNull(),
+  deadline: timestamp("deadline").notNull(),
+  closureCriteria: text("closure_criteria").notNull(),
+  compensatingObligation: text("compensating_obligation"),
+  blocksNextStep: boolean("blocks_next_step").notNull(),
+  state: text("state").notNull(),
+  closedBy: text("closed_by"),
+  closedAt: timestamp("closed_at"),
+  closureEvidence: text("closure_evidence"),
+});
+
+// Impact record (FS-002 SFR-029): mỗi sự kiện impact một record mở riêng;
+// artifact chỉ rời impact-pending khi MỌI record mở đã có disposition.
+export const dopaiosImpactRecords = pgTable("dopaios_impact_records", {
+  id: text("id").primaryKey(),
+  artifactId: text("artifact_id").notNull(),
+  artifactRevision: integer("artifact_revision").notNull(),
+  source: text("source").notNull(),
+  sourceRef: text("source_ref"),
+  state: text("state").notNull(),
+  conclusion: text("conclusion"),
+  dispositionedBy: text("dispositioned_by"),
+  basis: text("basis"),
+});
+
+// Gate Record (FS-003 SFR-035): CHỈ tồn tại cho Cổng A/B/C — guard nằm ở
+// tầng lệnh, bảng chỉ là projection.
+export const dopaiosGateRecords = pgTable("dopaios_gate_records", {
+  id: text("id").primaryKey(),
+  gateName: text("gate_name").notNull(),
+  pointId: text("point_id").notNull(),
+  runId: text("run_id"),
+  approvalRecordId: text("approval_record_id").notNull(),
 });
