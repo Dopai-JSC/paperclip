@@ -946,6 +946,13 @@
       "when": 1785377000000,
       "tag": "0500_dopai_reserved",
       "breakpoints": true
+    },
+    {
+      "idx": 501,
+      "version": "7",
+      "when": 1785473511040,
+      "tag": "0501_dopaios_event_store",
+      "breakpoints": true
     }
   ]
 }
