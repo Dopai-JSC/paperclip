@@ -953,6 +953,13 @@
       "when": 1785473511040,
       "tag": "0501_dopaios_event_store",
       "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1785474681378,
+      "tag": "0502_dopaios_kc01_projections",
+      "breakpoints": true
     }
   ]
 }
