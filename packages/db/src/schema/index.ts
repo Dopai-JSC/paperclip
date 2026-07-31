@@ -116,4 +116,6 @@ export {
   dopaiosProductBaselines,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosActivations,
+  dopaiosAuthBreakers,
 } from "./dopaios_kc01.js";

@@ -16,6 +16,8 @@ import {
   dopaiosProductBaselines,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosActivations,
+  dopaiosAuthBreakers,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -293,6 +295,51 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ state: "TERMINAL", outcome: d["outcome"] })
         .where(eq(dopaiosAiSessions.id, d["sessionId"]));
       break;
+    case "ActivationRequested":
+      await tx.insert(dopaiosActivations).values({
+        id: d["activationId"],
+        workItemId: d["workItemId"],
+        agentId: d["agentId"],
+        engine: d["engine"],
+        state: "QUEUED",
+      });
+      break;
+    case "ActivationClaimed":
+      await tx
+        .update(dopaiosActivations)
+        .set({ state: "RUNNING", claimedBy: d["claimedBy"] })
+        .where(eq(dopaiosActivations.id, d["activationId"]));
+      break;
+    case "ActivationCompleted":
+      await tx
+        .update(dopaiosActivations)
+        .set({ state: "DONE", outcome: d["outcome"] })
+        .where(eq(dopaiosActivations.id, d["activationId"]));
+      break;
+    case "AuthFailureRecorded":
+      await tx
+        .insert(dopaiosAuthBreakers)
+        .values({ id: d["breakerId"], state: "CLOSED", consecutiveFailures: d["count"] })
+        .onConflictDoUpdate({
+          target: dopaiosAuthBreakers.id,
+          set: { consecutiveFailures: d["count"] },
+        });
+      break;
+    case "BreakerTripped":
+      await tx
+        .update(dopaiosAuthBreakers)
+        .set({ state: "OPEN" })
+        .where(eq(dopaiosAuthBreakers.id, d["breakerId"]));
+      break;
+    case "BreakerReset":
+      await tx
+        .insert(dopaiosAuthBreakers)
+        .values({ id: d["breakerId"], state: "CLOSED", consecutiveFailures: 0 })
+        .onConflictDoUpdate({
+          target: dopaiosAuthBreakers.id,
+          set: { state: "CLOSED", consecutiveFailures: 0 },
+        });
+      break;
     case "BaselinePinned":
       await tx.insert(dopaiosProductBaselines).values({
         id: d["baselineId"],
@@ -429,6 +476,8 @@ const PROJECTION_TABLES = [
   dopaiosProductBaselines,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosActivations,
+  dopaiosAuthBreakers,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

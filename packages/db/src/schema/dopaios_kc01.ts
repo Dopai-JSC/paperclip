@@ -121,6 +121,24 @@ export const dopaiosSessionArtifacts = pgTable(
   (table) => ({ pk: primaryKey({ columns: [table.sessionId, table.seq] }) }),
 );
 
+// KC-02 B5: entry kích hoạt kiểu KC-13 (claim compare-and-set) và
+// circuit-breaker chuỗi lỗi auth (hard-stop trước khi gọi engine).
+export const dopaiosActivations = pgTable("dopaios_activations", {
+  id: text("id").primaryKey(),
+  workItemId: text("work_item_id").notNull(),
+  agentId: text("agent_id").notNull(),
+  engine: text("engine").notNull(),
+  state: text("state").notNull(),
+  claimedBy: text("claimed_by"),
+  outcome: text("outcome"),
+});
+
+export const dopaiosAuthBreakers = pgTable("dopaios_auth_breakers", {
+  id: text("id").primaryKey(),
+  state: text("state").notNull(),
+  consecutiveFailures: integer("consecutive_failures").notNull(),
+});
+
 export const dopaiosProductBaselines = pgTable(
   "dopaios_product_baselines",
   {
