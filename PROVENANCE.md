@@ -32,6 +32,13 @@ covered by `pnpm-lock.yaml` plus the generated SBOM.
   deleted; `packages/shared/src/telemetry/client.ts` ships no default endpoints
   (`telemetry.paperclip.ing` and the AWS ingest fallback removed). Telemetry
   leaves the machine only when an operator configures `PAPERCLIP_TELEMETRY_ENDPOINT`.
+- `.github/workflows/commitperclip-review.yml` — upstream commitperclip bot
+  workflow (PR review comments, quality gates) **disabled**: trigger reduced to
+  `workflow_dispatch` only. It requires the upstream-only `COMMITPERCLIP_KEY`
+  secret, targets upstream bot infrastructure, and uses `pull_request_target`
+  with secret access — not applicable to this fork, and it can never succeed
+  here. The Dependency Review capability it carried can be re-added to
+  `supply-chain.yml` once the repository's Dependency graph is enabled.
 
 ## Migration numbering contract
 
@@ -67,6 +74,31 @@ archived in the Dopaios repository under
 Ownership rule: Dopaios schema/function changes are made only through
 Dopai-authored migrations (0500+ region); `dopaios/message-db/` stays a pristine
 upstream snapshot for comparison. See `dopaios/message-db/PIN.md`.
+
+## OSV baseline (verification batch 1 correction)
+
+The committed `pnpm-lock.yaml` had never been regenerated after the security
+overrides were added, so the overridden versions (`undici`, `ws`, `vite@^6`)
+were still resolved in the lockfile and the OSV gate could never pass on CI —
+the clean re-scan recorded for Bước nền ran against a locally regenerated
+lockfile that was not committed. Corrected in verification batch 1:
+
+- Lockfile regenerated with `pnpm install --lockfile-only` (pnpm 9.15.4 via
+  corepack) so all overrides take effect.
+- Security overrides extended with same-major fixes only: `postcss 8.5.18`,
+  `qs 6.15.2`, `react-router 7.18.0`, `hono 4.12.27`, `ip-address 10.1.1`,
+  `js-yaml 4.3.0`, `path-to-regexp 8.4.0`, `@babel/core 7.29.6`,
+  `better-auth 1.6.22`, `body-parser 2.3.0`, `brace-expansion 1.1.16 / 5.0.8`,
+  `dompurify 3.4.12`, `fast-uri 3.1.4`, `form-data 4.0.6`, `esbuild 0.28.1`
+  (for the `^0.27` instance).
+- `osv-scanner.toml` records the accepted-risk baseline with reasons: packages
+  whose only fix crosses a major/breaking boundary (`tar 6.2.1`,
+  `@hono/node-server 1.19.13`, `@tootallnate/once 1.1.2`,
+  `brace-expansion 1.1.16`, `esbuild 0.18.20`, `vite 7.3.1` — vitest-internal,
+  and advisory `GHSA-qwww-vcr4-c8h2` on `react-router 7.18.0`) plus
+  `@anthropic-ai/sdk 0.81.0`, owned by KC-02 (engine/adapter decision). New
+  advisories against any other package still fail the gate. Review the whole
+  baseline at the next upstream sync or before the architecture freeze.
 
 ## Dopai-authored fixture catalog (verification batch 1)
 
