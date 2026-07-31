@@ -37,8 +37,12 @@ export const dopaiosArtifacts = pgTable(
     artifactState: text("artifact_state").notNull(),
     impactStatus: text("impact_status").notNull(),
     // KC-03: separation rule FS-002 SFR-013 tách theo định danh Staff đã TẠO
-    // revision — nullable vì event KC-01 cũ không mang trường này.
+    // revision; policy tra theo LOẠI artifact (SFR-014); AWC theo vùng chỉ
+    // trên loại có schema region (SFR-024/025). Nullable vì event KC-01 cũ
+    // không mang các trường này.
     createdBy: text("created_by"),
+    artifactType: text("artifact_type"),
+    hasRegionSchema: boolean("has_region_schema"),
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );

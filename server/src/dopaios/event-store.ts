@@ -246,6 +246,8 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         artifactState: d["artifactState"],
         impactStatus: d["impactStatus"],
         createdBy: d["createdBy"] ?? null,
+        artifactType: d["artifactType"] ?? null,
+        hasRegionSchema: d["hasRegionSchema"] ?? null,
       });
       break;
     case "ArtifactStateChanged":

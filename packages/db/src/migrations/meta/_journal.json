@@ -995,6 +995,13 @@
       "when": 1785513600000,
       "tag": "0507_dopaios_kc03_approval_engine",
       "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1785513700000,
+      "tag": "0508_dopaios_kc03_artifact_type",
+      "breakpoints": true
     }
   ]
 }
