@@ -1,8 +1,14 @@
 name: commitperclip PR Review
 
+# DISABLED IN THE DOPAI FORK (verification batch 1 supply-chain baseline):
+# this is upstream commitperclip bot infrastructure. It requires the
+# upstream-only COMMITPERCLIP_KEY secret (absent here, so the job can never
+# succeed) and its Dependency Review step needs the repository Dependency
+# graph. Trigger reduced to manual-only; see PROVENANCE.md. The Dependency
+# Review capability can be re-added to supply-chain.yml once Dependency graph
+# is enabled for the repository.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
+  workflow_dispatch: {}
 
 # Always runs from base branch context — never executes PR code.
 # pull_request_target gives access to secrets for untrusted fork PRs.
