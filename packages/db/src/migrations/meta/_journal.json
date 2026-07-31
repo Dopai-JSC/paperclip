@@ -946,6 +946,34 @@
       "when": 1785377000000,
       "tag": "0500_dopai_reserved",
       "breakpoints": true
+    },
+    {
+      "idx": 501,
+      "version": "7",
+      "when": 1785473511040,
+      "tag": "0501_dopaios_event_store",
+      "breakpoints": true
+    },
+    {
+      "idx": 502,
+      "version": "7",
+      "when": 1785474681378,
+      "tag": "0502_dopaios_kc01_projections",
+      "breakpoints": true
+    },
+    {
+      "idx": 503,
+      "version": "7",
+      "when": 1785475269601,
+      "tag": "0503_dopaios_kc01_run_completed_at",
+      "breakpoints": true
+    },
+    {
+      "idx": 504,
+      "version": "7",
+      "when": 1785475638572,
+      "tag": "0504_dopaios_kc01_baselines",
+      "breakpoints": true
     }
   ]
 }
