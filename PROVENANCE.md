@@ -75,6 +75,21 @@ Ownership rule: Dopaios schema/function changes are made only through
 Dopai-authored migrations (0500+ region); `dopaios/message-db/` stays a pristine
 upstream snapshot for comparison. See `dopaios/message-db/PIN.md`.
 
+## Agent SDK session-store example copy (KC-02)
+
+| Field | Value |
+|---|---|
+| Upstream | https://github.com/anthropics/claude-agent-sdk-typescript |
+| Pin | tag `v0.3.220` = commit `71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b` |
+| Copied | 2026-07-31, `examples/session-stores/postgres/src/PostgresSessionStore.ts` (verbatim) and `examples/session-stores/shared/conformance.ts` (one-line deviation: `bun:test` → `vitest`) into `server/src/dopaios/session-store/` |
+| License | MIT (example code, not published to npm) |
+| Role | Reference SessionStore→Postgres adapter + the SDK's 13-check conformance suite for KC-02; Dopai hardening (uuid dedupe for SDK append retries) lives in `DopaiosSessionStore.ts` on top, never edits the copies |
+
+Runtime dependencies added for KC-02: `@anthropic-ai/claude-agent-sdk@0.3.220`
+(exact pin — V2 experimental API was removed in 0.3.142, do not float),
+`pg ^8.13.0` (same driver family already in the graph). Both under
+Anthropic Commercial ToS / MIT respectively.
+
 ## OSV baseline (verification batch 1 correction)
 
 The committed `pnpm-lock.yaml` had never been regenerated after the security

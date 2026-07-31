@@ -14,6 +14,10 @@ import {
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
   dopaiosProductBaselines,
+  dopaiosAiSessions,
+  dopaiosSessionArtifacts,
+  dopaiosActivations,
+  dopaiosAuthBreakers,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -251,6 +255,91 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ impactStatus: d["impactStatus"] })
         .where(sql`${dopaiosArtifacts.id} = ${d["artifactId"]} AND ${dopaiosArtifacts.revision} = ${d["revision"]}`);
       break;
+    case "AiSessionStarted":
+      await tx.insert(dopaiosAiSessions).values({
+        id: d["sessionId"],
+        workItemId: d["workItemId"],
+        agentId: d["agentId"],
+        engine: d["engine"],
+        state: "RUNNING",
+        predecessorId: d["predecessorId"] ?? null,
+        relation: d["relation"] ?? null,
+        lastSignalAt: event.time,
+      });
+      break;
+    case "AiSessionSignal":
+      await tx
+        .update(dopaiosAiSessions)
+        .set({ lastSignalAt: event.time })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
+    case "AiSessionArtifactRecorded":
+      await tx.insert(dopaiosSessionArtifacts).values({
+        sessionId: d["sessionId"],
+        seq: d["seq"],
+        kind: d["kind"],
+        ref: d["ref"],
+        sha256: d["sha256"],
+        confirmed: d["confirmed"],
+      });
+      break;
+    case "AiSessionInterrupted":
+      await tx
+        .update(dopaiosAiSessions)
+        .set({ state: "INTERRUPTED", detectionLatencyMs: d["detectionLatencyMs"] })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
+    case "AiSessionTerminal":
+      await tx
+        .update(dopaiosAiSessions)
+        .set({ state: "TERMINAL", outcome: d["outcome"] })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
+    case "ActivationRequested":
+      await tx.insert(dopaiosActivations).values({
+        id: d["activationId"],
+        workItemId: d["workItemId"],
+        agentId: d["agentId"],
+        engine: d["engine"],
+        state: "QUEUED",
+      });
+      break;
+    case "ActivationClaimed":
+      await tx
+        .update(dopaiosActivations)
+        .set({ state: "RUNNING", claimedBy: d["claimedBy"] })
+        .where(eq(dopaiosActivations.id, d["activationId"]));
+      break;
+    case "ActivationCompleted":
+      await tx
+        .update(dopaiosActivations)
+        .set({ state: "DONE", outcome: d["outcome"] })
+        .where(eq(dopaiosActivations.id, d["activationId"]));
+      break;
+    case "AuthFailureRecorded":
+      await tx
+        .insert(dopaiosAuthBreakers)
+        .values({ id: d["breakerId"], state: "CLOSED", consecutiveFailures: d["count"] })
+        .onConflictDoUpdate({
+          target: dopaiosAuthBreakers.id,
+          set: { consecutiveFailures: d["count"] },
+        });
+      break;
+    case "BreakerTripped":
+      await tx
+        .update(dopaiosAuthBreakers)
+        .set({ state: "OPEN" })
+        .where(eq(dopaiosAuthBreakers.id, d["breakerId"]));
+      break;
+    case "BreakerReset":
+      await tx
+        .insert(dopaiosAuthBreakers)
+        .values({ id: d["breakerId"], state: "CLOSED", consecutiveFailures: 0 })
+        .onConflictDoUpdate({
+          target: dopaiosAuthBreakers.id,
+          set: { state: "CLOSED", consecutiveFailures: 0 },
+        });
+      break;
     case "BaselinePinned":
       await tx.insert(dopaiosProductBaselines).values({
         id: d["baselineId"],
@@ -385,6 +474,10 @@ const PROJECTION_TABLES = [
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
   dopaiosProductBaselines,
+  dopaiosAiSessions,
+  dopaiosSessionArtifacts,
+  dopaiosActivations,
+  dopaiosAuthBreakers,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {
