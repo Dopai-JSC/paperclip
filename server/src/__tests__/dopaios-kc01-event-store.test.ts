@@ -365,7 +365,14 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
           return {};
         },
       }),
-    ).rejects.toThrow(/Wrong expected version/);
+    ).rejects.toSatisfy((error: unknown) => {
+      for (let current = error; current; current = (current as { cause?: unknown }).cause) {
+        if (/Wrong expected version/.test(String((current as Error).message ?? current))) {
+          return true;
+        }
+      }
+      return false;
+    });
   });
 
   it("SQR-003: replay from the event log alone reconstructs all seven state types byte-identically", async () => {
