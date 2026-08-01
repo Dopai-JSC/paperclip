@@ -26,6 +26,8 @@ import {
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosQualityContracts,
+  dopaiosRunSteps,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -174,6 +176,25 @@ export type CommandContext = {
 // `emit` that writes the event AND applies the shared projector inside the
 // same transaction — the event row is always written before the projection
 // update, and both commit or roll back together (REC-001: no partial records).
+//
+// KC-14 B7 (blocker vòng review đối kháng — write-skew): transaction chạy ở
+// SERIALIZABLE. Với READ COMMITTED, guard đọc projection TRƯỚC khi chiếm khóa
+// category của message-db, nên hai lệnh hợp lệ riêng lẻ chạy song song có thể
+// cùng commit và tạo trạng thái cấm (approve × nộp bản sửa, cancel × nộp,
+// hai quyết định trên một yêu cầu…). SSI của Postgres phát hiện các đan xen
+// đó và hủy một bên (40001); deadlock advisory-lock đa-category (40P01) cũng
+// được giải cùng cơ chế: executeCommand retry trọn transaction — an toàn vì
+// idempotency theo command_id, handler thuần đọc-tx + emit. Hai thực thi song
+// song CÙNG command_id đều thấy 0 hàng (FOR UPDATE không khóa hàng chưa có):
+// bên thua vỡ unique 23505 trên dopaios_commands và được quy đổi thành
+// idempotent replay / payload mismatch thay vì lỗi thô.
+const SERIALIZATION_RETRIES = 5;
+
+function pgErrorCode(error: unknown): string | undefined {
+  const cause = (error as { cause?: { code?: string } })?.cause;
+  return (error as { code?: string })?.code ?? cause?.code;
+}
+
 export async function executeCommand(
   db: Db,
   input: {
@@ -184,41 +205,65 @@ export async function executeCommand(
 ): Promise<CommandResult> {
   const hash = payloadSha256(input.payload);
 
-  return await db.transaction(async (tx) => {
-    const existing = (await tx.execute(sql`
-      SELECT payload_sha256, result FROM dopaios_commands
-      WHERE command_id = ${input.commandId}
-      FOR UPDATE
-    `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+        const existing = (await tx.execute(sql`
+          SELECT payload_sha256, result FROM dopaios_commands
+          WHERE command_id = ${input.commandId}
+          FOR UPDATE
+        `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
 
-    if (existing.length > 0) {
-      if (existing[0].payload_sha256 !== hash) {
-        throw new CommandPayloadMismatchError(input.commandId);
+        if (existing.length > 0) {
+          if (existing[0].payload_sha256 !== hash) {
+            throw new CommandPayloadMismatchError(input.commandId);
+          }
+          return { ...existing[0].result, idempotentReplay: true };
+        }
+
+        const emit: CommandContext["emit"] = async (eventInput) => {
+          const position = await writeEvent(tx, eventInput);
+          const events = await readStream(tx, eventInput.streamName);
+          const written = events.find((event) => event.position === position);
+          if (!written) {
+            throw new Error(`Event just written to ${eventInput.streamName} not readable in-transaction`);
+          }
+          await projectEvent(tx, written);
+          return position;
+        };
+
+        const result = await input.handler({ tx, emit }, input.payload);
+
+        await tx.insert(dopaiosCommands).values({
+          commandId: input.commandId,
+          payloadSha256: hash,
+          result,
+        });
+
+        return result;
+      });
+    } catch (error) {
+      const code = pgErrorCode(error);
+      // Bên thua của cuộc đua cùng command_id: quy đổi thành replay/mismatch.
+      if (code === "23505" && String((error as Error).message ?? error).includes("dopaios_commands")) {
+        const stored = (await db.execute(sql`
+          SELECT payload_sha256, result FROM dopaios_commands WHERE command_id = ${input.commandId}
+        `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
+        if (stored.length > 0) {
+          if (stored[0].payload_sha256 !== hash) {
+            throw new CommandPayloadMismatchError(input.commandId);
+          }
+          return { ...stored[0].result, idempotentReplay: true };
+        }
       }
-      return { ...existing[0].result, idempotentReplay: true };
+      // Serialization failure / deadlock: thử lại trọn transaction.
+      if ((code === "40001" || code === "40P01") && attempt < SERIALIZATION_RETRIES) {
+        continue;
+      }
+      throw error;
     }
-
-    const emit: CommandContext["emit"] = async (eventInput) => {
-      const position = await writeEvent(tx, eventInput);
-      const events = await readStream(tx, eventInput.streamName);
-      const written = events.find((event) => event.position === position);
-      if (!written) {
-        throw new Error(`Event just written to ${eventInput.streamName} not readable in-transaction`);
-      }
-      await projectEvent(tx, written);
-      return position;
-    };
-
-    const result = await input.handler({ tx, emit }, input.payload);
-
-    await tx.insert(dopaiosCommands).values({
-      commandId: input.commandId,
-      payloadSha256: hash,
-      result,
-    });
-
-    return result;
-  });
+  }
 }
 
 // Single projector shared by live execution and replay (SQR-003).
@@ -432,6 +477,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         executor: d["executor"] ?? null,
         projectId: d["projectId"] ?? null,
         role: d["role"] ?? null,
+        // KC-14: biến thể rework của SFR-022 mang liên kết bản trước.
+        reworkOfWorkItemId: d["reworkOfWorkItemId"] ?? null,
+        reworkOfOutputRef: d["reworkOfOutputRef"] ?? null,
       });
       break;
     // KC-13 B4: kết quả định tuyến — đích + căn cứ chọn (FR-42).
@@ -454,6 +502,10 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         workItemId: d["workItemId"],
         state: d["state"],
         contentSha256: d["contentSha256"],
+        // KC-14: pin Hợp đồng chất lượng lúc nộp + quan hệ thay thế (SFR-030).
+        qualityContractRef: d["qualityContractRef"] ?? null,
+        checkEvidence: d["checkEvidence"] ?? null,
+        replacesRevision: d["replacesRevision"] ?? null,
       });
       break;
     case "OutputVersionStateChanged":
@@ -470,6 +522,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         kind: d["kind"],
         state: "OPEN",
         runId: d["runId"],
+        // KC-14: yêu cầu link gói để vô hiệu theo target đổi (SFR-031).
+        packageId: d["packageId"] ?? null,
+        packageRevision: d["packageRevision"] ?? null,
       });
       break;
     case "ActionRequestStateChanged":
@@ -708,6 +763,71 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           sql`${dopaiosExecutionContracts.id} = ${d["contractId"]} AND ${dopaiosExecutionContracts.revision} = ${d["revision"]}`,
         );
       break;
+    // ===== KC-14: hai vòng đời thực hiện và chất lượng =====
+    // Nội dung Hợp đồng chất lượng theo (id, revision); hiệu lực do guard đọc
+    // sổ artifact FS-002 trong cùng transaction (QD-2 kế hoạch KC-14).
+    case "QualityContractRegistered":
+      await tx.insert(dopaiosQualityContracts).values({
+        id: d["contractId"],
+        revision: d["revision"],
+        outputType: d["outputType"],
+        requiredChecks: d["requiredChecks"],
+        sha256: d["sha256"],
+        registeredBy: d["registeredBy"],
+      });
+      break;
+    // Bằng chứng của MỘT loại kiểm gắn vào đúng phiên bản đầu ra; merge jsonb
+    // tuần tự theo global_position nên replay tái dựng đúng (SQR-003).
+    case "OutputVersionCheckEvidenceAdded":
+      await tx
+        .update(dopaiosOutputVersions)
+        .set({
+          checkEvidence: sql`coalesce(${dopaiosOutputVersions.checkEvidence}, '{}'::jsonb) || ${JSON.stringify({ [d["checkKey"] as string]: d["evidence"] })}::jsonb`,
+        })
+        .where(
+          sql`${dopaiosOutputVersions.id} = ${d["outputId"]} AND ${dopaiosOutputVersions.revision} = ${d["revision"]}`,
+        );
+      break;
+    // Approval hết hiệu lực (SFR-031/034): lifecycle của phiên bản KHÔNG đổi,
+    // chỉ record mang invalidated_at/invalidation_reason từ event bất biến.
+    case "ApprovalInvalidated":
+      await tx
+        .update(dopaiosApprovalRecords)
+        .set({ invalidatedAt: event.time, invalidationReason: d["reason"] })
+        .where(eq(dopaiosApprovalRecords.id, d["recordId"]));
+      break;
+    // Yêu cầu liên kết gói vô hiệu do target đổi (SFR-031, DEV-009): terminal
+    // của revision, KHÔNG ghi quan hệ tới record tương lai.
+    case "ActionRequestInvalidated":
+      await tx
+        .update(dopaiosActionRequests)
+        .set({ state: "SUPERSEDED-TARGET-CHANGED", invalidation: d["invalidation"] })
+        .where(eq(dopaiosActionRequests.id, d["requestId"]));
+      break;
+    // Bước mở theo approval (SFR-029) — upsert để tái mở sau tái chặn giữ
+    // đúng một hàng theo (run, step).
+    case "RunStepOpened":
+      await tx
+        .insert(dopaiosRunSteps)
+        .values({
+          runId: d["runId"],
+          stepId: d["stepId"],
+          state: "open",
+          openedByRecordId: d["recordId"] ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [dopaiosRunSteps.runId, dopaiosRunSteps.stepId],
+          set: { state: "open", openedByRecordId: (d["recordId"] ?? null) as string | null },
+        });
+      break;
+    case "RunStepReblocked":
+      await tx
+        .update(dopaiosRunSteps)
+        .set({ state: "reblocked" })
+        .where(
+          sql`${dopaiosRunSteps.runId} = ${d["runId"]} AND ${dopaiosRunSteps.stepId} = ${d["stepId"]}`,
+        );
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
@@ -740,6 +860,8 @@ const PROJECTION_TABLES = [
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosQualityContracts,
+  dopaiosRunSteps,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

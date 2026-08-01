@@ -44,6 +44,8 @@ import {
   type RunnerFixtureConfig,
   type RunnerProjectConfig,
 } from "../dopaios/runner.ts";
+import { qualityContractContentSha256 } from "../dopaios/lifecycle.ts";
+import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
 
 // KC-13 B5: runner tick — AC-NFR-3.1 (work-item đủ điều kiện tự kích hoạt/
 // chuyển tiếp, 0 thao tác người trong đoạn máy-kiểm), SFR-011 (kích hoạt
@@ -61,13 +63,28 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 const SHA = "c".repeat(64);
+const SELF_SHA = "d".repeat(64);
+const REVIEW_SHA = "e".repeat(64);
 const TEMPLATE = { template_id: "BOOTSTRAP-PROJECT-TEMPLATE-001", revision: 1, sha256: SHA };
 const T0 = Date.UTC(2026, 7, 1, 8, 0, 0);
+
+// KC-14: chuỗi đầu ra phân rã — fixture config mang pin Hợp đồng chất lượng
+// và hash bằng chứng self-check/review (seed trong beforeAll).
+const QC_CHECKS = ["self-check", "independent-review"];
+const QC_REF = {
+  id: "QC-KC13-B5",
+  revision: 1,
+  sha256: qualityContractContentSha256({ outputType: "code-change", requiredChecks: QC_CHECKS }),
+};
 
 const FIXTURE: RunnerFixtureConfig = {
   executor: "FX-EXECUTOR",
   reviewer: "FX-REVIEWER",
   contentSha256: SHA,
+  outputType: "code-change",
+  qualityContractRef: QC_REF,
+  selfCheckSha256: SELF_SHA,
+  reviewSha256: REVIEW_SHA,
 };
 
 function contractFields(): Record<string, unknown> {
@@ -169,6 +186,13 @@ describeEmbeddedPostgres("dopaios KC-13 B5 — runner tick + lease requeue", () 
       pod: "POD-1",
       fixturePackage: { id: "FX-02", sha256: SHA },
     });
+    // KC-14: chuỗi đầu ra phân rã đòi pin Hợp đồng chất lượng lúc nộp.
+    await seedApprovedQualityContract(db, {
+      id: QC_REF.id,
+      outputType: "code-change",
+      requiredChecks: QC_CHECKS,
+      cmdPrefix: "KC13-B5",
+    });
 
     // Nền Project cho đường kích hoạt AI: shell → pool → manifest → P0-01.
     await createProjectShell(db, cmd("shell"), {
@@ -219,6 +243,7 @@ describeEmbeddedPostgres("dopaios KC-13 B5 — runner tick + lease requeue", () 
     expect(fired).toEqual([
       "activate-sop-run",
       "run-fixture-execution",
+      "validate-self-check",
       "run-fixture-review",
       "advance-to-decision",
     ]);

@@ -116,6 +116,16 @@ export async function detectOverdueConditions(
     FROM dopaios_conditions c
     JOIN dopaios_approval_records r ON r.id = c.record_id
     WHERE c.state = 'open' AND c.deadline < to_timestamp(${input.nowMs / 1000})
+      -- KC-14 (SFR-031/016): approval đã hết hiệu lực thì nghĩa vụ theo dõi
+      -- condition của nó kết thúc — watchdog không tuyên bố quá hạn nữa.
+      AND r.invalidated_at IS NULL
+      -- KC-14: watchdog này CHỈ phục vụ trục artifact FS-002; condition của
+      -- approval trên trục Phiên bản đầu ra đi qua detectOverdueRunConditions
+      -- (exceptions.ts) với side effect SFR-034 mức run.
+      AND EXISTS (
+        SELECT 1 FROM dopaios_artifacts a
+        WHERE a.id = r.target_id AND a.revision = r.target_revision
+      )
     ORDER BY c.id
   `)) as unknown as Array<{
     id: string;
@@ -128,11 +138,29 @@ export async function detectOverdueConditions(
   for (const row of overdue) {
     const deadlineMs = new Date(row.deadline).getTime();
     const exceptionPackageId = `EXC-${row.id}`;
-    await executeAuditedCommand(db, {
-      commandId: `OVERDUE-${row.id}-${deadlineMs}`,
-      payload: { conditionId: row.id, deadlineMs },
+    try {
+      await executeAuditedCommand(db, {
+        commandId: `OVERDUE-${row.id}-${deadlineMs}`,
+        payload: { conditionId: row.id, deadlineMs },
       handler: async (ctx, p) => {
         const conditionId = p["conditionId"] as string;
+        // KC-14 B7 (blocker review — cùng pattern requeueExpiredActivations):
+        // re-check trong transaction: condition còn open và approval còn
+        // hiệu lực; closeCondition/bản sửa chen giữa scan và handler thì
+        // lệnh chết, không tuyên bố quá hạn oan.
+        const fresh = (await ctx.tx.execute(sql`
+          SELECT c.state AS c_state, (r.invalidated_at IS NOT NULL) AS invalidated
+          FROM dopaios_conditions c
+          JOIN dopaios_approval_records r ON r.id = c.record_id
+          WHERE c.id = ${conditionId}
+          FOR UPDATE OF c, r
+        `)) as unknown as Array<{ c_state: string; invalidated: boolean }>;
+        if (fresh.length === 0 || fresh[0].c_state !== "open" || fresh[0].invalidated) {
+          throw new CommandRejectedError(
+            "ERR-OVERDUE-STALE",
+            `Condition ${conditionId} is no longer an open obligation of an effective approval`,
+          );
+        }
         await ctx.emit({
           streamName: `dopaiosCondition-${conditionId}`,
           type: "ConditionOverdueDeclared",
@@ -178,9 +206,13 @@ export async function detectOverdueConditions(
           expectedVersion: -1,
         });
         return { conditionId, exceptionPackageId };
-      },
-    });
-    declared.push({ conditionId: row.id, exceptionPackageId });
+        },
+      });
+      declared.push({ conditionId: row.id, exceptionPackageId });
+    } catch (error) {
+      // Ca stale (re-check trượt) đã để vệt audit — watchdog đi tiếp.
+      if (!(error instanceof CommandRejectedError)) throw error;
+    }
   }
   return declared;
 }

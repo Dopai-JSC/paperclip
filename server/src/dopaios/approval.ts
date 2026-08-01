@@ -125,6 +125,17 @@ export async function registerDraftArtifact(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-14: hàng đăng ký FS-002 guard "ID chưa retired" (SFR-004 — ID
+      // không tái sử dụng). Trước KC-14 chưa có lệnh retire nên guard này
+      // rỗng nghĩa; retire-artifact vào thì phải đóng tại đây.
+      const retired = await queryRows<{ revision: number }>(
+        ctx,
+        sql`SELECT revision FROM dopaios_artifacts
+            WHERE id = ${p["artifactId"]} AND artifact_state = 'retired' LIMIT 1`,
+      );
+      if (retired.length > 0) {
+        throw new CommandRejectedError("SFR-004", `Artifact ID ${p["artifactId"]} is retired and never reused`);
+      }
       const existing = await queryRows<{ max: number | null }>(
         ctx,
         sql`SELECT max(revision)::int AS max FROM dopaios_artifacts WHERE id = ${p["artifactId"]}`,

@@ -33,7 +33,10 @@ import {
   requestTestRun,
   reviewFixtureExecution,
   runFixtureExecution,
+  validateSelfCheck,
 } from "../dopaios/commands.ts";
+import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
+import type { QualityContractRef } from "../dopaios/lifecycle.ts";
 
 // KC-01 contract tests over the canonical batch-1 fixtures fx-01 and fx-02
 // (dopaios/fixtures). The embedded test database runs the full migration
@@ -225,6 +228,16 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
       revision: 1,
       sha256: sopSha256,
     });
+    // KC-14: chuỗi đầu ra phân rã đòi pin Hợp đồng chất lượng lúc nộp —
+    // seed hợp đồng đã duyệt theo đường sổ FS-002 (QD-2), hành vi S06–S07
+    // được kiểm không đổi.
+    const qcRef: QualityContractRef = await seedApprovedQualityContract(db, {
+      id: "QC-FX02",
+      outputType: "code-change",
+      requiredChecks: ["self-check", "independent-review"],
+      cmdPrefix: "CMD-FX02",
+      registeredBy: "STAFF-HUMAN-ORCH-001",
+    });
     await createSopDefinition(db, "CMD-FX02-S02", {
       definitionId: "SOPDEF-TEST-001",
       revision: 1,
@@ -266,14 +279,46 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
     });
     expect(reactivation).toMatchObject({ idempotentReplay: true });
 
+    const outputRev1Sha = fx02.components.find((c: { path: string }) =>
+      c.path.includes("t1-output-rev1"),
+    )?.sha256 as string;
+    const selfCheckRev1Sha = fx02.components.find((c: { path: string }) =>
+      c.path.includes("t1-selfcheck-rev1"),
+    )?.sha256 as string;
+    const reviewRev1Sha = fx02.components.find((c: { path: string }) =>
+      c.path.includes("t1-review-evidence-rev1"),
+    )?.sha256 as string;
+
     await runFixtureExecution(db, "CMD-FX02-S06", {
       workItemId: "WI-T1-001",
       executor: fx02.fixture_package.executor,
       outputId: "OUT-T1-001",
       outputRevision: 1,
-      contentSha256: fx02.components.find((c: { path: string }) => c.path.includes("t1-output-rev1"))
-        ?.sha256 as string,
+      contentSha256: outputRev1Sha,
+      outputType: "code-change",
+      qualityContractRef: qcRef,
     });
+
+    // KC-14: validate-self-check là hàng riêng SUBMITTED → SELF_CHECK với
+    // bằng chứng đúng hash pin trong gói fixture (t1-selfcheck-rev1).
+    await validateSelfCheck(db, "CMD-FX02-S06B", {
+      outputId: "OUT-T1-001",
+      outputRevision: 1,
+      evidence: {
+        ref: "t1-selfcheck-rev1.json",
+        sha256: selfCheckRev1Sha,
+        targetSha256: outputRev1Sha,
+        by: fx02.fixture_package.executor,
+      },
+      expectedSha256: selfCheckRev1Sha,
+    });
+
+    const reviewEvidenceRev1 = {
+      ref: "t1-review-evidence-rev1.json",
+      sha256: reviewRev1Sha,
+      targetSha256: outputRev1Sha,
+      conclusion: "ready",
+    };
 
     // SFR-019: reviewer must not equal executor.
     await expect(
@@ -283,6 +328,8 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
         outputRevision: 1,
         executor: fx02.fixture_package.executor,
         reviewer: fx02.fixture_package.executor,
+        reviewEvidence: reviewEvidenceRev1,
+        expectedReviewSha256: reviewRev1Sha,
       }),
     ).rejects.toBeInstanceOf(CommandRejectedError);
 
@@ -292,6 +339,8 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
       outputRevision: 1,
       executor: fx02.fixture_package.executor,
       reviewer: "FIXTURE-REVIEWER-001",
+      reviewEvidence: reviewEvidenceRev1,
+      expectedReviewSha256: reviewRev1Sha,
     });
 
     const refs = {

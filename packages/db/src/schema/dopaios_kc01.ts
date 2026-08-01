@@ -77,6 +77,10 @@ export const dopaiosWorkItems = pgTable("dopaios_work_items", {
   role: text("role"),
   routedTo: text("routed_to"),
   routingBasis: jsonb("routing_basis").$type<Record<string, unknown>>(),
+  // KC-14 (0512): biến thể rework của NONE → PROPOSED (FS-003 SFR-022) ghi
+  // liên kết work-item và phiên bản đầu ra trước; item terminal không mở lại.
+  reworkOfWorkItemId: text("rework_of_work_item_id"),
+  reworkOfOutputRef: jsonb("rework_of_output_ref").$type<Record<string, unknown>>(),
 });
 
 export const dopaiosOutputVersions = pgTable(
@@ -87,8 +91,43 @@ export const dopaiosOutputVersions = pgTable(
     workItemId: text("work_item_id").notNull(),
     state: text("state").notNull(),
     contentSha256: text("content_sha256").notNull(),
+    // KC-14 (0512): pin Hợp đồng chất lượng lúc nộp (không-"latest"), bằng
+    // chứng theo từng loại kiểm, quan hệ thay thế của bản sửa (SFR-030/045).
+    qualityContractRef: jsonb("quality_contract_ref").$type<Record<string, unknown>>(),
+    checkEvidence: jsonb("check_evidence").$type<Record<string, unknown>>(),
+    replacesRevision: integer("replaces_revision"),
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+// KC-14 (0512): projection NỘI DUNG của Hợp đồng chất lượng theo (id, revision).
+// Hiệu lực KHÔNG nằm ở bảng này — guard đọc sổ artifact FS-002 trong cùng
+// transaction: đăng ký loại 'quality-contract', approved, impact ∈ {clear,
+// reaffirmed} và đúng sha256 (QD-2 kế hoạch KC-14).
+export const dopaiosQualityContracts = pgTable(
+  "dopaios_quality_contracts",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    outputType: text("output_type").notNull(),
+    requiredChecks: jsonb("required_checks").$type<string[]>().notNull(),
+    sha256: text("sha256").notNull(),
+    registeredBy: text("registered_by").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+// KC-14 (0512): bước của run mở theo approval (SFR-029) và bị tái chặn đúng
+// impact set khi approval hết hiệu lực (SFR-050); slice chỉ cần open | reblocked.
+export const dopaiosRunSteps = pgTable(
+  "dopaios_run_steps",
+  {
+    runId: text("run_id").notNull(),
+    stepId: text("step_id").notNull(),
+    state: text("state").notNull(),
+    openedByRecordId: text("opened_by_record_id"),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.runId, table.stepId] }) }),
 );
 
 export const dopaiosActionRequests = pgTable("dopaios_action_requests", {
@@ -100,6 +139,9 @@ export const dopaiosActionRequests = pgTable("dopaios_action_requests", {
   // KC-03: Yêu cầu quyết định/exception gắn vào Gói quyết định (SFR-034/047).
   packageId: text("package_id"),
   packageRevision: integer("package_revision"),
+  // KC-14 (0512): kết thúc SUPERSEDED-TARGET-CHANGED (DEV-009) ghi lý do vô
+  // hiệu và dấu vết sự kiện làm target đổi.
+  invalidation: jsonb("invalidation").$type<Record<string, unknown>>(),
 });
 
 // KC-03: gói có revision + supersede (FS-003 SFR-047) — khóa (id, revision);
@@ -186,6 +228,8 @@ export const dopaiosProductBaselines = pgTable(
 // FS-003 SFR-028) — actor của lệnh CHÍNH LÀ người duyệt, không có trường
 // "người duyệt" tách rời (chống mạo danh). Các cột mới nullable vì event
 // ApprovalRecorded của KC-01 không mang chúng.
+// KC-14 (0512): approval trên trục đầu ra có thể HẾT HIỆU LỰC (SFR-031/034)
+// mà không viết lại lifecycle của phiên bản — invalidated_at/invalidation_reason.
 export const dopaiosApprovalRecords = pgTable("dopaios_approval_records", {
   id: text("id").primaryKey(),
   packageId: text("package_id").notNull(),
@@ -205,6 +249,8 @@ export const dopaiosApprovalRecords = pgTable("dopaios_approval_records", {
   reEntryPoint: text("re_entry_point"),
   expiry: jsonb("expiry").$type<Record<string, unknown>>(),
   requestedBy: text("requested_by"),
+  invalidatedAt: timestamp("invalidated_at"),
+  invalidationReason: text("invalidation_reason"),
 });
 
 // ===== KC-03: approval engine =====
