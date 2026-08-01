@@ -38,6 +38,8 @@
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
     "check:no-git-push": "node scripts/check-no-git-push.mjs",
     "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
+    "check:test-protection": "node scripts/check-test-protection.mjs",
+    "test:check-test-protection": "node --test scripts/check-test-protection.test.mjs",
     "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
     "smoke:hermes-gateway-join": "./scripts/smoke/hermes-gateway-join.sh",

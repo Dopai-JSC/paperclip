@@ -1,0 +1,25 @@
+# KC-04 B5 (Dopaios) — bảo vệ test bằng CI (FR-29, tiêu chí 4 KC-04, QD-4):
+# tác nhân sản xuất (namespace nhánh ai-prod/**) sửa/xóa/vô hiệu test hoặc CI
+# thì check này đỏ. Chạy trên mọi PR vào nhánh tích hợp spike/dopai/master để
+# chính PR kiểm chứng cũng có bằng chứng sống.
+name: Dopai test protection
+
+on:
+  pull_request:
+    branches: ["master", "main", "spike/**", "dopai/**"]
+
+jobs:
+  test-protection:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+      - name: Unit test luật bảo vệ
+        run: node --test scripts/check-test-protection.test.mjs
+      - name: Kiểm đường bảo vệ trên diff của PR
+        run: |
+          node scripts/check-test-protection.mjs \
+            "${{ github.event.pull_request.base.sha }}" \
+            "${{ github.event.pull_request.head.sha }}" \
+            "${{ github.event.pull_request.head.ref }}"
