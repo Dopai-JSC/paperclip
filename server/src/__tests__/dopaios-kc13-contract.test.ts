@@ -23,6 +23,7 @@ import {
   AI_ROLES,
 } from "../dopaios/routing.ts";
 import { compileExecutionContract } from "../dopaios/contract.ts";
+import { routeWorkItem } from "../dopaios/router.ts";
 import { requestActivation, claimActivation } from "../dopaios/activation.ts";
 
 // KC-13 B3: Hợp đồng thực hiện AI (PRD FR-63). Biên dịch từ bốn nguồn có
@@ -150,6 +151,8 @@ describeEmbeddedPostgres("dopaios KC-13 B3 — Hợp đồng thực hiện AI (F
       projectId: "PRJ-A",
       role: "AI-Lead",
     });
+    // B4: claim đòi work-item đã qua router (FR-15 hai thời điểm kiểm).
+    await routeWorkItem(db, cmd("route"), { workItemId: "WI-1" });
 
     await registerApprovedArtifact(db, cmd("sop-art"), {
       artifactId: "SOP-ART",

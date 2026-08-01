@@ -15,6 +15,7 @@ import {
 } from "./engine.js";
 import { executeAuditedCommand } from "./approval.js";
 import { requireActiveContract } from "./contract.js";
+import { requireClaimEligibility } from "./router.js";
 
 // KC-02 B5: bề mặt kích hoạt mà KC-13 sẽ gọi (FS-003 SFR-011 — kích hoạt
 // đúng-một-lần idempotent, claim compare-and-set theo DEV-010) và
@@ -88,24 +89,32 @@ export async function requestActivation(
 
 // Claim compare-and-set: chỉ thắng khi activation còn QUEUED trên chính
 // snapshot của transaction — hai claimer song song thì đúng một bên thắng.
+// KC-13 B4: với work-item gắn Project, bốn điều kiện FR-15 được kiểm LẠI
+// tại thời điểm claim (trạng thái có thể đã đổi từ lúc route) và claimer
+// phải đúng Staff đã được định tuyến; đường run test KC-01/KC-02 giữ nguyên.
 export async function claimActivation(
   db: Db,
   commandId: string,
   payload: { activationId: string; claimedBy: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const rows = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_activations WHERE id = ${p["activationId"]} FOR UPDATE
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, work_item_id FROM dopaios_activations
+        WHERE id = ${p["activationId"]} FOR UPDATE
+      `)) as unknown as Array<{ state: string; work_item_id: string }>;
       if (rows.length === 0) {
         throw new CommandRejectedError("ERR-ACTIVATION", "Activation not found");
       }
       if (rows[0].state !== "QUEUED") {
         throw new CommandRejectedError("DEV-010", "Activation already claimed");
       }
+      await requireClaimEligibility(ctx, {
+        workItemId: rows[0].work_item_id,
+        claimedBy: p["claimedBy"] as string,
+      });
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
         type: "ActivationClaimed",

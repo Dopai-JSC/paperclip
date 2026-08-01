@@ -73,6 +73,10 @@ export const dopaiosWorkItems = pgTable("dopaios_work_items", {
   state: text("state").notNull(),
   executor: text("executor"),
   projectId: text("project_id"),
+  // KC-13 (0511): vai AI của việc + đích định tuyến + căn cứ chọn (FR-42).
+  role: text("role"),
+  routedTo: text("routed_to"),
+  routingBasis: jsonb("routing_basis").$type<Record<string, unknown>>(),
 });
 
 export const dopaiosOutputVersions = pgTable(

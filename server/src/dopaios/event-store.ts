@@ -414,7 +414,15 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         state: d["state"],
         executor: d["executor"] ?? null,
         projectId: d["projectId"] ?? null,
+        role: d["role"] ?? null,
       });
+      break;
+    // KC-13 B4: kết quả định tuyến — đích + căn cứ chọn (FR-42).
+    case "WorkItemRouted":
+      await tx
+        .update(dopaiosWorkItems)
+        .set({ routedTo: d["staffId"], routingBasis: d["basis"] })
+        .where(eq(dopaiosWorkItems.id, d["workItemId"]));
       break;
     case "WorkItemStateChanged":
       await tx
