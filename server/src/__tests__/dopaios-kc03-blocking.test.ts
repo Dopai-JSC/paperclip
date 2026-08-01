@@ -14,10 +14,12 @@ import {
   requestTestRun,
   activateSopRun,
   runFixtureExecution,
+  validateSelfCheck,
   reviewFixtureExecution,
   advanceToDecision,
   pinProductBaseline,
 } from "../dopaios/commands.ts";
+import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
 import {
   assembleDecisionPackage,
   createGateRecord,
@@ -189,11 +191,19 @@ describeEmbeddedPostgres("dopaios KC-03 B5 — 12 ca chặn FX-03", () => {
       decider: "STAFF-APPROVER", pod: "POD-B5", fixturePackage: {},
     });
     await activateSopRun(db, cmd("act"), { runId: "RUN-B5", workItemId: "WI-B5" });
+    const qcRef = await seedApprovedQualityContract(db, {
+      id: "QC-KC03-B4",
+      outputType: "code-change",
+      requiredChecks: ["self-check", "independent-review"],
+      cmdPrefix: "KC03-B4",
+    });
     await runFixtureExecution(db, cmd("exec"), {
       workItemId: "WI-B5", executor: "AI-BUILD", outputId: "OUT-B5",
       outputRevision: 1, contentSha256: SHA,
+      outputType: "code-change", qualityContractRef: qcRef,
     });
-    // Output mới SELF_CHECK — trình duyệt khi chưa kiểm độc lập bị chặn.
+    // Output mới SUBMITTED (KC-14 phân rã chuỗi) — trình duyệt khi chưa qua
+    // tự kiểm + kiểm độc lập bị chặn.
     const blockedId = cmd("adv-blocked");
     await expect(
       advanceToDecision(db, blockedId, {
@@ -202,9 +212,16 @@ describeEmbeddedPostgres("dopaios KC-03 B5 — 12 ca chặn FX-03", () => {
         refs: { evidence: "ev-out-b5" }, requestId: "REQ-B5",
       }),
     ).rejects.toMatchObject({ code: "AC-FR-24.2" });
+    await validateSelfCheck(db, cmd("self"), {
+      outputId: "OUT-B5", outputRevision: 1,
+      evidence: { ref: "SC-B5", sha256: SHA_OTHER, targetSha256: SHA, by: "AI-BUILD" },
+      expectedSha256: SHA_OTHER,
+    });
     await reviewFixtureExecution(db, cmd("review"), {
       workItemId: "WI-B5", outputId: "OUT-B5", outputRevision: 1,
       executor: "AI-BUILD", reviewer: "AI-REVIEWER",
+      reviewEvidence: { ref: "RE-B5", sha256: SHA_OTHER, targetSha256: SHA, conclusion: "ready" },
+      expectedReviewSha256: SHA_OTHER,
     });
     const advanced = await advanceToDecision(db, cmd("adv-ok"), {
       runId: "RUN-B5", outputId: "OUT-B5", outputRevision: 1,

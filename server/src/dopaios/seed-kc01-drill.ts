@@ -14,7 +14,9 @@ import {
   requestTestRun,
   reviewFixtureExecution,
   runFixtureExecution,
+  validateSelfCheck,
 } from "./commands.js";
+import { registerQualityContract, qualityContractContentSha256 } from "./lifecycle.js";
 
 // KC-01 drill seeder: drives the canonical fixture chain (fx-01 C01 +
 // fx-02 S01–S10) against DATABASE_URL so the schema-evolution and
@@ -36,6 +38,16 @@ const templateSha256 = fx01.components[0].sha256 as string;
 const sopSha256 = fx02.components[0].sha256 as string;
 const outputSha256 = fx02.components.find((c: { path: string }) => c.path.includes("t1-output-rev1"))
   ?.sha256 as string;
+const selfCheckSha256 = fx02.components.find((c: { path: string }) => c.path.includes("t1-selfcheck-rev1"))
+  ?.sha256 as string;
+const reviewSha256 = fx02.components.find((c: { path: string }) =>
+  c.path.includes("t1-review-evidence-rev1"),
+)?.sha256 as string;
+
+// KC-14: Hợp đồng chất lượng đã duyệt theo đường sổ FS-002 (QD-2).
+const QC_CHECKS = ["self-check", "independent-review"];
+const qcSha256 = qualityContractContentSha256({ outputType: "code-change", requiredChecks: QC_CHECKS });
+const qcRef = { id: "QC-FX02", revision: 1, sha256: qcSha256 };
 
 for (const [actorId, description] of Object.entries<string>(fx01.actors)) {
   const capabilities: string[] = [];
@@ -79,12 +91,38 @@ await requestTestRun(db, "CMD-FX02-S04", {
   fixturePackage: { executor: fx02.fixture_package.executor },
 });
 await activateSopRun(db, "CMD-FX02-S05", { runId: "RUN-T-001", workItemId: "WI-T1-001" });
+await registerApprovedArtifact(db, "CMD-FX02-QC-LEDGER", {
+  artifactId: qcRef.id,
+  revision: qcRef.revision,
+  sha256: qcSha256,
+  artifactType: "quality-contract",
+});
+await registerQualityContract(db, "CMD-FX02-QC-CONTENT", {
+  contractId: qcRef.id,
+  revision: qcRef.revision,
+  outputType: "code-change",
+  requiredChecks: QC_CHECKS,
+  registeredBy: "STAFF-HUMAN-ORCH-001",
+});
 await runFixtureExecution(db, "CMD-FX02-S06", {
   workItemId: "WI-T1-001",
   executor: fx02.fixture_package.executor,
   outputId: "OUT-T1-001",
   outputRevision: 1,
   contentSha256: outputSha256,
+  outputType: "code-change",
+  qualityContractRef: qcRef,
+});
+await validateSelfCheck(db, "CMD-FX02-S06B", {
+  outputId: "OUT-T1-001",
+  outputRevision: 1,
+  evidence: {
+    ref: "t1-selfcheck-rev1.json",
+    sha256: selfCheckSha256,
+    targetSha256: outputSha256,
+    by: fx02.fixture_package.executor,
+  },
+  expectedSha256: selfCheckSha256,
 });
 await reviewFixtureExecution(db, "CMD-FX02-S07", {
   workItemId: "WI-T1-001",
@@ -92,6 +130,13 @@ await reviewFixtureExecution(db, "CMD-FX02-S07", {
   outputRevision: 1,
   executor: fx02.fixture_package.executor,
   reviewer: "FIXTURE-REVIEWER-001",
+  reviewEvidence: {
+    ref: "t1-review-evidence-rev1.json",
+    sha256: reviewSha256,
+    targetSha256: outputSha256,
+    conclusion: "ready",
+  },
+  expectedReviewSha256: reviewSha256,
 });
 const refs = {
   output: { id: "OUT-T1-001", revision: 1 },

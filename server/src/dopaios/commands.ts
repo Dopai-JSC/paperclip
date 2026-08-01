@@ -7,6 +7,7 @@ import {
   payloadSha256,
   CommandRejectedError,
 } from "./event-store.js";
+import { validateQualityContractPin } from "./lifecycle.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -104,11 +105,12 @@ export async function createProjectShell(
 }
 
 // fx-02 S01: register the business-test SOP artifact as approved in the
-// FS-002 ledger slice.
+// FS-002 ledger slice. KC-14: optional artifactType passthrough so fixtures
+// can bootstrap quality-contract ledger rows (hàng đăng ký bootstrap FS-002).
 export async function registerApprovedArtifact(
   db: Db,
   commandId: string,
-  payload: { artifactId: string; revision: number; sha256: string },
+  payload: { artifactId: string; revision: number; sha256: string; artifactType?: string },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
@@ -284,8 +286,13 @@ export async function activateSopRun(
   });
 }
 
-// fx-02 S06: run-fixture-execution — CLAIMED → IN_PROGRESS → SUBMITTED in one
-// atomic transaction (SFR-049) plus the first output version.
+// fx-02 S06: run-fixture-execution theo đúng bảng work-item FS-003 (KC-14):
+// ready-check máy-kiểm (ACCEPTED → READY — guard là pin Hợp đồng chất lượng
+// hợp lệ, dependency máy-kiểm của bước) rồi ba giai đoạn CLAIMED →
+// IN_PROGRESS → SUBMITTED trong MỘT transaction (SFR-049 — hai trạng thái
+// giữa không bền vững giữa hai lệnh). Phiên bản đầu ra vào trục qua
+// DRAFT → SUBMITTED cùng transaction — không đường tắt NONE → SUBMITTED,
+// không tồn tại DRAFT bền vững (bảng đầu ra FS-003).
 export async function runFixtureExecution(
   db: Db,
   commandId: string,
@@ -295,6 +302,8 @@ export async function runFixtureExecution(
     outputId: string;
     outputRevision: number;
     contentSha256: string;
+    outputType: string;
+    qualityContractRef: { id: string; revision: number; sha256: string };
   },
 ): Promise<CommandResult> {
   return executeCommand(db, {
@@ -308,34 +317,190 @@ export async function runFixtureExecution(
       if (!workItem || workItem.state !== "ACCEPTED") {
         throw new CommandRejectedError("DEV-010", "Work item is not ACCEPTED");
       }
+      // Ready-check (hàng ACCEPTED → READY): guard máy-kiểm được của bước —
+      // pin Hợp đồng chất lượng hợp lệ trên cùng snapshot (SFR-017).
+      await validateQualityContractPin(
+        ctx,
+        p["qualityContractRef"] as { id: string; revision: number; sha256: string },
+        p["outputType"] as string,
+      );
       const stream = `dopaiosWorkItem-${p["workItemId"]}`;
-      for (const state of ["CLAIMED", "IN_PROGRESS", "SUBMITTED"]) {
+      for (const state of ["READY", "CLAIMED", "IN_PROGRESS", "SUBMITTED"]) {
         await ctx.emit({
           streamName: stream,
           type: "WorkItemStateChanged",
           data: { workItemId: p["workItemId"], state, executor: p["executor"] },
         });
       }
+      const outputStream = `dopaiosOutput-${p["outputId"]}`;
       await ctx.emit({
-        streamName: `dopaiosOutput-${p["outputId"]}`,
+        streamName: outputStream,
         type: "OutputVersionRecorded",
         data: {
           outputId: p["outputId"],
           revision: p["outputRevision"],
           workItemId: p["workItemId"],
-          state: "SELF_CHECK",
+          state: "DRAFT",
           contentSha256: p["contentSha256"],
+          qualityContractRef: p["qualityContractRef"],
         },
         expectedVersion: -1,
       });
-      return { workItemId: p["workItemId"] as string, state: "SUBMITTED" };
+      await ctx.emit({
+        streamName: outputStream,
+        type: "OutputVersionStateChanged",
+        data: { outputId: p["outputId"], revision: p["outputRevision"], state: "SUBMITTED" },
+      });
+      return { workItemId: p["workItemId"] as string, state: "SUBMITTED", outputState: "SUBMITTED" };
     },
   });
 }
 
-// fx-02 S07: self-check then independent review — reviewer must differ from
-// executor (SFR-019/020); output SELF_CHECK → INDEPENDENT_CHECK →
-// CHECK_PASSED; work item UNDER_REVIEW → COMPLETED.
+// Hàng SUBMITTED → SELF_CHECK: validate-self-check (runtime tự động). Guard:
+// run test đang RUNNING (SFR-057); bằng chứng self-check đúng hash đã pin
+// trong gói fixture và đúng target. Sai bằng chứng: TỪ CHỐI, giữ SUBMITTED —
+// lệnh nộp trước đó không bị ảnh hưởng (transaction riêng).
+export async function validateSelfCheck(
+  db: Db,
+  commandId: string,
+  payload: {
+    outputId: string;
+    outputRevision: number;
+    evidence: { ref: string; sha256: string; targetSha256: string; by: string };
+    expectedSha256: string;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const output = await one<{ state: string; content_sha256: string; work_item_id: string }>(
+        ctx,
+        sql`SELECT state, content_sha256, work_item_id FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output) {
+        throw new CommandRejectedError("ERR-TARGET", "Output version not found");
+      }
+      await requireRunningRunOfWorkItem(ctx, output.work_item_id);
+      if (output.state !== "SUBMITTED") {
+        throw new CommandRejectedError("ERR-STATE", `validate-self-check requires SUBMITTED, got ${output.state}`);
+      }
+      const evidence = p["evidence"] as { ref: string; sha256: string; targetSha256: string; by: string };
+      if (!evidence?.ref || !evidence?.sha256 || !evidence?.targetSha256 || !evidence?.by) {
+        throw new CommandRejectedError("ERR-002", "Self-check evidence is missing required fields");
+      }
+      if (evidence.sha256 !== (p["expectedSha256"] as string)) {
+        throw new CommandRejectedError("SFR-020", "Self-check evidence does not match the pinned hash");
+      }
+      if (evidence.targetSha256 !== output.content_sha256) {
+        throw new CommandRejectedError("SFR-020", "Self-check evidence does not target this output content");
+      }
+      const outputStream = `dopaiosOutput-${p["outputId"]}`;
+      await ctx.emit({
+        streamName: outputStream,
+        type: "OutputVersionCheckEvidenceAdded",
+        data: {
+          outputId: p["outputId"],
+          revision: p["outputRevision"],
+          checkKey: "self-check",
+          evidence,
+        },
+      });
+      await ctx.emit({
+        streamName: outputStream,
+        type: "OutputVersionStateChanged",
+        data: { outputId: p["outputId"], revision: p["outputRevision"], state: "SELF_CHECK" },
+      });
+      return { outputId: p["outputId"] as string, state: "SELF_CHECK" };
+    },
+  });
+}
+
+// Guard chung SFR-057: mọi lệnh/sự kiện trên record thuộc run terminal bị từ
+// chối kèm audit — đọc run của work-item trên cùng snapshot.
+async function requireRunningRunOfWorkItem(ctx: CommandContext, workItemId: string): Promise<string> {
+  const row = await one<{ run_id: string | null; run_state: string | null }>(
+    ctx,
+    sql`SELECT w.run_id, r.state AS run_state
+        FROM dopaios_work_items w
+        LEFT JOIN dopaios_sop_runs r ON r.id = w.run_id
+        WHERE w.id = ${workItemId}`,
+  );
+  if (!row || !row.run_id) {
+    throw new CommandRejectedError("ERR-TARGET", "Work item has no run — slice commands require a test run");
+  }
+  if (row.run_state !== "RUNNING") {
+    throw new CommandRejectedError("SFR-057", `Run ${row.run_id} is ${row.run_state} — command refused`);
+  }
+  return row.run_id;
+}
+
+// Đủ-bằng-chứng (runtime tự động, dùng chung): khi MỌI kiểm bắt buộc theo
+// Hợp đồng chất lượng ĐƯỢC PIN có bằng chứng hợp lệ — work-item UNDER_REVIEW
+// → COMPLETED trước, rồi side effect chuyển phiên bản INDEPENDENT_CHECK →
+// CHECK_PASSED qua đúng hàng bảng đầu ra (SFR-044). Thiếu kiểm: giữ nguyên,
+// lý do ghi trong kết quả lệnh bền vững (dopaios_commands).
+async function maybePassChecks(
+  ctx: CommandContext,
+  input: { outputId: string; outputRevision: number },
+): Promise<{ passed: boolean; missing: string[] }> {
+  const output = await one<{
+    state: string;
+    work_item_id: string;
+    quality_contract_ref: { id: string; revision: number; sha256: string } | null;
+    check_evidence: Record<string, unknown> | null;
+  }>(
+    ctx,
+    sql`SELECT state, work_item_id, quality_contract_ref, check_evidence
+        FROM dopaios_output_versions
+        WHERE id = ${input.outputId} AND revision = ${input.outputRevision}`,
+  );
+  if (!output || output.state !== "INDEPENDENT_CHECK") {
+    return { passed: false, missing: ["output not in INDEPENDENT_CHECK"] };
+  }
+  if (!output.quality_contract_ref) {
+    return { passed: false, missing: ["no quality contract pinned"] };
+  }
+  const contract = await one<{ required_checks: string[] }>(
+    ctx,
+    sql`SELECT required_checks FROM dopaios_quality_contracts
+        WHERE id = ${output.quality_contract_ref.id}
+          AND revision = ${output.quality_contract_ref.revision}`,
+  );
+  if (!contract) {
+    return { passed: false, missing: ["pinned quality contract content missing"] };
+  }
+  const evidence = output.check_evidence ?? {};
+  const missing = contract.required_checks.filter((check) => evidence[check] === undefined);
+  if (missing.length > 0) {
+    return { passed: false, missing };
+  }
+  const workItem = await one<{ state: string }>(
+    ctx,
+    sql`SELECT state FROM dopaios_work_items WHERE id = ${output.work_item_id}`,
+  );
+  if (workItem && workItem.state === "UNDER_REVIEW") {
+    await ctx.emit({
+      streamName: `dopaiosWorkItem-${output.work_item_id}`,
+      type: "WorkItemStateChanged",
+      data: { workItemId: output.work_item_id, state: "COMPLETED" },
+    });
+  }
+  await ctx.emit({
+    streamName: `dopaiosOutput-${input.outputId}`,
+    type: "OutputVersionStateChanged",
+    data: { outputId: input.outputId, revision: input.outputRevision, state: "CHECK_PASSED" },
+  });
+  return { passed: true, missing: [] };
+}
+
+// fx-02 S07: run-fixture-review — nhận review độc lập theo đúng hai bảng:
+// work-item SUBMITTED → UNDER_REVIEW (gắn Review Evidence, DEV-011), phiên
+// bản SELF_CHECK → INDEPENDENT_CHECK (validate-independent-check), rồi nếu
+// mọi kiểm bắt buộc theo Hợp đồng chất lượng đã có bằng chứng: COMPLETED +
+// CHECK_PASSED (SFR-044). Reviewer khác executor (SFR-019); Review Evidence
+// kết luận not-ready hoặc thiếu trường bị TỪ CHỐI TẠI CỬA (SFR-020).
 export async function reviewFixtureExecution(
   db: Db,
   commandId: string,
@@ -345,6 +510,8 @@ export async function reviewFixtureExecution(
     outputRevision: number;
     executor: string;
     reviewer: string;
+    reviewEvidence: { ref: string; sha256: string; targetSha256: string; conclusion: string };
+    expectedReviewSha256: string;
   },
 ): Promise<CommandResult> {
   return executeCommand(db, {
@@ -354,6 +521,46 @@ export async function reviewFixtureExecution(
       if (p["reviewer"] === p["executor"]) {
         throw new CommandRejectedError("SFR-019", "Reviewer must differ from executor");
       }
+      await requireRunningRunOfWorkItem(ctx, p["workItemId"] as string);
+      const workItem = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_work_items WHERE id = ${p["workItemId"]}`,
+      );
+      if (!workItem || workItem.state !== "SUBMITTED") {
+        throw new CommandRejectedError("ERR-STATE", "run-fixture-review requires work item SUBMITTED");
+      }
+      const output = await one<{ state: string; content_sha256: string }>(
+        ctx,
+        sql`SELECT state, content_sha256 FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output) {
+        throw new CommandRejectedError("ERR-TARGET", "Output version not found");
+      }
+      if (output.state !== "SELF_CHECK") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `validate-independent-check requires SELF_CHECK, got ${output.state}`,
+        );
+      }
+      const evidence = p["reviewEvidence"] as {
+        ref: string;
+        sha256: string;
+        targetSha256: string;
+        conclusion: string;
+      };
+      if (!evidence?.ref || !evidence?.sha256 || !evidence?.targetSha256 || !evidence?.conclusion) {
+        throw new CommandRejectedError("SFR-020", "Review Evidence is missing required fields");
+      }
+      if (evidence.conclusion !== "ready") {
+        throw new CommandRejectedError("SFR-020", "Review Evidence with a not-ready conclusion is refused at the door");
+      }
+      if (evidence.sha256 !== (p["expectedReviewSha256"] as string)) {
+        throw new CommandRejectedError("SFR-020", "Review Evidence does not match the pinned hash");
+      }
+      if (evidence.targetSha256 !== output.content_sha256) {
+        throw new CommandRejectedError("SFR-020", "Review Evidence does not target this output content");
+      }
       const workItemStream = `dopaiosWorkItem-${p["workItemId"]}`;
       const outputStream = `dopaiosOutput-${p["outputId"]}`;
       await ctx.emit({
@@ -361,19 +568,122 @@ export async function reviewFixtureExecution(
         type: "WorkItemStateChanged",
         data: { workItemId: p["workItemId"], state: "UNDER_REVIEW" },
       });
-      for (const state of ["INDEPENDENT_CHECK", "CHECK_PASSED"]) {
-        await ctx.emit({
-          streamName: outputStream,
-          type: "OutputVersionStateChanged",
-          data: { outputId: p["outputId"], revision: p["outputRevision"], state },
-        });
+      await ctx.emit({
+        streamName: outputStream,
+        type: "OutputVersionCheckEvidenceAdded",
+        data: {
+          outputId: p["outputId"],
+          revision: p["outputRevision"],
+          checkKey: "independent-review",
+          evidence: { ...evidence, by: p["reviewer"] },
+        },
+      });
+      await ctx.emit({
+        streamName: outputStream,
+        type: "OutputVersionStateChanged",
+        data: { outputId: p["outputId"], revision: p["outputRevision"], state: "INDEPENDENT_CHECK" },
+      });
+      const checks = await maybePassChecks(ctx, {
+        outputId: p["outputId"] as string,
+        outputRevision: p["outputRevision"] as number,
+      });
+      return {
+        workItemId: p["workItemId"] as string,
+        state: checks.passed ? "COMPLETED" : "UNDER_REVIEW",
+        outputState: checks.passed ? "CHECK_PASSED" : "INDEPENDENT_CHECK",
+        missingChecks: checks.missing,
+      };
+    },
+  });
+}
+
+// Gắn bằng chứng cho một loại kiểm bắt buộc KHÁC ngoài self-check/review độc
+// lập (Hợp đồng chất lượng có thể đòi thêm, vd build-log). Khi bằng chứng đủ
+// bộ, chính lệnh này kích hoạt COMPLETED + CHECK_PASSED (runtime tự động).
+export async function attachCheckEvidence(
+  db: Db,
+  commandId: string,
+  payload: {
+    outputId: string;
+    outputRevision: number;
+    checkKey: string;
+    evidence: { ref: string; sha256: string; targetSha256: string; by: string };
+    expectedSha256: string;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const output = await one<{
+        state: string;
+        content_sha256: string;
+        work_item_id: string;
+        quality_contract_ref: { id: string; revision: number; sha256: string } | null;
+      }>(
+        ctx,
+        sql`SELECT state, content_sha256, work_item_id, quality_contract_ref
+            FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output) {
+        throw new CommandRejectedError("ERR-TARGET", "Output version not found");
+      }
+      await requireRunningRunOfWorkItem(ctx, output.work_item_id);
+      if (output.state !== "SELF_CHECK" && output.state !== "INDEPENDENT_CHECK") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `attach-check-evidence applies between SELF_CHECK and CHECK_PASSED, got ${output.state}`,
+        );
+      }
+      if (!output.quality_contract_ref) {
+        throw new CommandRejectedError("ERR-QC", "Output version pins no quality contract");
+      }
+      const contract = await one<{ required_checks: string[] }>(
+        ctx,
+        sql`SELECT required_checks FROM dopaios_quality_contracts
+            WHERE id = ${output.quality_contract_ref.id}
+              AND revision = ${output.quality_contract_ref.revision}`,
+      );
+      if (!contract || !contract.required_checks.includes(p["checkKey"] as string)) {
+        throw new CommandRejectedError(
+          "ERR-QC",
+          `Check ${p["checkKey"]} is not required by the pinned quality contract`,
+        );
+      }
+      const evidence = p["evidence"] as { ref: string; sha256: string; targetSha256: string; by: string };
+      if (!evidence?.ref || !evidence?.sha256 || !evidence?.targetSha256 || !evidence?.by) {
+        throw new CommandRejectedError("ERR-002", "Check evidence is missing required fields");
+      }
+      if (evidence.sha256 !== (p["expectedSha256"] as string)) {
+        throw new CommandRejectedError("SFR-020", "Check evidence does not match the pinned hash");
+      }
+      if (evidence.targetSha256 !== output.content_sha256) {
+        throw new CommandRejectedError("SFR-020", "Check evidence does not target this output content");
       }
       await ctx.emit({
-        streamName: workItemStream,
-        type: "WorkItemStateChanged",
-        data: { workItemId: p["workItemId"], state: "COMPLETED" },
+        streamName: `dopaiosOutput-${p["outputId"]}`,
+        type: "OutputVersionCheckEvidenceAdded",
+        data: {
+          outputId: p["outputId"],
+          revision: p["outputRevision"],
+          checkKey: p["checkKey"],
+          evidence,
+        },
       });
-      return { workItemId: p["workItemId"] as string, state: "COMPLETED" };
+      const checks =
+        output.state === "INDEPENDENT_CHECK"
+          ? await maybePassChecks(ctx, {
+              outputId: p["outputId"] as string,
+              outputRevision: p["outputRevision"] as number,
+            })
+          : { passed: false, missing: ["awaiting independent check"] };
+      return {
+        outputId: p["outputId"] as string,
+        checkKey: p["checkKey"] as string,
+        outputState: checks.passed ? "CHECK_PASSED" : output.state,
+        missingChecks: checks.missing,
+      };
     },
   });
 }

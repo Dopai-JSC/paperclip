@@ -9,6 +9,7 @@ import {
 import {
   activateSopRun,
   runFixtureExecution,
+  validateSelfCheck,
   reviewFixtureExecution,
   advanceToDecision,
   completeSopRun,
@@ -45,6 +46,13 @@ export type RunnerFixtureConfig = {
   executor: string;
   reviewer: string;
   contentSha256: string;
+  // KC-14: chuỗi đầu ra phân rã theo đúng bảng FS-003 — bước nộp pin Hợp
+  // đồng chất lượng, validate-self-check và review độc lập cần bằng chứng
+  // đúng hash đã pin trong gói fixture.
+  outputType: string;
+  qualityContractRef: { id: string; revision: number; sha256: string };
+  selfCheckSha256: string;
+  reviewSha256: string;
 };
 
 export type RunnerProjectConfig = {
@@ -183,7 +191,8 @@ export async function runnerTick(
       );
     }
 
-    // S06 — thực thi work-item ACCEPTED của run đang RUNNING.
+    // S06 — thực thi work-item ACCEPTED của run đang RUNNING (ready-check
+    // máy-kiểm pin Hợp đồng chất lượng nằm trong chính lệnh — KC-14).
     for (const wi of await rows<{ id: string }>(
       db,
       sql`SELECT w.id FROM dopaios_work_items w
@@ -197,24 +206,59 @@ export async function runnerTick(
           outputId: `OUT-${wi.id}`,
           outputRevision: 1,
           contentSha256: fx.contentSha256,
+          outputType: fx.outputType,
+          qualityContractRef: fx.qualityContractRef,
         }),
       );
     }
 
-    // S07 — review độc lập (reviewer ≠ executor) cho work-item SUBMITTED.
-    for (const wi of await rows<{ id: string }>(
+    // S06b — validate-self-check (runtime tự động, KC-14): phiên bản
+    // SUBMITTED của run RUNNING nhận bằng chứng self-check đúng hash pin.
+    for (const output of await rows<{ id: string; revision: number }>(
       db,
-      sql`SELECT w.id FROM dopaios_work_items w
+      sql`SELECT o.id, o.revision FROM dopaios_output_versions o
+          JOIN dopaios_work_items w ON w.id = o.work_item_id
           JOIN dopaios_sop_runs r ON r.id = w.run_id
+          WHERE o.state = 'SUBMITTED' AND r.state = 'RUNNING' ORDER BY o.id`,
+    )) {
+      await fire(actions, "validate-self-check", output.id, () =>
+        validateSelfCheck(db, `AUTO-VSC-${output.id}-r${output.revision}`, {
+          outputId: output.id,
+          outputRevision: output.revision,
+          evidence: {
+            ref: `SC-${output.id}`,
+            sha256: fx.selfCheckSha256,
+            targetSha256: fx.contentSha256,
+            by: fx.executor,
+          },
+          expectedSha256: fx.selfCheckSha256,
+        }),
+      );
+    }
+
+    // S07 — review độc lập (reviewer ≠ executor) cho work-item SUBMITTED có
+    // phiên bản đã qua SELF_CHECK.
+    for (const wi of await rows<{ id: string; revision: number }>(
+      db,
+      sql`SELECT w.id, o.revision FROM dopaios_work_items w
+          JOIN dopaios_sop_runs r ON r.id = w.run_id
+          JOIN dopaios_output_versions o ON o.work_item_id = w.id AND o.state = 'SELF_CHECK'
           WHERE w.state = 'SUBMITTED' AND r.state = 'RUNNING' ORDER BY w.id`,
     )) {
       await fire(actions, "run-fixture-review", wi.id, () =>
         reviewFixtureExecution(db, `AUTO-REV-${wi.id}`, {
           workItemId: wi.id,
           outputId: `OUT-${wi.id}`,
-          outputRevision: 1,
+          outputRevision: wi.revision,
           executor: fx.executor,
           reviewer: fx.reviewer,
+          reviewEvidence: {
+            ref: `RE-OUT-${wi.id}`,
+            sha256: fx.reviewSha256,
+            targetSha256: fx.contentSha256,
+            conclusion: "ready",
+          },
+          expectedReviewSha256: fx.reviewSha256,
         }),
       );
     }
