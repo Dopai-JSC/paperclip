@@ -119,6 +119,13 @@ export async function detectOverdueConditions(
       -- KC-14 (SFR-031/016): approval đã hết hiệu lực thì nghĩa vụ theo dõi
       -- condition của nó kết thúc — watchdog không tuyên bố quá hạn nữa.
       AND r.invalidated_at IS NULL
+      -- KC-14: watchdog này CHỈ phục vụ trục artifact FS-002; condition của
+      -- approval trên trục Phiên bản đầu ra đi qua detectOverdueRunConditions
+      -- (exceptions.ts) với side effect SFR-034 mức run.
+      AND EXISTS (
+        SELECT 1 FROM dopaios_artifacts a
+        WHERE a.id = r.target_id AND a.revision = r.target_revision
+      )
     ORDER BY c.id
   `)) as unknown as Array<{
     id: string;

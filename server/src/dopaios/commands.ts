@@ -840,6 +840,14 @@ export async function advanceToDecision(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-14 (SFR-057): run terminal không nhận thêm lệnh trình điểm.
+      const runRow = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_sop_runs WHERE id = ${p["runId"]}`,
+      );
+      if (!runRow || runRow.state !== "RUNNING") {
+        throw new CommandRejectedError("SFR-057", `Run ${p["runId"]} is not RUNNING — command refused`);
+      }
       // KC-03 (FX-03-B04, AC-FR-24.2): output AI chỉ được trình duyệt khi đã
       // qua trọn chuỗi tự kiểm → kiểm độc lập (CHECK_PASSED) — thiếu chuỗi
       // review độc lập thì chặn ngay tại bước trình.
@@ -1261,9 +1269,9 @@ export async function answerClarification(
         throw new CommandRejectedError("SFR-052", "Answer must state its content, scope and impacted revisions");
       }
       const priorRevision = (p["newPackageRevision"] as number) - 1;
-      const prior = await one<{ state: string }>(
+      const prior = await one<{ state: string; refs: Json }>(
         ctx,
-        sql`SELECT state FROM dopaios_decision_packages
+        sql`SELECT state, refs FROM dopaios_decision_packages
             WHERE id = ${p["packageId"]} AND revision = ${priorRevision}`,
       );
       if (!prior) {
@@ -1277,14 +1285,19 @@ export async function answerClarification(
           `Package revision ${priorRevision} is ${prior.state} — no new package is assembled`,
         );
       }
-      // Target vẫn phải là phiên bản hiện hành đang chờ quyết định.
+      // Yêu cầu mới cùng LOẠI với yêu cầu của gói trước (SFR-047): gói
+      // EXCEPTION → exception; gói thường → decision. Target hiện hành của
+      // EXCEPTION là phiên bản ACCEPTED, của gói thường là AWAITING_DECISION.
+      const isException = (prior.refs as Json)["kind"] === "EXCEPTION";
+      const expectedTargetState = isException ? "ACCEPTED" : "AWAITING_DECISION";
+      const newRequestKind = isException ? "exception" : "decision";
       const output = await one<{ state: string }>(
         ctx,
         sql`SELECT state FROM dopaios_output_versions
             WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
       );
-      if (!output || output.state !== "AWAITING_DECISION") {
-        throw new CommandRejectedError("SFR-047", "Target is no longer the current version awaiting decision");
+      if (!output || output.state !== expectedTargetState) {
+        throw new CommandRejectedError("SFR-047", "Target is no longer the current version for this package kind");
       }
 
       await ctx.emit({
@@ -1313,7 +1326,7 @@ export async function answerClarification(
         type: "ActionRequestCreated",
         data: {
           requestId: p["newDecisionRequestId"],
-          kind: "decision",
+          kind: newRequestKind,
           runId: clarification.run_id,
           packageId: p["packageId"],
           packageRevision: p["newPackageRevision"],
