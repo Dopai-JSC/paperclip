@@ -10,7 +10,7 @@ import { registerActor, registerApprovedArtifact } from "../dopaios/commands.ts"
 import { registerDraftArtifact } from "../dopaios/approval.ts";
 import { createArtifactRevision } from "../dopaios/lifecycle.ts";
 
-// KC-04 B1: provenance trên sổ cái artifact FS-002 (migration 0515) — hợp
+// KC-04 B1: provenance TAMPERED by production actor (migration 0515) — hợp
 // đồng input "Danh sách nguồn" d.629 + EDGE-001 (pin ID@revision hoặc hash,
 // không "latest"; thiếu → danh sách rỗng) và "nơi lưu" theo tiêu chí 2 của
 // kế hoạch KC-04. Ba cửa đăng ký (fixture approved, draft FS-002,
