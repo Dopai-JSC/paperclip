@@ -130,6 +130,24 @@ export const dopaiosRunSteps = pgTable(
   (table) => ({ pk: primaryKey({ columns: [table.runId, table.stepId] }) }),
 );
 
+// KC-15 (0513): cạnh phụ thuộc work-item — projection từ event
+// WorkItemDependencyDeclared (QD-1). work_item_id là bên PHỤ THUỘC (hạ
+// nguồn), depends_on_work_item_id là bên được phụ thuộc (thượng nguồn); cạnh
+// giới hạn trong một run test (QD-4). MỌI truy vấn traversal đi qua module
+// graph-repo (một cửa duy nhất — ADR-019); bảng này không mang trạng thái —
+// chặn/impact/hủy đọc từ trạng thái sẵn có của KC-03/KC-14 (QD-2).
+export const dopaiosWorkItemDependencies = pgTable(
+  "dopaios_work_item_dependencies",
+  {
+    workItemId: text("work_item_id").notNull(),
+    dependsOnWorkItemId: text("depends_on_work_item_id").notNull(),
+    runId: text("run_id").notNull(),
+    declaredBy: text("declared_by").notNull(),
+    basis: jsonb("basis").$type<Record<string, unknown>>(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.workItemId, table.dependsOnWorkItemId] }) }),
+);
+
 export const dopaiosActionRequests = pgTable("dopaios_action_requests", {
   id: text("id").primaryKey(),
   kind: text("kind").notNull(),

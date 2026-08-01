@@ -28,6 +28,7 @@ import {
   dopaiosExecutionContracts,
   dopaiosQualityContracts,
   dopaiosRunSteps,
+  dopaiosWorkItemDependencies,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -820,6 +821,18 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           set: { state: "open", openedByRecordId: (d["recordId"] ?? null) as string | null },
         });
       break;
+    // ===== KC-15: đồ thị phụ thuộc dùng chung =====
+    // Cạnh phụ thuộc là event (QD-1) — bảng cạnh dựng thuần từ log, replay
+    // byte-identical; guard chu trình/trùng cạnh nằm ở tầng lệnh (graph-repo).
+    case "WorkItemDependencyDeclared":
+      await tx.insert(dopaiosWorkItemDependencies).values({
+        workItemId: d["workItemId"],
+        dependsOnWorkItemId: d["dependsOnWorkItemId"],
+        runId: d["runId"],
+        declaredBy: d["declaredBy"],
+        basis: d["basis"] ?? null,
+      });
+      break;
     case "RunStepReblocked":
       await tx
         .update(dopaiosRunSteps)
@@ -862,6 +875,7 @@ const PROJECTION_TABLES = [
   dopaiosExecutionContracts,
   dopaiosQualityContracts,
   dopaiosRunSteps,
+  dopaiosWorkItemDependencies,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

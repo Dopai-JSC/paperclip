@@ -1030,6 +1030,13 @@
       "when": 1785514100000,
       "tag": "0512_dopaios_kc14_two_lifecycles",
       "breakpoints": true
+    },
+    {
+      "idx": 513,
+      "version": "7",
+      "when": 1785514200000,
+      "tag": "0513_dopaios_kc15_dependency_graph",
+      "breakpoints": true
     }
   ]
 }
