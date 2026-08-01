@@ -200,7 +200,13 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
+    // Dopaios KC-03 (FS-002 SFR-013/014, fail-closed): quyết định phê duyệt
+    // phải mang định danh người quyết thật — không còn fallback "board" ẩn danh.
+    const decidedByUserId = req.actor.userId;
+    if (!decidedByUserId) {
+      res.status(403).json({ error: "A real decider identity is required — anonymous approval is not allowed" });
+      return;
+    }
     const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -296,7 +302,11 @@ export function approvalRoutes(
       res.status(404).json({ error: "Approval not found" });
       return;
     }
-    const decidedByUserId = req.actor.userId ?? "board";
+    const decidedByUserId = req.actor.userId;
+    if (!decidedByUserId) {
+      res.status(403).json({ error: "A real decider identity is required — anonymous rejection is not allowed" });
+      return;
+    }
     const { approval, applied } = await svc.reject(id, decidedByUserId, req.body.decisionNote);
 
     if (applied) {
@@ -324,7 +334,11 @@ export function approvalRoutes(
         res.status(404).json({ error: "Approval not found" });
         return;
       }
-      const decidedByUserId = req.actor.userId ?? "board";
+      const decidedByUserId = req.actor.userId;
+      if (!decidedByUserId) {
+        res.status(403).json({ error: "A real decider identity is required — anonymous revision request is not allowed" });
+        return;
+      }
       const approval = await svc.requestRevision(id, decidedByUserId, req.body.decisionNote);
 
       await logActivity(db, {

@@ -198,6 +198,11 @@ async function markApprovalStatus(
   decidedByUserId: string,
 ) {
   if (!approvalId) return;
+  // Dopaios KC-03 (FS-002 SFR-013/014): đường ghi thẳng bảng approvals này
+  // từng nhận định danh ẩn danh "board" — giờ fail-closed như approvalService.
+  if (!decidedByUserId || decidedByUserId === "board") {
+    throw new Error("A real decider identity is required to resolve an approval");
+  }
   await db
     .update(approvals)
     .set({

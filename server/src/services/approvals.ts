@@ -50,6 +50,24 @@ export function approvalService(db: Db) {
       );
     }
 
+    // Dopaios KC-03 (FS-002 SFR-013/014, fail-closed): người quyết phải là
+    // định danh thật; separation-of-duties chỉ ràng APPROVE — người yêu cầu
+    // vẫn được reject để tự rút yêu cầu của mình (đường withdraw duy nhất).
+    // Miễn trừ có chủ đích và được ghi hồ sơ: sentinel "local-board" của chế
+    // độ local_trusted một-người-vận-hành (middleware/auth.ts) — SoD vô
+    // nghĩa khi tổ chức chỉ có đúng một người thật.
+    if (!decidedByUserId || decidedByUserId === "board") {
+      throw unprocessable("A real decider identity is required to resolve an approval");
+    }
+    if (
+      targetStatus === "approved" &&
+      existing.requestedByUserId &&
+      existing.requestedByUserId === decidedByUserId &&
+      decidedByUserId !== "local-board"
+    ) {
+      throw unprocessable("Requester and decider must differ — separation of duties");
+    }
+
     const now = new Date();
     const updated = await db
       .update(approvals)
@@ -206,6 +224,11 @@ export function approvalService(db: Db) {
       const existing = await getExistingApproval(id);
       if (existing.status !== "pending") {
         throw unprocessable("Only pending approvals can request revision");
+      }
+      // Dopaios KC-03: request-revision cũng cần định danh thật; không ràng
+      // SoD — người yêu cầu tự xin sửa yêu cầu của mình là hợp lệ.
+      if (!decidedByUserId || decidedByUserId === "board") {
+        throw unprocessable("A real decider identity is required to resolve an approval");
       }
 
       const now = new Date();
