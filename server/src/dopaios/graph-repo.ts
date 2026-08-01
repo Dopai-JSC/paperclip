@@ -191,3 +191,86 @@ export async function wouldCreateCycle(
   const upstreamOfTarget = await transitiveDependencies(ctx, dependsOnWorkItemId);
   return upstreamOfTarget.includes(workItemId);
 }
+
+export type UnsatisfiedDependency = {
+  dependsOnWorkItemId: string;
+  reason:
+    | "upstream-cancelled"
+    | "upstream-not-completed"
+    | "no-output"
+    | "output-not-effectively-approved";
+};
+
+// KC-15 B2 — cách đọc "chặn một phần" (QD-2): phụ thuộc TRỰC TIẾP chưa thỏa
+// của một work-item. Một phụ thuộc thỏa khi thượng nguồn đã COMPLETED và MỌI
+// dòng đầu ra nó khởi tạo/đóng góp có phiên bản HIỆN HÀNH (revision cao nhất
+// của dòng — sau rework có thể thuộc work-item khác) đang APPROVED/ACCEPTED
+// với Approval Record approve/AWC CHƯA VÔ HIỆU — đúng ngữ nghĩa hiệu lực
+// invalidated_at của KC-14 (SFR-031/034/050), KHÔNG dựng trạng thái mới.
+// Ready-check của work-item hạ nguồn gọi hàm này trong transaction lệnh; nhờ
+// vậy "đúng impact set" ở mức work-item là hệ quả đọc đồ thị + hiệu lực record.
+export async function unsatisfiedDependencies(
+  ctx: CommandContext,
+  workItemId: string,
+): Promise<UnsatisfiedDependency[]> {
+  const result = await rows<{
+    dep: string;
+    upstream_state: string;
+    line_id: string | null;
+    current_state: string | null;
+    effective: boolean | null;
+  }>(
+    ctx,
+    sql`WITH deps AS (
+          SELECT d.depends_on_work_item_id AS dep
+          FROM dopaios_work_item_dependencies d
+          WHERE d.work_item_id = ${workItemId}
+        ),
+        lines AS (
+          SELECT DISTINCT deps.dep, o.id AS line_id
+          FROM deps
+          JOIN dopaios_output_versions o ON o.work_item_id = deps.dep
+        ),
+        current_rev AS (
+          SELECT l.dep, l.line_id, max(o.revision) AS revision
+          FROM lines l
+          JOIN dopaios_output_versions o ON o.id = l.line_id
+          GROUP BY l.dep, l.line_id
+        )
+        SELECT deps.dep,
+               u.state AS upstream_state,
+               cr.line_id,
+               o.state AS current_state,
+               EXISTS (
+                 SELECT 1 FROM dopaios_approval_records r
+                 WHERE r.target_id = cr.line_id
+                   AND r.target_revision = cr.revision
+                   AND r.outcome IN ('approve', 'approve-with-conditions')
+                   AND r.invalidated_at IS NULL
+               ) AS effective
+        FROM deps
+        JOIN dopaios_work_items u ON u.id = deps.dep
+        LEFT JOIN current_rev cr ON cr.dep = deps.dep
+        LEFT JOIN dopaios_output_versions o ON o.id = cr.line_id AND o.revision = cr.revision
+        ORDER BY deps.dep, cr.line_id`,
+  );
+  const unsatisfied = new Map<string, UnsatisfiedDependency["reason"]>();
+  for (const row of result) {
+    if (unsatisfied.has(row.dep)) continue;
+    if (row.upstream_state === "CANCELLED") {
+      unsatisfied.set(row.dep, "upstream-cancelled");
+    } else if (row.upstream_state !== "COMPLETED") {
+      unsatisfied.set(row.dep, "upstream-not-completed");
+    } else if (row.line_id === null) {
+      unsatisfied.set(row.dep, "no-output");
+    } else if (
+      (row.current_state !== "APPROVED" && row.current_state !== "ACCEPTED") ||
+      row.effective !== true
+    ) {
+      unsatisfied.set(row.dep, "output-not-effectively-approved");
+    }
+  }
+  return [...unsatisfied.entries()]
+    .map(([dependsOnWorkItemId, reason]) => ({ dependsOnWorkItemId, reason }))
+    .sort((a, b) => (a.dependsOnWorkItemId < b.dependsOnWorkItemId ? -1 : 1));
+}

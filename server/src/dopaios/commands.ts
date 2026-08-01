@@ -9,6 +9,7 @@ import {
 } from "./event-store.js";
 import { validateQualityContractPin } from "./lifecycle.js";
 import { executeAuditedCommand } from "./approval.js";
+import { unsatisfiedDependencies } from "./graph-repo.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -328,6 +329,21 @@ export async function runFixtureExecution(
         p["qualityContractRef"] as { id: string; revision: number; sha256: string },
         p["outputType"] as string,
       );
+      // KC-15 B2 (QD-2): ready-check đọc đồ thị qua graph-repo — mọi phụ
+      // thuộc thượng nguồn phải có phiên bản hiện hành được duyệt còn hiệu
+      // lực (invalidated_at của KC-14). Chặn ĐÚNG nhánh phụ thuộc; work-item
+      // không nằm hạ nguồn không bị chạm ("đúng impact set" SFR-031/050 đọc
+      // ở mức work-item). Item không khai cạnh: danh sách rỗng, không đổi
+      // hành vi các suite KC-01/KC-14 sẵn có.
+      const unsatisfied = await unsatisfiedDependencies(ctx, p["workItemId"] as string);
+      if (unsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Ready-check: unsatisfied dependencies — ${unsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
+        );
+      }
       const stream = `dopaiosWorkItem-${p["workItemId"]}`;
       for (const state of ["READY", "CLAIMED", "IN_PROGRESS", "SUBMITTED"]) {
         await ctx.emit({
