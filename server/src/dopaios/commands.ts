@@ -15,6 +15,7 @@ import {
   invalidateOpenPackagesAndRequestsForOutput,
 } from "./graph-repo.js";
 import { validateSourceRefs, type SourceRef } from "./lifecycle.js";
+import { parseRegisteredSourcePins, parseStorageRef } from "./provenance.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -117,16 +118,27 @@ export async function createProjectShell(
 export async function registerApprovedArtifact(
   db: Db,
   commandId: string,
-  payload: { artifactId: string; revision: number; sha256: string; artifactType?: string },
+  payload: {
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    artifactType?: string;
+    sourceRefs?: Array<Record<string, unknown>>;
+    storageRef?: string;
+  },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-04 B1: hợp đồng input FS-002 d.629 — nguồn pin ID@revision hoặc
+      // hash, không "latest" (EDGE-001); storageRef là nơi lưu (tiêu chí 2).
+      const sourceRefs = parseRegisteredSourcePins(p["sourceRefs"]);
+      const storageRef = parseStorageRef(p["storageRef"]);
       await ctx.emit({
         streamName: `dopaiosArtifact-${p["artifactId"]}`,
         type: "ArtifactRegistered",
-        data: { ...p, artifactState: "approved", impactStatus: "clear" },
+        data: { ...p, sourceRefs, storageRef, artifactState: "approved", impactStatus: "clear" },
       });
       return { artifactId: p["artifactId"] as string, artifactState: "approved" };
     },

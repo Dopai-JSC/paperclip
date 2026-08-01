@@ -12,6 +12,7 @@ import {
   invalidateEffectiveApprovalsAndReblockSteps,
   invalidateOpenPackagesAndRequestsForOutput,
 } from "./graph-repo.js";
+import { parseRegisteredSourcePins, parseStorageRef } from "./provenance.js";
 
 // KC-14 B2: hoàn tất bảng transition `artifact_state` FS-002 (bốn hàng KC-03
 // chưa hiện thực: create-revision, begin-implementation, freeze-artifact,
@@ -101,6 +102,8 @@ export async function createArtifactRevision(
     createdBy: string;
     semanticChange: boolean;
     dependents: Array<{ artifactId: string; revision: number }>;
+    sourceRefs?: Array<Record<string, unknown>>;
+    storageRef?: string;
   },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
@@ -134,6 +137,11 @@ export async function createArtifactRevision(
         );
       }
       const base = revisions[revisions.length - 1];
+      // KC-04 B1: revision mới là bản nội dung mới — nguồn và nơi lưu khai
+      // LẠI theo hợp đồng input FS-002 d.629, KHÔNG kế thừa im lặng từ bản
+      // trước (EDGE-001: thiếu → danh sách rỗng).
+      const sourceRefs = parseRegisteredSourcePins(p["sourceRefs"]);
+      const storageRef = parseStorageRef(p["storageRef"]);
       await ctx.emit({
         streamName: `dopaiosArtifact-${p["artifactId"]}`,
         type: "ArtifactRegistered",
@@ -146,6 +154,8 @@ export async function createArtifactRevision(
           createdBy: p["createdBy"],
           artifactType: base.artifact_type,
           hasRegionSchema: base.has_region_schema,
+          sourceRefs,
+          storageRef,
         },
       });
       const dependents = p["dependents"] as Array<{ artifactId: string; revision: number }>;
