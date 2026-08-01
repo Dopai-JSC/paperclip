@@ -329,7 +329,24 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
     case "ActivationClaimed":
       await tx
         .update(dopaiosActivations)
-        .set({ state: "RUNNING", claimedBy: d["claimedBy"] })
+        .set({
+          state: "RUNNING",
+          claimedBy: d["claimedBy"],
+          claimLeaseUntil: d["leaseUntil"] ? new Date(d["leaseUntil"] as string) : null,
+        })
+        .where(eq(dopaiosActivations.id, d["activationId"]));
+      break;
+    // KC-13 B5: thu hồi claim mồ côi — lease hết hạn, activation quay về hàng
+    // đợi với epoch tăng (claimer cũ ghi muộn bị ERR-LEASE-EPOCH chặn).
+    case "ActivationRequeued":
+      await tx
+        .update(dopaiosActivations)
+        .set({
+          state: "QUEUED",
+          claimedBy: null,
+          claimLeaseUntil: null,
+          leaseEpoch: d["newEpoch"],
+        })
         .where(eq(dopaiosActivations.id, d["activationId"]));
       break;
     case "ActivationCompleted":

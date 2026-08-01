@@ -95,7 +95,14 @@ export async function requestActivation(
 export async function claimActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; claimedBy: string },
+  payload: {
+    activationId: string;
+    claimedBy: string;
+    // KC-13 B5: lease TTL — claim bền vững giữa các lệnh nên claimer chết
+    // phải thu hồi được (requeueExpiredActivations). Không lease = đường
+    // KC-02 cũ, watchdog không thu hồi.
+    lease?: { untilMs: number };
+  },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
     commandId,
@@ -115,10 +122,15 @@ export async function claimActivation(
         workItemId: rows[0].work_item_id,
         claimedBy: p["claimedBy"] as string,
       });
+      const lease = p["lease"] as { untilMs: number } | undefined;
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
         type: "ActivationClaimed",
-        data: { activationId: p["activationId"], claimedBy: p["claimedBy"] },
+        data: {
+          activationId: p["activationId"],
+          claimedBy: p["claimedBy"],
+          leaseUntil: lease ? new Date(lease.untilMs).toISOString() : null,
+        },
       });
       return { activationId: p["activationId"] as string, state: "RUNNING" };
     },
@@ -128,17 +140,29 @@ export async function claimActivation(
 export async function completeActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; outcome: string },
+  payload: {
+    activationId: string;
+    outcome: string;
+    // KC-13 B5: claimer giữ epoch của lượt claim mình — activation đã bị thu
+    // hồi và giao lại (epoch tăng) thì claimer cũ ghi muộn bị chặn.
+    leaseEpoch?: number;
+  },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const rows = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_activations WHERE id = ${p["activationId"]}
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, lease_epoch FROM dopaios_activations WHERE id = ${p["activationId"]}
+      `)) as unknown as Array<{ state: string; lease_epoch: number }>;
       if (rows.length === 0 || rows[0].state !== "RUNNING") {
         throw new CommandRejectedError("ERR-ACTIVATION-STATE", "Activation is not RUNNING");
+      }
+      if (p["leaseEpoch"] !== undefined && Number(rows[0].lease_epoch) !== Number(p["leaseEpoch"])) {
+        throw new CommandRejectedError(
+          "ERR-LEASE-EPOCH",
+          `Stale claimer: activation ${p["activationId"]} is at lease epoch ${rows[0].lease_epoch}, claimer holds ${p["leaseEpoch"]}`,
+        );
       }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
