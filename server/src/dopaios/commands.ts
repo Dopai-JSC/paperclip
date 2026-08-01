@@ -13,6 +13,7 @@ import {
   unsatisfiedDependencies,
   invalidateEffectiveApprovalsAndReblockSteps,
   invalidateOpenPackagesAndRequestsForOutput,
+  traceCriticalOutput,
 } from "./graph-repo.js";
 import { validateSourceRefs, type SourceRef } from "./lifecycle.js";
 import { parseRegisteredSourcePins, parseStorageRef } from "./provenance.js";
@@ -629,7 +630,30 @@ export async function maybePassChecks(
     return { passed: false, missing: ["pinned quality contract content missing"] };
   }
   const evidence = output.check_evidence ?? {};
-  const missing = contract.required_checks.filter((check) => evidence[check] === undefined);
+  // KC-04 B4 (FR-21 nghiệm thu "trường hợp kiểm thử thiếu liên kết bị
+  // chặn"; FR-50 "hồ sơ mất nguồn không thể được chấp nhận"): khóa
+  // "trace-complete" trong Hợp đồng chất lượng là PHÉP KIỂM MÁY — hệ thống
+  // tự đánh giá liên kết truy vết của chính đầu ra qua graph-repo, KHÔNG
+  // đọc bằng chứng đính kèm (tác nhân sản xuất không thể tự khai cho qua —
+  // FR-29). Trước điểm quyết định chưa có approval và artifact chưa vào sổ,
+  // nên phần kiểm được tại cửa này là ba mối của chính đầu ra: kế hoạch/
+  // spec, nguồn, Phiên chạy AI; các mối còn lại do truy vấn run-level trả
+  // lời (B2). Contract không khai khóa này thì hành vi giữ nguyên.
+  const PRE_DECISION_TRACE_HOPS = ["spec", "nguon", "phien-chay-ai"];
+  const missing: string[] = [];
+  for (const check of contract.required_checks) {
+    if (check === "trace-complete") {
+      const trace = await traceCriticalOutput(ctx, input.outputId, input.outputRevision);
+      const broken = trace.missing.filter((hop) => PRE_DECISION_TRACE_HOPS.includes(hop));
+      if (broken.length > 0) {
+        missing.push(`trace-complete:${broken.join("+")}`);
+      }
+      continue;
+    }
+    if (evidence[check] === undefined) {
+      missing.push(check);
+    }
+  }
   if (missing.length > 0) {
     return { passed: false, missing };
   }
