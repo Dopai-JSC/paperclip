@@ -232,7 +232,8 @@ describeEmbeddedPostgres("dopaios KC-14 B4 — bản sửa và vô hiệu (SFR-0
         outputRevision: 1,
       }),
     ).rejects.toMatchObject({ code: "SFR-048" });
-    // …và bản cũ REWORK_REQUIRED không còn là from_state hợp lệ (không đường lùi).
+    // …và quyết định nhắm bản cũ qua gói mới bị chặn ngay ở target gói
+    // (B7: gói pin target — sai target chặn trước cả from_state).
     await expect(
       recordApproval(db, cmd("old-target"), {
         requestId: `${fx.requestId}-2`,
@@ -244,7 +245,7 @@ describeEmbeddedPostgres("dopaios KC-14 B4 — bản sửa và vô hiệu (SFR-0
         outputId: fx.outputId,
         outputRevision: 1,
       }),
-    ).rejects.toMatchObject({ code: "ERR-STATE" });
+    ).rejects.toMatchObject({ code: "ERR-PKG-TARGET" });
 
     // Approve bản sửa trên gói mới → APPROVED (FX-02 N13 đường dương).
     const approved = await recordApproval(db, cmd("approve-r2"), {

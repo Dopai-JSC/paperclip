@@ -16,7 +16,7 @@ import {
   runFixtureExecution,
   validateSelfCheck,
 } from "./commands.js";
-import { registerQualityContract, qualityContractContentSha256 } from "./lifecycle.js";
+import { seedApprovedQualityContract } from "./seed-quality-contract.js";
 
 // KC-01 drill seeder: drives the canonical fixture chain (fx-01 C01 +
 // fx-02 S01–S10) against DATABASE_URL so the schema-evolution and
@@ -46,8 +46,6 @@ const reviewSha256 = fx02.components.find((c: { path: string }) =>
 
 // KC-14: Hợp đồng chất lượng đã duyệt theo đường sổ FS-002 (QD-2).
 const QC_CHECKS = ["self-check", "independent-review"];
-const qcSha256 = qualityContractContentSha256({ outputType: "code-change", requiredChecks: QC_CHECKS });
-const qcRef = { id: "QC-FX02", revision: 1, sha256: qcSha256 };
 
 for (const [actorId, description] of Object.entries<string>(fx01.actors)) {
   const capabilities: string[] = [];
@@ -91,18 +89,11 @@ await requestTestRun(db, "CMD-FX02-S04", {
   fixturePackage: { executor: fx02.fixture_package.executor },
 });
 await activateSopRun(db, "CMD-FX02-S05", { runId: "RUN-T-001", workItemId: "WI-T1-001" });
-await registerApprovedArtifact(db, "CMD-FX02-QC-LEDGER", {
-  artifactId: qcRef.id,
-  revision: qcRef.revision,
-  sha256: qcSha256,
-  artifactType: "quality-contract",
-});
-await registerQualityContract(db, "CMD-FX02-QC-CONTENT", {
-  contractId: qcRef.id,
-  revision: qcRef.revision,
+const qcRef = await seedApprovedQualityContract(db, {
+  id: "QC-FX02",
   outputType: "code-change",
   requiredChecks: QC_CHECKS,
-  registeredBy: "STAFF-HUMAN-ORCH-001",
+  cmdPrefix: "CMD-FX02",
 });
 await runFixtureExecution(db, "CMD-FX02-S06", {
   workItemId: "WI-T1-001",

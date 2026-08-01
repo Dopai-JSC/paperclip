@@ -42,7 +42,16 @@ export type TwoLifecyclesView = {
   requests: Array<{ id: string; kind: string; state: string }>;
 };
 
-export async function readTwoLifecycles(db: Db, runId: string): Promise<TwoLifecyclesView> {
+export async function readTwoLifecycles(dbOrTx: Db, runId: string): Promise<TwoLifecyclesView> {
+  // KC-14 B7 (minor review): sáu truy vấn đọc trong MỘT transaction
+  // REPEATABLE READ — view không bị xé bởi lệnh commit xen giữa.
+  return dbOrTx.transaction(async (db) => {
+    await db.execute(sql`SET TRANSACTION ISOLATION LEVEL REPEATABLE READ`);
+    return readTwoLifecyclesInner(db as unknown as Db, runId);
+  });
+}
+
+async function readTwoLifecyclesInner(db: Db, runId: string): Promise<TwoLifecyclesView> {
   const runs = (await db.execute(
     sql`SELECT id, state, decider, pod FROM dopaios_sop_runs WHERE id = ${runId}`,
   )) as unknown as Array<{ id: string; state: string; decider: string; pod: string }>;

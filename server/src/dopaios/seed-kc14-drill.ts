@@ -15,7 +15,7 @@ import {
   recordApproval,
   completeSopRun,
 } from "./commands.js";
-import { registerQualityContract, qualityContractContentSha256 } from "./lifecycle.js";
+import { seedApprovedQualityContract } from "./seed-quality-contract.js";
 import { readTwoLifecycles } from "./read-model.js";
 
 // KC-14 drill seeder: chạy trọn ca chuẩn tắc FX-04 (fail-then-fix, AC-V1-03)
@@ -50,8 +50,6 @@ const selfRev2 = componentSha("t1-selfcheck-rev2");
 const reviewRev2 = componentSha("t1-review-evidence-rev2");
 
 const QC_CHECKS = ["self-check", "independent-review"];
-const qcSha = qualityContractContentSha256({ outputType: "code-change", requiredChecks: QC_CHECKS });
-const qcRef = { id: "QC-FX04", revision: 1, sha256: qcSha };
 
 await registerActor(db, "KC14-DRILL-A1", {
   actorId: decider,
@@ -59,18 +57,12 @@ await registerActor(db, "KC14-DRILL-A1", {
   active: true,
   capabilities: ["run-decider"],
 });
-await registerApprovedArtifact(db, "KC14-DRILL-QC-LEDGER", {
-  artifactId: qcRef.id,
-  revision: 1,
-  sha256: qcSha,
-  artifactType: "quality-contract",
-});
-await registerQualityContract(db, "KC14-DRILL-QC-CONTENT", {
-  contractId: qcRef.id,
-  revision: 1,
+// Hợp đồng chất lượng qua đường KC-03 thật (Approval Record hiệu lực).
+const qcRef = await seedApprovedQualityContract(db, {
+  id: "QC-FX04",
   outputType: "code-change",
   requiredChecks: QC_CHECKS,
-  registeredBy: decider,
+  cmdPrefix: "KC14-DRILL",
 });
 await registerApprovedArtifact(db, "KC14-DRILL-SOP", {
   artifactId: "SOP-FX04",

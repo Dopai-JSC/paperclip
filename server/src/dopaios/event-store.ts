@@ -176,6 +176,25 @@ export type CommandContext = {
 // `emit` that writes the event AND applies the shared projector inside the
 // same transaction — the event row is always written before the projection
 // update, and both commit or roll back together (REC-001: no partial records).
+//
+// KC-14 B7 (blocker vòng review đối kháng — write-skew): transaction chạy ở
+// SERIALIZABLE. Với READ COMMITTED, guard đọc projection TRƯỚC khi chiếm khóa
+// category của message-db, nên hai lệnh hợp lệ riêng lẻ chạy song song có thể
+// cùng commit và tạo trạng thái cấm (approve × nộp bản sửa, cancel × nộp,
+// hai quyết định trên một yêu cầu…). SSI của Postgres phát hiện các đan xen
+// đó và hủy một bên (40001); deadlock advisory-lock đa-category (40P01) cũng
+// được giải cùng cơ chế: executeCommand retry trọn transaction — an toàn vì
+// idempotency theo command_id, handler thuần đọc-tx + emit. Hai thực thi song
+// song CÙNG command_id đều thấy 0 hàng (FOR UPDATE không khóa hàng chưa có):
+// bên thua vỡ unique 23505 trên dopaios_commands và được quy đổi thành
+// idempotent replay / payload mismatch thay vì lỗi thô.
+const SERIALIZATION_RETRIES = 5;
+
+function pgErrorCode(error: unknown): string | undefined {
+  const cause = (error as { cause?: { code?: string } })?.cause;
+  return (error as { code?: string })?.code ?? cause?.code;
+}
+
 export async function executeCommand(
   db: Db,
   input: {
@@ -186,41 +205,65 @@ export async function executeCommand(
 ): Promise<CommandResult> {
   const hash = payloadSha256(input.payload);
 
-  return await db.transaction(async (tx) => {
-    const existing = (await tx.execute(sql`
-      SELECT payload_sha256, result FROM dopaios_commands
-      WHERE command_id = ${input.commandId}
-      FOR UPDATE
-    `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        await tx.execute(sql`SET TRANSACTION ISOLATION LEVEL SERIALIZABLE`);
+        const existing = (await tx.execute(sql`
+          SELECT payload_sha256, result FROM dopaios_commands
+          WHERE command_id = ${input.commandId}
+          FOR UPDATE
+        `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
 
-    if (existing.length > 0) {
-      if (existing[0].payload_sha256 !== hash) {
-        throw new CommandPayloadMismatchError(input.commandId);
+        if (existing.length > 0) {
+          if (existing[0].payload_sha256 !== hash) {
+            throw new CommandPayloadMismatchError(input.commandId);
+          }
+          return { ...existing[0].result, idempotentReplay: true };
+        }
+
+        const emit: CommandContext["emit"] = async (eventInput) => {
+          const position = await writeEvent(tx, eventInput);
+          const events = await readStream(tx, eventInput.streamName);
+          const written = events.find((event) => event.position === position);
+          if (!written) {
+            throw new Error(`Event just written to ${eventInput.streamName} not readable in-transaction`);
+          }
+          await projectEvent(tx, written);
+          return position;
+        };
+
+        const result = await input.handler({ tx, emit }, input.payload);
+
+        await tx.insert(dopaiosCommands).values({
+          commandId: input.commandId,
+          payloadSha256: hash,
+          result,
+        });
+
+        return result;
+      });
+    } catch (error) {
+      const code = pgErrorCode(error);
+      // Bên thua của cuộc đua cùng command_id: quy đổi thành replay/mismatch.
+      if (code === "23505" && String((error as Error).message ?? error).includes("dopaios_commands")) {
+        const stored = (await db.execute(sql`
+          SELECT payload_sha256, result FROM dopaios_commands WHERE command_id = ${input.commandId}
+        `)) as unknown as Array<{ payload_sha256: string; result: CommandResult }>;
+        if (stored.length > 0) {
+          if (stored[0].payload_sha256 !== hash) {
+            throw new CommandPayloadMismatchError(input.commandId);
+          }
+          return { ...stored[0].result, idempotentReplay: true };
+        }
       }
-      return { ...existing[0].result, idempotentReplay: true };
+      // Serialization failure / deadlock: thử lại trọn transaction.
+      if ((code === "40001" || code === "40P01") && attempt < SERIALIZATION_RETRIES) {
+        continue;
+      }
+      throw error;
     }
-
-    const emit: CommandContext["emit"] = async (eventInput) => {
-      const position = await writeEvent(tx, eventInput);
-      const events = await readStream(tx, eventInput.streamName);
-      const written = events.find((event) => event.position === position);
-      if (!written) {
-        throw new Error(`Event just written to ${eventInput.streamName} not readable in-transaction`);
-      }
-      await projectEvent(tx, written);
-      return position;
-    };
-
-    const result = await input.handler({ tx, emit }, input.payload);
-
-    await tx.insert(dopaiosCommands).values({
-      commandId: input.commandId,
-      payloadSha256: hash,
-      result,
-    });
-
-    return result;
-  });
+  }
 }
 
 // Single projector shared by live execution and replay (SQR-003).

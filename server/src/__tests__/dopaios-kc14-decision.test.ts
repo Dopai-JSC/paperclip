@@ -335,13 +335,15 @@ describeEmbeddedPostgres("dopaios KC-14 B3 — bốn outcome quyết định tr�
     });
     expect(answered).toMatchObject({ newPackageRevision: 2 });
 
-    // Quyết định trên gói revision cũ (đã supersede) bị chặn (SFR-047).
+    // Quyết định trên gói revision cũ bị chặn — yêu cầu mới pin gói revision
+    // mới nên lệch link bắn SFR-048 (B7); ngữ nghĩa "chỉ gói hiện hành nhận
+    // quyết định" giữ nguyên.
     await expect(
       recordApproval(db, cmd("old-pkg"), {
         ...approvalPayload(fx, `AR-${fx.runId}-OLD`),
         requestId: `REQ-${fx.runId}-2`,
       }),
-    ).rejects.toMatchObject({ code: "SFR-047" });
+    ).rejects.toMatchObject({ code: "SFR-048" });
 
     // Approve trên gói revision mới → APPROVED.
     const approved = await recordApproval(db, cmd("approve-r2"), {

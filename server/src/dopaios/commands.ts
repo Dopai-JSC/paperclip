@@ -318,6 +318,9 @@ export async function runFixtureExecution(
       if (!workItem || workItem.state !== "ACCEPTED") {
         throw new CommandRejectedError("DEV-010", "Work item is not ACCEPTED");
       }
+      // KC-14 B7 (blocker review): SFR-057 — run terminal/chưa kích hoạt
+      // không nhận lệnh thực thi; guard này trước đây chỉ có ở các lệnh anh em.
+      await requireRunningRunOfWorkItem(ctx, p["workItemId"] as string);
       // Ready-check (hàng ACCEPTED → READY): guard máy-kiểm được của bước —
       // pin Hợp đồng chất lượng hợp lệ trên cùng snapshot (SFR-017).
       await validateQualityContractPin(
@@ -361,14 +364,39 @@ export async function applyOutputRevisionEntry(
     qualityContractRef: Json;
   },
 ): Promise<{ replacesRevision: number | null }> {
-  const prior = await one<{ revision: number; state: string }>(
+  const prior = await one<{ revision: number; state: string; work_item_id: string }>(
     ctx,
-    sql`SELECT revision, state FROM dopaios_output_versions
+    sql`SELECT revision, state, work_item_id FROM dopaios_output_versions
         WHERE id = ${input.outputId} ORDER BY revision DESC LIMIT 1`,
   );
   const expected = (prior?.revision ?? 0) + 1;
   if (input.revision !== expected) {
     throw new CommandRejectedError("ERR-REVISION", `Output revision must be ${expected}, got ${input.revision}`);
+  }
+  if (prior) {
+    // KC-14 B7 (major review): guard SFR-045 phải đứng ở CỬA CHUNG — bản
+    // trước đang giữa chuỗi kiểm thì không revision nào được chen ngang,
+    // bất kể vào bằng đường nộp nào.
+    const allowedPriorStates = ["AWAITING_DECISION", "APPROVED", "ACCEPTED", "REJECTED"];
+    if (!allowedPriorStates.includes(prior.state)) {
+      throw new CommandRejectedError(
+        "SFR-045",
+        `Prior version is ${prior.state} — a revision may enter only over ${allowedPriorStates.join("/")}`,
+      );
+    }
+    // Bản sửa gắn CÙNG dòng đầu ra/bước: work-item của revision mới phải
+    // thuộc cùng run với dòng cũ — chặn "cướp" dòng đầu ra của run khác.
+    const runs = (await ctx.tx.execute(sql`
+      SELECT
+        (SELECT run_id FROM dopaios_work_items WHERE id = ${prior.work_item_id}) AS prior_run,
+        (SELECT run_id FROM dopaios_work_items WHERE id = ${input.workItemId}) AS new_run
+    `)) as unknown as Array<{ prior_run: string | null; new_run: string | null }>;
+    if (!runs[0] || runs[0].prior_run === null || runs[0].prior_run !== runs[0].new_run) {
+      throw new CommandRejectedError(
+        "SFR-045",
+        "A revision must stay on the same output line — the submitting work item belongs to a different run",
+      );
+    }
   }
   const outputStream = `dopaiosOutput-${input.outputId}`;
   await ctx.emit({
@@ -656,12 +684,23 @@ export async function reviewFixtureExecution(
         throw new CommandRejectedError("SFR-019", "Reviewer must differ from executor");
       }
       await requireRunningRunOfWorkItem(ctx, p["workItemId"] as string);
-      const workItem = await one<{ state: string }>(
+      const workItem = await one<{ state: string; executor: string | null }>(
         ctx,
-        sql`SELECT state FROM dopaios_work_items WHERE id = ${p["workItemId"]}`,
+        sql`SELECT state, executor FROM dopaios_work_items WHERE id = ${p["workItemId"]}`,
       );
       if (!workItem || workItem.state !== "SUBMITTED") {
         throw new CommandRejectedError("ERR-STATE", "run-fixture-review requires work item SUBMITTED");
+      }
+      // KC-14 B7 (major review): SFR-019 đối chiếu với executor ĐÃ GHI trong
+      // projection, không tin cặp chuỗi caller tự khai — khai man executor
+      // để người thực hiện tự review chính mình bị chặn.
+      if (workItem.executor !== null) {
+        if ((p["executor"] as string) !== workItem.executor) {
+          throw new CommandRejectedError("SFR-019", "Declared executor does not match the recorded executor");
+        }
+        if ((p["reviewer"] as string) === workItem.executor) {
+          throw new CommandRejectedError("SFR-019", "Reviewer must differ from the recorded executor");
+        }
       }
       const output = await one<{ state: string; content_sha256: string }>(
         ctx,
@@ -970,17 +1009,40 @@ export async function recordApproval(
       // actor phải ĐÚNG người quyết được pin của run tại request-test-run và
       // là actor NGƯỜI đang active — AI hay định danh lạ đều bị chặn. KC-01
       // để trống guard này vì slice chưa có consumer tự động.
-      const request = await one<{ run_id: string; state: string }>(
+      const request = await one<{
+        run_id: string;
+        state: string;
+        package_id: string | null;
+        package_revision: number | null;
+      }>(
         ctx,
-        sql`SELECT run_id, state FROM dopaios_action_requests WHERE id = ${p["requestId"]}`,
+        sql`SELECT run_id, state, package_id, package_revision
+            FROM dopaios_action_requests WHERE id = ${p["requestId"]}`,
       );
       if (!request) {
         throw new CommandRejectedError("ERR-REQUEST", "Action request not found");
       }
-      // KC-14: yêu cầu đã kết thúc (DECIDED hoặc vô hiệu do target đổi)
-      // không nhận quyết định nữa (SFR-031/048).
-      if (request.state === "DECIDED" || request.state === "SUPERSEDED-TARGET-CHANGED") {
+      // KC-14: yêu cầu đã kết thúc (DECIDED, vô hiệu do target đổi) hoặc quá
+      // hạn (đường tiếp là chuyển cấp, không phải quyết định) không nhận
+      // quyết định nữa (SFR-031/037/048).
+      if (
+        request.state === "DECIDED" ||
+        request.state === "SUPERSEDED-TARGET-CHANGED" ||
+        request.state === "EXPIRED"
+      ) {
         throw new CommandRejectedError("SFR-048", `Action request is ${request.state} — no further decision`);
+      }
+      // KC-14 B7 (blocker review): quyết định phải đi ĐÚNG bộ ba yêu cầu ↔
+      // gói ↔ target — thiếu ràng này, decider của run A ký được output của
+      // run B qua yêu cầu của run mình (SFR-042/048).
+      if (
+        request.package_id !== null &&
+        (request.package_id !== p["packageId"] || Number(request.package_revision) !== Number(p["packageRevision"]))
+      ) {
+        throw new CommandRejectedError(
+          "SFR-048",
+          "Decision must target the package pinned on the action request",
+        );
       }
       const run = await one<{ decider: string; state: string }>(
         ctx,
@@ -1026,6 +1088,19 @@ export async function recordApproval(
           "Approval refs are not byte-equivalent to the decision package",
         );
       }
+      // KC-14 B7 (blocker review): gói phải được dựng cho ĐÚNG target đang
+      // ký (đối xứng với ERR-PKG-TARGET của trục artifact).
+      const pkgTarget = (await one<{ target: { outputId?: string; revision?: number } | null }>(
+        ctx,
+        sql`SELECT target FROM dopaios_decision_packages
+            WHERE id = ${p["packageId"]} AND revision = ${p["packageRevision"]}`,
+      ))?.target;
+      if (
+        pkgTarget &&
+        (pkgTarget.outputId !== p["outputId"] || Number(pkgTarget.revision) !== Number(p["outputRevision"]))
+      ) {
+        throw new CommandRejectedError("ERR-PKG-TARGET", "Package was assembled for a different output version");
+      }
       const output = await one<{ state: string; content_sha256: string; work_item_id: string }>(
         ctx,
         sql`SELECT state, content_sha256, work_item_id FROM dopaios_output_versions
@@ -1033,6 +1108,18 @@ export async function recordApproval(
       );
       if (!output) {
         throw new CommandRejectedError("ERR-TARGET", "Output version not found");
+      }
+      // Output phải thuộc chính run của yêu cầu — decider chỉ ký trong run
+      // mình được pin (SFR-042).
+      const outputRun = await one<{ run_id: string | null }>(
+        ctx,
+        sql`SELECT run_id FROM dopaios_work_items WHERE id = ${output.work_item_id}`,
+      );
+      if (!outputRun || outputRun.run_id !== request.run_id) {
+        throw new CommandRejectedError(
+          "SFR-042",
+          "Output version belongs to a different run than the action request",
+        );
       }
       // from_state của mọi hàng quyết định là AWAITING_DECISION — trạng thái
       // quyết định của một revision là bất biến sau khi ghi (không đường lùi).
@@ -1247,12 +1334,26 @@ export async function answerClarification(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
-      const clarification = await one<{ state: string; run_id: string }>(
+      const clarification = await one<{
+        state: string;
+        run_id: string;
+        package_id: string | null;
+        package_revision: number | null;
+      }>(
         ctx,
-        sql`SELECT state, run_id FROM dopaios_action_requests WHERE id = ${p["clarificationRequestId"]}`,
+        sql`SELECT state, run_id, package_id, package_revision
+            FROM dopaios_action_requests WHERE id = ${p["clarificationRequestId"]}`,
       );
       if (!clarification || clarification.state === "DECIDED" || clarification.state === "SUPERSEDED-TARGET-CHANGED") {
         throw new CommandRejectedError("SFR-046", "Clarification request is missing or already closed/invalidated");
+      }
+      // KC-14 B7 (minor review): câu trả lời của clarification gói NÀO chỉ
+      // supersede được chính gói đó (SFR-047).
+      if (clarification.package_id !== null && clarification.package_id !== p["packageId"]) {
+        throw new CommandRejectedError(
+          "SFR-047",
+          "The clarification answer must target the package it was raised for",
+        );
       }
       const run = await one<{ state: string; pod: string }>(
         ctx,
@@ -1346,12 +1447,15 @@ export async function answerClarification(
 // Retry–continue–reassign chain of a sample work item (PRD Mục 3): each hop is
 // its own event on the same stream, history is appended, never merged or
 // rewritten; reassignment changes the executor explicitly.
+// KC-14 B7 (major review): đây là EXHIBIT chuỗi thử lại của KC-01 — không tạo
+// phiên bản đầu ra nên không có ready-check pin; vẫn phải giữ SFR-057 (run
+// RUNNING) và vệt audit khi bị chặn như mọi lệnh trục work-item.
 export async function interruptRetryReassign(
   db: Db,
   commandId: string,
   payload: { workItemId: string; firstExecutor: string; secondExecutor: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -1362,6 +1466,7 @@ export async function interruptRetryReassign(
       if (!workItem || workItem.state !== "ACCEPTED") {
         throw new CommandRejectedError("DEV-010", "Work item is not ACCEPTED");
       }
+      await requireRunningRunOfWorkItem(ctx, p["workItemId"] as string);
       const stream = `dopaiosWorkItem-${p["workItemId"]}`;
       const hops: Array<{ state: string; executor?: string }> = [
         { state: "CLAIMED", executor: p["firstExecutor"] as string },
@@ -1435,15 +1540,33 @@ export async function pinProductBaseline(
 
 // Artifact impact axis (FS-002 trục kép): a source change marks dependents
 // impact-pending without touching artifact_state.
+// KC-14 B7 (major review): cửa exhibit này CHỈ được tuyên bố impact-pending —
+// 'clear' là trạng thái khởi đầu của revision mới và 'reaffirmed'/'rework-
+// required' là ĐÍCH của disposition (governance-approver người, luật gộp
+// SFR-029, qua dispositionImpact) — không lệnh nào set thẳng được.
 export async function markArtifactImpact(
   db: Db,
   commandId: string,
   payload: { artifactId: string; revision: number; impactStatus: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      if (p["impactStatus"] !== "impact-pending") {
+        throw new CommandRejectedError(
+          "SFR-029",
+          "Only impact-pending may be declared directly — leaving it requires dispositionImpact",
+        );
+      }
+      const artifact = await one<{ revision: number }>(
+        ctx,
+        sql`SELECT revision FROM dopaios_artifacts
+            WHERE id = ${p["artifactId"]} AND revision = ${p["revision"]}`,
+      );
+      if (!artifact) {
+        throw new CommandRejectedError("ERR-TARGET", "Artifact revision not found");
+      }
       await ctx.emit({
         streamName: `dopaiosArtifact-${p["artifactId"]}`,
         type: "ArtifactImpactChanged",
@@ -1454,24 +1577,50 @@ export async function markArtifactImpact(
   });
 }
 
-// fx-02 S10: complete-sop-run once every obligation has a terminal
-// disposition (open action requests block completion).
+// fx-02 S10: complete-sop-run — RUNNING → COMPLETED CHỈ khi mọi output/điểm
+// quyết định/nghĩa vụ bắt buộc có terminal disposition (PRD Mục 3, FS-003).
+// KC-14 B7 (blocker + major review): thêm guard run đang RUNNING (CANCELLED/
+// NOT_ACTIVATED không được "hoàn tất" — terminal không viết lại); nghĩa vụ mở
+// đếm thống nhất với cancelTestRun: yêu cầu chưa kết thúc (SUPERSEDED-TARGET-
+// CHANGED là terminal của revision — DEV-009), work-item chưa terminal,
+// phiên bản đầu ra chưa terminal; lệnh chuyển sang audited.
 export async function completeSopRun(
   db: Db,
   commandId: string,
   payload: { runId: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
-      const open = await one<{ n: string | number }>(
+      const run = await one<{ state: string }>(
         ctx,
-        sql`SELECT count(*)::bigint AS n FROM dopaios_action_requests
-            WHERE run_id = ${p["runId"]} AND state NOT IN ('DECIDED', 'CLOSED')`,
+        sql`SELECT state FROM dopaios_sop_runs WHERE id = ${p["runId"]}`,
       );
-      if (Number(open?.n ?? 0) > 0) {
-        throw new CommandRejectedError("ERR-OPEN-OBLIGATION", "Run has undecided obligations");
+      if (!run) {
+        throw new CommandRejectedError("ERR-TARGET", "Run not found");
+      }
+      if (run.state !== "RUNNING") {
+        throw new CommandRejectedError("SFR-057", `Run is ${run.state} — only RUNNING may complete`);
+      }
+      const open = await one<{ requests: number; work_items: number; versions: number }>(
+        ctx,
+        sql`SELECT
+              (SELECT count(*)::int FROM dopaios_action_requests
+                WHERE run_id = ${p["runId"]}
+                  AND state NOT IN ('DECIDED', 'CLOSED', 'SUPERSEDED-TARGET-CHANGED')) AS requests,
+              (SELECT count(*)::int FROM dopaios_work_items
+                WHERE run_id = ${p["runId"]} AND state NOT IN ('COMPLETED', 'CANCELLED')) AS work_items,
+              (SELECT count(*)::int FROM dopaios_output_versions o
+                JOIN dopaios_work_items w ON w.id = o.work_item_id
+                WHERE w.run_id = ${p["runId"]}
+                  AND o.state NOT IN ('APPROVED', 'ACCEPTED', 'REJECTED', 'REWORK_REQUIRED')) AS versions`,
+      );
+      if (!open || open.requests > 0 || open.work_items > 0 || open.versions > 0) {
+        throw new CommandRejectedError(
+          "ERR-OPEN-OBLIGATION",
+          `Run has open obligations — requests:${open?.requests ?? "?"} work-items:${open?.work_items ?? "?"} versions:${open?.versions ?? "?"}`,
+        );
       }
       await ctx.emit({
         streamName: `dopaiosSopRun-${p["runId"]}`,

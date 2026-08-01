@@ -256,6 +256,21 @@ export async function freezeArtifact(
       if (rows[0].artifact_state !== "implementing") {
         throw new CommandRejectedError("ERR-STATE", "freeze-artifact requires state implementing");
       }
+      // KC-14 B7 (major review): freeze cũng là điểm DÙNG — actor phải đăng
+      // ký/active và trục impact phải sạch như begin-implementation.
+      const freezeActor = await queryRows<{ active: boolean }>(
+        ctx,
+        sql`SELECT active FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
+      );
+      if (freezeActor.length === 0) {
+        throw new CommandRejectedError("ERR-ACTOR", "Actor is not a registered active actor");
+      }
+      if (rows[0].impact_status !== "clear" && rows[0].impact_status !== "reaffirmed") {
+        throw new CommandRejectedError(
+          "SFR-011",
+          `Artifact is ${rows[0].impact_status} — blocked for use inside the impact set`,
+        );
+      }
       const approval = await findEffectiveApproval(
         ctx,
         p["artifactId"] as string,
@@ -351,6 +366,20 @@ export async function retireArtifact(
           `Non-terminal output versions still pin this quality contract: ${pinningOutputs
             .map((r) => `${r.id}@${r.revision}`)
             .join(", ")}`,
+        );
+      }
+      // KC-14 B7 (minor review): Project shell pin templateRef — Project chưa
+      // đóng còn pin template này thì không retire được.
+      const pinningProjects = await queryRows<{ id: string }>(
+        ctx,
+        sql`SELECT id FROM dopaios_projects
+            WHERE template_ref->>'template_id' = ${p["artifactId"]}
+              AND state NOT IN ('P4_CLOSED')`,
+      );
+      if (pinningProjects.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-PINNED",
+          `Open projects still pin this template: ${pinningProjects.map((r) => r.id).join(", ")}`,
         );
       }
 
@@ -485,6 +514,17 @@ export async function validateQualityContractPin(
   }
   if (ledger[0].sha256 !== ref.sha256) {
     throw new CommandRejectedError("SFR-007", "Quality contract pin hash mismatch");
+  }
+  // KC-14 B7 (major review): hợp đồng chất lượng gác CHECK_PASSED nên hiệu
+  // lực phải là hiệu lực THẬT — có Approval Record approve/AWC đúng hash,
+  // chưa vô hiệu; hàng ledger bootstrap không record không đủ (cùng chuẩn
+  // begin-implementation đặt cho trục artifact).
+  const effective = await findEffectiveApproval(ctx, ref.id, ref.revision, ref.sha256);
+  if (!effective) {
+    throw new CommandRejectedError(
+      "ERR-APPROVAL",
+      "Pinned quality contract has no effective approval record",
+    );
   }
   const content = (await ctx.tx.execute(sql`
     SELECT output_type, required_checks FROM dopaios_quality_contracts

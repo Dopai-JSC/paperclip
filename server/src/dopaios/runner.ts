@@ -193,18 +193,25 @@ export async function runnerTick(
 
     // S06 — thực thi work-item ACCEPTED của run đang RUNNING (ready-check
     // máy-kiểm pin Hợp đồng chất lượng nằm trong chính lệnh — KC-14).
-    for (const wi of await rows<{ id: string }>(
+    // KC-14 B7 (major review): id lệnh và đối tượng phải tất định theo ĐÚNG
+    // dòng đầu ra — work-item rework nộp lên CÙNG dòng của bản trước với
+    // revision kế tiếp, không mở dòng song song.
+    for (const wi of await rows<{ id: string; rework_output: string | null; rework_rev: number | null }>(
       db,
-      sql`SELECT w.id FROM dopaios_work_items w
+      sql`SELECT w.id, w.rework_of_output_ref->>'outputId' AS rework_output,
+                 (w.rework_of_output_ref->>'revision')::int AS rework_rev
+          FROM dopaios_work_items w
           JOIN dopaios_sop_runs r ON r.id = w.run_id
           WHERE w.state = 'ACCEPTED' AND r.state = 'RUNNING' ORDER BY w.id`,
     )) {
+      const outputId = wi.rework_output ?? `OUT-${wi.id}`;
+      const outputRevision = (wi.rework_rev ?? 0) + 1;
       await fire(actions, "run-fixture-execution", wi.id, () =>
-        runFixtureExecution(db, `AUTO-EXEC-${wi.id}`, {
+        runFixtureExecution(db, `AUTO-EXEC-${wi.id}-${outputId}-r${outputRevision}`, {
           workItemId: wi.id,
           executor: fx.executor,
-          outputId: `OUT-${wi.id}`,
-          outputRevision: 1,
+          outputId,
+          outputRevision,
           contentSha256: fx.contentSha256,
           outputType: fx.outputType,
           qualityContractRef: fx.qualityContractRef,
@@ -238,22 +245,22 @@ export async function runnerTick(
 
     // S07 — review độc lập (reviewer ≠ executor) cho work-item SUBMITTED có
     // phiên bản đã qua SELF_CHECK.
-    for (const wi of await rows<{ id: string; revision: number }>(
+    for (const wi of await rows<{ id: string; output_id: string; revision: number }>(
       db,
-      sql`SELECT w.id, o.revision FROM dopaios_work_items w
+      sql`SELECT w.id, o.id AS output_id, o.revision FROM dopaios_work_items w
           JOIN dopaios_sop_runs r ON r.id = w.run_id
           JOIN dopaios_output_versions o ON o.work_item_id = w.id AND o.state = 'SELF_CHECK'
           WHERE w.state = 'SUBMITTED' AND r.state = 'RUNNING' ORDER BY w.id`,
     )) {
       await fire(actions, "run-fixture-review", wi.id, () =>
-        reviewFixtureExecution(db, `AUTO-REV-${wi.id}`, {
+        reviewFixtureExecution(db, `AUTO-REV-${wi.id}-${wi.output_id}-r${wi.revision}`, {
           workItemId: wi.id,
-          outputId: `OUT-${wi.id}`,
+          outputId: wi.output_id,
           outputRevision: wi.revision,
           executor: fx.executor,
           reviewer: fx.reviewer,
           reviewEvidence: {
-            ref: `RE-OUT-${wi.id}`,
+            ref: `RE-${wi.output_id}`,
             sha256: fx.reviewSha256,
             targetSha256: fx.contentSha256,
             conclusion: "ready",
@@ -265,9 +272,13 @@ export async function runnerTick(
 
     // S08 — trình điểm quyết định: dựng Gói + Yêu cầu định tuyến người quyết
     // rồi DỪNG (SFR-014). Đây là điểm runner không bao giờ vượt qua.
-    for (const output of await rows<{ id: string; revision: number; run_id: string; sha: string }>(
+    // KC-14 B7: id lệnh + yêu cầu tất định theo (output, revision); gói của
+    // điểm dùng revision kế tiếp khi vòng trước đã kết thúc (SFR-053).
+    for (const output of await rows<{ id: string; revision: number; run_id: string; sha: string; next_pkg_rev: number }>(
       db,
-      sql`SELECT o.id, o.revision, w.run_id, o.content_sha256 AS sha
+      sql`SELECT o.id, o.revision, w.run_id, o.content_sha256 AS sha,
+                 COALESCE((SELECT max(p.revision) FROM dopaios_decision_packages p
+                           WHERE p.id = 'PKG-' || w.run_id), 0) + 1 AS next_pkg_rev
           FROM dopaios_output_versions o
           JOIN dopaios_work_items w ON w.id = o.work_item_id
           JOIN dopaios_sop_runs r ON r.id = w.run_id
@@ -275,20 +286,27 @@ export async function runnerTick(
           ORDER BY o.id`,
     )) {
       await fire(actions, "advance-to-decision", output.run_id, () =>
-        advanceToDecision(db, `AUTO-ADV-${output.run_id}`, {
+        advanceToDecision(db, `AUTO-ADV-${output.id}-r${output.revision}`, {
           runId: output.run_id,
           outputId: output.id,
           outputRevision: output.revision,
           packageId: `PKG-${output.run_id}`,
-          packageRevision: 1,
+          packageRevision: output.next_pkg_rev,
           refs: { outputId: output.id, revision: output.revision, sha256: output.sha },
-          requestId: `REQ-${output.run_id}`,
+          // Vòng 1 giữ id yêu cầu của KC-13; vòng sau (SFR-053) mang suffix
+          // revision gói để tất định theo đối tượng.
+          requestId:
+            output.next_pkg_rev === 1
+              ? `REQ-${output.run_id}`
+              : `REQ-${output.run_id}-p${output.next_pkg_rev}`,
         }),
       );
     }
 
     // S10 — đóng run máy-kiểm: CHỈ khi đã có quyết định của người (tồn tại
-    // Yêu cầu DECIDED) và không còn nghĩa vụ mở.
+    // Yêu cầu DECIDED) và không còn nghĩa vụ mở (tập terminal thống nhất
+    // với completeSopRun/cancelTestRun — SUPERSEDED-TARGET-CHANGED là
+    // terminal của revision, DEV-009).
     for (const run of await rows<{ id: string }>(
       db,
       sql`SELECT r.id FROM dopaios_sop_runs r
@@ -296,7 +314,14 @@ export async function runnerTick(
             AND EXISTS (SELECT 1 FROM dopaios_action_requests q
                         WHERE q.run_id = r.id AND q.state = 'DECIDED')
             AND NOT EXISTS (SELECT 1 FROM dopaios_action_requests q
-                            WHERE q.run_id = r.id AND q.state NOT IN ('DECIDED','CLOSED'))
+                            WHERE q.run_id = r.id
+                              AND q.state NOT IN ('DECIDED','CLOSED','SUPERSEDED-TARGET-CHANGED'))
+            AND NOT EXISTS (SELECT 1 FROM dopaios_work_items w
+                            WHERE w.run_id = r.id AND w.state NOT IN ('COMPLETED','CANCELLED'))
+            AND NOT EXISTS (SELECT 1 FROM dopaios_output_versions o
+                            JOIN dopaios_work_items w2 ON w2.id = o.work_item_id
+                            WHERE w2.run_id = r.id
+                              AND o.state NOT IN ('APPROVED','ACCEPTED','REJECTED','REWORK_REQUIRED'))
           ORDER BY r.id`,
     )) {
       await fire(actions, "complete-sop-run", run.id, () =>

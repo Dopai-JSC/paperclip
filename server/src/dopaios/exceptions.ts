@@ -68,11 +68,40 @@ export async function detectOverdueRunConditions(
   for (const row of overdue) {
     const deadlineMs = new Date(row.deadline).getTime();
     const exceptionPackageId = `EXC-RUN-${row.id}`;
-    await executeAuditedCommand(db, {
-      commandId: `OVERDUE-RUN-${row.id}-${deadlineMs}`,
-      payload: { conditionId: row.id, deadlineMs },
+    try {
+      await executeAuditedCommand(db, {
+        commandId: `OVERDUE-RUN-${row.id}-${deadlineMs}`,
+        payload: { conditionId: row.id, deadlineMs },
       handler: async (ctx, p) => {
         const conditionId = p["conditionId"] as string;
+        // KC-14 B7 (blocker review — cùng pattern requeueExpiredActivations):
+        // danh sách quét nằm NGOÀI transaction — handler phải RE-CHECK trên
+        // snapshot của chính transaction: condition còn open, approval còn
+        // hiệu lực, run chưa terminal; closeCondition/cancelTestRun/bản sửa
+        // chen giữa thì lệnh này phải chết, không tuyên bố quá hạn oan.
+        const fresh = await queryRows<{ c_state: string; invalidated: boolean; run_state: string }>(
+          ctx,
+          sql`SELECT c.state AS c_state, (r.invalidated_at IS NOT NULL) AS invalidated, run.state AS run_state
+              FROM dopaios_conditions c
+              JOIN dopaios_approval_records r ON r.id = c.record_id
+              JOIN dopaios_output_versions o ON o.id = r.target_id AND o.revision = r.target_revision
+              JOIN dopaios_work_items w ON w.id = o.work_item_id
+              JOIN dopaios_sop_runs run ON run.id = w.run_id
+              WHERE c.id = ${conditionId}
+              FOR UPDATE OF c, r`,
+        );
+        if (
+          fresh.length === 0 ||
+          fresh[0].c_state !== "open" ||
+          fresh[0].invalidated ||
+          fresh[0].run_state === "COMPLETED" ||
+          fresh[0].run_state === "CANCELLED"
+        ) {
+          throw new CommandRejectedError(
+            "ERR-OVERDUE-STALE",
+            `Condition ${conditionId} is no longer an open obligation of an effective approval on a live run`,
+          );
+        }
         // Tái pin bằng chứng kiểm của CHÍNH phiên bản vào gói EXCEPTION
         // (SFR-034: cùng ID@revision@hash như gói gốc).
         const version = await queryRows<{ check_evidence: Json | null; content_sha256: string }>(
@@ -143,9 +172,14 @@ export async function detectOverdueRunConditions(
           expectedVersion: -1,
         });
         return { conditionId, exceptionPackageId, runId: row.run_id };
-      },
-    });
-    declared.push({ conditionId: row.id, exceptionPackageId });
+        },
+      });
+      declared.push({ conditionId: row.id, exceptionPackageId });
+    } catch (error) {
+      // Ca stale (re-check trượt) đã để vệt audit — watchdog đi tiếp,
+      // không sập cả tick.
+      if (!(error instanceof CommandRejectedError)) throw error;
+    }
   }
   return declared;
 }
@@ -239,6 +273,24 @@ export async function decideRunException(
         throw new CommandRejectedError("ERR-CONDITION-STATE", "Exception decisions apply to overdue conditions");
       }
 
+      // KC-14 B7 (major review): quyết định đóng ĐÚNG yêu cầu của revision
+      // gói đang ký — sau vòng RMI, yêu cầu hiện hành là yêu cầu do
+      // answerClarification tạo, không phải yêu cầu gốc của watchdog.
+      const linkedRequest = await queryRows<{ id: string }>(
+        ctx,
+        sql`SELECT id FROM dopaios_action_requests
+            WHERE package_id = ${p["packageId"]} AND package_revision = ${packageRevision}
+              AND kind = 'exception'
+              AND state NOT IN ('DECIDED', 'SUPERSEDED-TARGET-CHANGED')
+            ORDER BY id LIMIT 1`,
+      );
+      if (linkedRequest.length === 0) {
+        throw new CommandRejectedError(
+          "SFR-048",
+          "No open exception request is linked to this package revision",
+        );
+      }
+
       const outcome = p["outcome"] as string;
       if (outcome === "approve") {
         const disposition = p["disposition"] as RunExceptionDisposition | undefined;
@@ -291,6 +343,14 @@ export async function decideRunException(
             if ((replacement as unknown as Json)[field] === undefined) {
               throw new CommandRejectedError("SFR-033", `Replacement condition is missing ${field}`);
             }
+          }
+          // KC-14 B7 (minor review): tái xác nhận MỞ LẠI bước — condition
+          // thay thế chặn bước thì mâu thuẫn với chính quyết định (SFR-022).
+          if (replacement.blocksNextStep === true) {
+            throw new CommandRejectedError(
+              "SFR-022",
+              "A replacement condition with blocks_next_step: true contradicts reaffirmation",
+            );
           }
           await ctx.emit({
             streamName: `dopaiosCondition-${refs.conditionId}`,
@@ -410,11 +470,16 @@ export async function decideRunException(
         },
       });
       await ctx.emit({
-        streamName: `dopaiosActionRequest-REQ-${p["packageId"]}`,
+        streamName: `dopaiosActionRequest-${linkedRequest[0].id}`,
         type: "ActionRequestStateChanged",
-        data: { requestId: `REQ-${p["packageId"]}`, state: "DECIDED", decidedBy: p["actor"] },
+        data: { requestId: linkedRequest[0].id, state: "DECIDED", decidedBy: p["actor"] },
       });
-      return { packageId: p["packageId"] as string, outcome, versionState: "ACCEPTED" };
+      return {
+        packageId: p["packageId"] as string,
+        outcome,
+        versionState: "ACCEPTED",
+        decidedRequestId: linkedRequest[0].id,
+      };
     },
   });
 }
@@ -450,6 +515,19 @@ export async function cancelTestRun(
       if ((p["actor"] as string) !== run[0].decider) {
         throw new CommandRejectedError("SFR-051", "Cancel requires the pinned authority of the run");
       }
+      // KC-14 B7 (major review): hủy là quyết định có thẩm quyền — actor
+      // phải là NGƯỜI đã đăng ký và đang active (SFR-023), không chỉ trùng
+      // chuỗi decider.
+      const cancelActor = await queryRows<{ kind: string }>(
+        ctx,
+        sql`SELECT kind FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
+      );
+      if (cancelActor.length === 0) {
+        throw new CommandRejectedError("ERR-ACTOR", "Cancel authority is not a registered active actor");
+      }
+      if (cancelActor[0].kind !== "human") {
+        throw new CommandRejectedError("SFR-023", "AI holds no cancel authority");
+      }
       if (!p["reason"]) {
         throw new CommandRejectedError("ERR-002", "Cancel requires an explicit reason");
       }
@@ -481,6 +559,10 @@ export async function cancelTestRun(
             JOIN dopaios_output_versions o ON o.id = r.target_id AND o.revision = r.target_revision
             JOIN dopaios_work_items w ON w.id = o.work_item_id
             WHERE w.run_id = ${p["runId"]} AND c.state <> 'closed'
+              -- KC-14 B7 (minor review): approval đã vô hiệu thì nghĩa vụ
+              -- theo dõi condition đã kết thúc (SFR-016/031) — không đòi
+              -- disposition thừa, nhất quán với watchdog.
+              AND r.invalidated_at IS NULL
             ORDER BY c.id`,
       );
       const obligations = [
