@@ -228,12 +228,16 @@ export async function dispositionImpact(
       if (!p["basis"]) {
         throw new CommandRejectedError("ERR-002", "Disposition requires an explicit basis");
       }
-      const actors = await queryRows<{ capabilities: string[] }>(
+      const actors = await queryRows<{ kind: string; capabilities: string[] }>(
         ctx,
-        sql`SELECT capabilities FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
+        sql`SELECT kind, capabilities FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
       );
       if (actors.length === 0 || !actors[0].capabilities.includes("governance-approver")) {
         throw new CommandRejectedError("ERR-CAPABILITY", "Disposition requires governance-approver");
+      }
+      // KC-13 B6 (SFR-023): disposition là quyết định — chỉ vai người.
+      if (actors[0].kind !== "human") {
+        throw new CommandRejectedError("SFR-023", "AI holds no disposition authority");
       }
       const impacts = await queryRows<{
         state: string;
@@ -358,12 +362,16 @@ export async function decideException(
       if (packages[0].state !== "OPEN") {
         throw new CommandRejectedError("SFR-047", "EXCEPTION package is no longer open");
       }
-      const actors = await queryRows<{ capabilities: string[] }>(
+      const actors = await queryRows<{ kind: string; capabilities: string[] }>(
         ctx,
-        sql`SELECT capabilities FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
+        sql`SELECT kind, capabilities FROM dopaios_actors WHERE id = ${p["actor"]} AND active = true`,
       );
       if (actors.length === 0 || !actors[0].capabilities.includes("governance-approver")) {
         throw new CommandRejectedError("ERR-CAPABILITY", "Deciding an exception requires governance-approver");
+      }
+      // KC-13 B6 (SFR-023): quyết ngoại lệ là quyết định — chỉ vai người.
+      if (actors[0].kind !== "human") {
+        throw new CommandRejectedError("SFR-023", "AI holds no exception-decision authority");
       }
       const { condition } = await loadConditionWithRecord(ctx, p["conditionId"] as string);
       if (condition.state !== "overdue") {

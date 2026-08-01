@@ -60,6 +60,24 @@ async function requireHumanOrchestrator(ctx: CommandContext, actorId: string): P
   }
 }
 
+// Quản trị sổ Staff/pool là quyền của NGƯỜI giữ staff-admin — AI không tự
+// thêm thành viên hay mở rộng đội (AC-FR-69.3; SOP Mục 2.3 qua SFR-023).
+async function requireHumanStaffAdmin(ctx: CommandContext, actorId: string): Promise<void> {
+  const admin = await one<{ kind: string; active: boolean; capabilities: string[] }>(
+    ctx,
+    sql`SELECT kind, active, capabilities FROM dopaios_actors WHERE id = ${actorId}`,
+  );
+  if (!admin || !admin.active || !admin.capabilities.includes("staff-admin")) {
+    throw new CommandRejectedError("SFR-004", `Actor ${actorId} lacks capability staff-admin`);
+  }
+  if (admin.kind !== "human") {
+    throw new CommandRejectedError(
+      "SFR-023",
+      `Actor ${actorId} is not a human Staff — AI must not expand the team (AC-FR-69.3)`,
+    );
+  }
+}
+
 function requireCompleteRoleMap(roles: RoleMap, context: string): void {
   for (const role of AI_ROLES) {
     const entry = roles[role];
@@ -67,6 +85,21 @@ function requireCompleteRoleMap(roles: RoleMap, context: string): void {
       throw new CommandRejectedError(
         "ERR-ROLE-MISSING",
         `${context}: role ${role} must map a primary and a fallback AI staff (AC-FR-69.3)`,
+      );
+    }
+  }
+}
+
+// Tính độc lập của reviewer (FR-46/FR-69 "độc lập"): một Staff được giữ
+// nhiều vai NẾU chứng minh đủ độc lập — tối thiểu, người kiểm độc lập không
+// được trùng người dựng (khớp SFR-019 reviewer ≠ executor ở tầng run).
+function requireReviewerIndependence(roles: RoleMap, context: string): void {
+  const reviewer = new Set([roles["AI-Reviewer"].primary, roles["AI-Reviewer"].fallback]);
+  for (const builder of [roles["AI-Build"].primary, roles["AI-Build"].fallback]) {
+    if (reviewer.has(builder)) {
+      throw new CommandRejectedError(
+        "ERR-INDEPENDENCE",
+        `${context}: AI-Reviewer must be independent from AI-Build (${builder} holds both)`,
       );
     }
   }
@@ -113,13 +146,7 @@ export async function registerStaffAi(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
-      const admin = await one<{ active: boolean; capabilities: string[] }>(
-        ctx,
-        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${p["actor"]}`,
-      );
-      if (!admin || !admin.active || !admin.capabilities.includes("staff-admin")) {
-        throw new CommandRejectedError("SFR-004", `Actor ${p["actor"]} lacks capability staff-admin`);
-      }
+      await requireHumanStaffAdmin(ctx, p["actor"] as string);
       const existing = await one<{ id: string }>(
         ctx,
         sql`SELECT id FROM dopaios_staff_ai WHERE id = ${p["staffId"]}`,
@@ -159,13 +186,7 @@ export async function setStaffAiStatus(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
-      const admin = await one<{ active: boolean; capabilities: string[] }>(
-        ctx,
-        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${p["actor"]}`,
-      );
-      if (!admin || !admin.active || !admin.capabilities.includes("staff-admin")) {
-        throw new CommandRejectedError("SFR-004", `Actor ${p["actor"]} lacks capability staff-admin`);
-      }
+      await requireHumanStaffAdmin(ctx, p["actor"] as string);
       const staff = await one<{ id: string }>(
         ctx,
         sql`SELECT id FROM dopaios_staff_ai WHERE id = ${p["staffId"]}`,
@@ -195,13 +216,7 @@ export async function pinStartupPool(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
-      const admin = await one<{ active: boolean; capabilities: string[] }>(
-        ctx,
-        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${p["actor"]}`,
-      );
-      if (!admin || !admin.active || !admin.capabilities.includes("staff-admin")) {
-        throw new CommandRejectedError("SFR-004", `Actor ${p["actor"]} lacks capability staff-admin`);
-      }
+      await requireHumanStaffAdmin(ctx, p["actor"] as string);
       const roles = p["roles"] as RoleMap;
       requireCompleteRoleMap(roles, `Startup pool ${p["poolId"]}`);
       await requireActiveAiStaff(ctx, staffIdsOf(roles), "ERR-POOL-STAFF");
@@ -277,10 +292,12 @@ export async function proposeTeamManifest(
       if (!project) {
         throw new CommandRejectedError("ERR-PROJECT", `Project ${p["projectId"]} not found`);
       }
-      // Bootstrap: Orchestrator ĐÃ ĐƯỢC GÁN của Project chọn đội (UJ-10);
-      // actor khác bị chặn kể cả khi giữ capability orchestrator.
+      // Orchestrator ĐÃ ĐƯỢC GÁN của Project (UJ-10); actor khác bị chặn kể
+      // cả khi giữ capability orchestrator. Với delivery, người đề xuất chuẩn
+      // là AI-Lead (FR-8) — spike dùng Orchestrator làm stand-in đề xuất và
+      // ghi giới hạn tại hồ sơ; người DUYỆT mọi stage vẫn là Orchestrator.
       await requireHumanOrchestrator(ctx, p["actor"] as string);
-      if (p["stage"] === "bootstrap" && p["actor"] !== project.orchestrator) {
+      if (p["actor"] !== project.orchestrator) {
         throw new CommandRejectedError(
           "ERR-ORCH-MISMATCH",
           `Actor ${p["actor"]} is not the assigned Orchestrator of ${p["projectId"]}`,
@@ -308,6 +325,7 @@ export async function proposeTeamManifest(
 
       const roles = p["roleAssignments"] as RoleMap;
       requireCompleteRoleMap(roles, `Team Manifest ${p["manifestId"]}`);
+      requireReviewerIndependence(roles, `Team Manifest ${p["manifestId"]}`);
       // Chọn "từ danh sách đủ điều kiện": mọi Staff được gán phải nằm trong
       // pool đã pin (AC-FR-8.3 — inventory ngoài pool không đủ quyền chạy).
       const poolStaff = new Set(staffIdsOf(pool.roles));
@@ -579,6 +597,68 @@ export async function createProjectWorkItem(
         expectedVersion: -1,
       });
       return { workItemId: p["workItemId"] as string, state: "READY" };
+    },
+  });
+}
+
+// ---- Cổng Release theo stage (AC-FR-69.4) ----
+
+// Stub kích hoạt Release: KC-13 chỉ kiểm ĐIỀU KIỆN GÁC — thiếu Team Manifest
+// `delivery` được Orchestrator duyệt thì Release bị chặn. Toàn bộ nội dung
+// Release còn lại (baseline, cổng B/C…) ngoài phạm vi KC này; event chỉ để
+// audit, không có projection.
+export async function activateRelease(
+  db: Db,
+  commandId: string,
+  payload: { projectId: string; releaseId: string; actor: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const project = await one<{ state: string; orchestrator: string }>(
+        ctx,
+        sql`SELECT state, orchestrator FROM dopaios_projects WHERE id = ${p["projectId"]}`,
+      );
+      if (!project) {
+        throw new CommandRejectedError("ERR-PROJECT", `Project ${p["projectId"]} not found`);
+      }
+      await requireHumanOrchestrator(ctx, p["actor"] as string);
+      if (p["actor"] !== project.orchestrator) {
+        throw new CommandRejectedError(
+          "ERR-ORCH-MISMATCH",
+          `Actor ${p["actor"]} is not the assigned Orchestrator of ${p["projectId"]}`,
+        );
+      }
+      const delivery = await one<{ id: string; revision: number }>(
+        ctx,
+        sql`SELECT id, revision FROM dopaios_team_manifests
+            WHERE project_id = ${p["projectId"]} AND stage = 'delivery' AND state = 'approved'
+            ORDER BY revision DESC LIMIT 1`,
+      );
+      if (!delivery) {
+        throw new CommandRejectedError(
+          "ERR-DELIVERY-MANIFEST",
+          `Project ${p["projectId"]} has no approved delivery Team Manifest — Release is blocked (AC-FR-69.4)`,
+        );
+      }
+      await ctx.emit({
+        streamName: `dopaiosRelease-${p["releaseId"]}`,
+        type: "ReleaseActivationRecorded",
+        data: {
+          releaseId: p["releaseId"],
+          projectId: p["projectId"],
+          manifestId: delivery.id,
+          manifestRevision: delivery.revision,
+          activatedBy: p["actor"],
+        },
+        metadata: { commandId, audit: true },
+        expectedVersion: -1,
+      });
+      return {
+        releaseId: p["releaseId"] as string,
+        manifest: { id: delivery.id, revision: delivery.revision },
+      };
     },
   });
 }
