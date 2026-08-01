@@ -8,6 +8,7 @@ import {
   CommandRejectedError,
 } from "./event-store.js";
 import { validateQualityContractPin } from "./lifecycle.js";
+import { executeAuditedCommand } from "./approval.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -306,7 +307,7 @@ export async function runFixtureExecution(
     qualityContractRef: { id: string; revision: number; sha256: string };
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -503,7 +504,7 @@ export async function validateSelfCheck(
     expectedSha256: string;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -647,7 +648,7 @@ export async function reviewFixtureExecution(
     expectedReviewSha256: string;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -744,7 +745,7 @@ export async function attachCheckEvidence(
     expectedSha256: string;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -836,7 +837,7 @@ export async function advanceToDecision(
     requestId: string;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -960,7 +961,7 @@ export async function recordApproval(
     openedStep?: string;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -1242,7 +1243,7 @@ export async function answerClarification(
     outputRevision: number;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
