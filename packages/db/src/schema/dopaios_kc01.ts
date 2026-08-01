@@ -43,6 +43,12 @@ export const dopaiosArtifacts = pgTable(
     createdBy: text("created_by"),
     artifactType: text("artifact_type"),
     hasRegionSchema: boolean("has_region_schema"),
+    // KC-04 (0515): provenance FS-002 — source_refs = "Danh sách nguồn" pin
+    // ID@revision hoặc hash (d.629 + EDGE-001, không nhận "latest");
+    // storage_ref = nơi lưu nội dung (tiêu chí 2 KC-04). Nullable vì event
+    // trước KC-04 không mang hai trường này.
+    sourceRefs: jsonb("source_refs").$type<Array<Record<string, unknown>>>(),
+    storageRef: text("storage_ref"),
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );

@@ -13,8 +13,10 @@ import {
   unsatisfiedDependencies,
   invalidateEffectiveApprovalsAndReblockSteps,
   invalidateOpenPackagesAndRequestsForOutput,
+  traceCriticalOutput,
 } from "./graph-repo.js";
 import { validateSourceRefs, type SourceRef } from "./lifecycle.js";
+import { parseRegisteredSourcePins, parseStorageRef } from "./provenance.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -117,16 +119,27 @@ export async function createProjectShell(
 export async function registerApprovedArtifact(
   db: Db,
   commandId: string,
-  payload: { artifactId: string; revision: number; sha256: string; artifactType?: string },
+  payload: {
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    artifactType?: string;
+    sourceRefs?: Array<Record<string, unknown>>;
+    storageRef?: string;
+  },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-04 B1: hợp đồng input FS-002 d.629 — nguồn pin ID@revision hoặc
+      // hash, không "latest" (EDGE-001); storageRef là nơi lưu (tiêu chí 2).
+      const sourceRefs = parseRegisteredSourcePins(p["sourceRefs"]);
+      const storageRef = parseStorageRef(p["storageRef"]);
       await ctx.emit({
         streamName: `dopaiosArtifact-${p["artifactId"]}`,
         type: "ArtifactRegistered",
-        data: { ...p, artifactState: "approved", impactStatus: "clear" },
+        data: { ...p, sourceRefs, storageRef, artifactState: "approved", impactStatus: "clear" },
       });
       return { artifactId: p["artifactId"] as string, artifactState: "approved" };
     },
@@ -602,7 +615,12 @@ export async function maybePassChecks(
         WHERE id = ${input.outputId} AND revision = ${input.outputRevision}`,
   );
   if (!output || output.state !== "INDEPENDENT_CHECK") {
-    return { passed: false, missing: ["output not in INDEPENDENT_CHECK"] };
+    // B6 (minor m-3): nêu rõ trạng thái thực — "đã CHECK_PASSED rồi" và
+    // "chưa tới lượt kiểm" là hai thông điệp khác nhau với caller.
+    return {
+      passed: false,
+      missing: [`output not in INDEPENDENT_CHECK (state=${output?.state ?? "missing"})`],
+    };
   }
   if (!output.quality_contract_ref) {
     return { passed: false, missing: ["no quality contract pinned"] };
@@ -617,7 +635,30 @@ export async function maybePassChecks(
     return { passed: false, missing: ["pinned quality contract content missing"] };
   }
   const evidence = output.check_evidence ?? {};
-  const missing = contract.required_checks.filter((check) => evidence[check] === undefined);
+  // KC-04 B4 (FR-21 nghiệm thu "trường hợp kiểm thử thiếu liên kết bị
+  // chặn"; FR-50 "hồ sơ mất nguồn không thể được chấp nhận"): khóa
+  // "trace-complete" trong Hợp đồng chất lượng là PHÉP KIỂM MÁY — hệ thống
+  // tự đánh giá liên kết truy vết của chính đầu ra qua graph-repo, KHÔNG
+  // đọc bằng chứng đính kèm (tác nhân sản xuất không thể tự khai cho qua —
+  // FR-29). Trước điểm quyết định chưa có approval và artifact chưa vào sổ,
+  // nên phần kiểm được tại cửa này là ba mối của chính đầu ra: kế hoạch/
+  // spec, nguồn, Phiên chạy AI; các mối còn lại do truy vấn run-level trả
+  // lời (B2). Contract không khai khóa này thì hành vi giữ nguyên.
+  const PRE_DECISION_TRACE_HOPS = ["spec", "nguon", "phien-chay-ai"];
+  const missing: string[] = [];
+  for (const check of contract.required_checks) {
+    if (check === "trace-complete") {
+      const trace = await traceCriticalOutput(ctx, input.outputId, input.outputRevision);
+      const broken = trace.missing.filter((hop) => PRE_DECISION_TRACE_HOPS.includes(hop));
+      if (broken.length > 0) {
+        missing.push(`trace-complete:${broken.join("+")}`);
+      }
+      continue;
+    }
+    if (evidence[check] === undefined) {
+      missing.push(check);
+    }
+  }
   if (missing.length > 0) {
     return { passed: false, missing };
   }

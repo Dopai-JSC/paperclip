@@ -311,6 +311,10 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         createdBy: d["createdBy"] ?? null,
         artifactType: d["artifactType"] ?? null,
         hasRegionSchema: d["hasRegionSchema"] ?? null,
+        // KC-04 (0515): provenance FS-002 — event trước KC-04 không mang
+        // hai trường này nên projection giữ null, không suy ra [].
+        sourceRefs: d["sourceRefs"] ?? null,
+        storageRef: d["storageRef"] ?? null,
       });
       break;
     case "ArtifactStateChanged":

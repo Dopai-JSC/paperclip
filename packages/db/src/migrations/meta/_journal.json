@@ -1044,6 +1044,20 @@
       "when": 1785514300000,
       "tag": "0514_dopaios_kc15_output_source_refs",
       "breakpoints": true
+    },
+    {
+      "idx": 515,
+      "version": "7",
+      "when": 1785514400000,
+      "tag": "0515_dopaios_kc04_artifact_provenance",
+      "breakpoints": true
+    },
+    {
+      "idx": 516,
+      "version": "7",
+      "when": 1785514500000,
+      "tag": "0516_dopaios_kc04_trace_indexes",
+      "breakpoints": true
     }
   ]
 }

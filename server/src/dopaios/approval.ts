@@ -8,6 +8,7 @@ import {
   writeEvent,
   CommandRejectedError,
 } from "./event-store.js";
+import { parseRegisteredSourcePins, parseStorageRef } from "./provenance.js";
 
 // KC-03 B2: approval engine dùng chung trên event store KC-01, đúng hợp đồng
 // record-approval của FS-002 (bảng d.651-661) và ranh FS-003:
@@ -119,6 +120,8 @@ export async function registerDraftArtifact(
     createdBy: string;
     artifactType: string;
     hasRegionSchema: boolean;
+    sourceRefs?: Array<Record<string, unknown>>;
+    storageRef?: string;
   },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
@@ -147,6 +150,10 @@ export async function registerDraftArtifact(
           `Revision must be ${maxRevision + 1}, got ${p["revision"]}`,
         );
       }
+      // KC-04 B1: hợp đồng input FS-002 d.629 — nguồn pin ID@revision hoặc
+      // hash, không "latest" (EDGE-001); storageRef là nơi lưu (tiêu chí 2).
+      const sourceRefs = parseRegisteredSourcePins(p["sourceRefs"]);
+      const storageRef = parseStorageRef(p["storageRef"]);
       await ctx.emit({
         streamName: `dopaiosArtifact-${p["artifactId"]}`,
         type: "ArtifactRegistered",
@@ -159,6 +166,8 @@ export async function registerDraftArtifact(
           createdBy: p["createdBy"],
           artifactType: p["artifactType"],
           hasRegionSchema: p["hasRegionSchema"],
+          sourceRefs,
+          storageRef,
         },
       });
       return { artifactId: p["artifactId"] as string, revision: p["revision"] as number, state: "draft" };

@@ -440,3 +440,400 @@ export async function unsatisfiedDependencies(
     .map(([dependsOnWorkItemId, reason]) => ({ dependsOnWorkItemId, reason }))
     .sort((a, b) => (a.dependsOnWorkItemId < b.dependsOnWorkItemId ? -1 : 1));
 }
+
+// ===== KC-04 B2: truy vết spec–code–test–artifact–kết quả kiểm =====
+// (QD-1 KC-04): trace_links KHÔNG phải bảng mới — chuỗi truy vết là cách ĐỌC
+// hợp nhất trên các liên kết pin sẵn có: source_refs của phiên bản đầu ra
+// (KC-15/FS-002), sổ cái artifact + source_refs/storage_ref (KC-03/KC-04 B1),
+// dopaios_session_artifacts (KC-02), approval record hiệu lực invalidated_at
+// IS NULL (KC-14). Đặt tại graph-repo vì đây là module traversal duy nhất.
+// Câu bất biến kế hoạch KC-04 (r4, từ research graph 07/2026): mọi đầu ra
+// trọng yếu truy vết được về work-item → kế hoạch/spec → artifact → nguồn →
+// quyết định kiểm → Phiên chạy AI tương ứng — đọc là SÁU MỐI phải giải được
+// từ mỗi đầu ra (QD-6, khớp AC-FR-47.2 source→spec→task→run→output→check→
+// decision), không phải một chuỗi tuyến tính duy nhất.
+
+// Loại artifact được tính là mối "kế hoạch/spec" của câu bất biến. Giới hạn
+// slice: danh mục loại đầy đủ thuộc FS-002/DS-2 — fixture KC-04 dùng
+// feature-spec; ghi hồ sơ.
+const SPEC_ARTIFACT_TYPES = ["feature-spec", "plan"];
+
+export type ResolvedSourcePin = {
+  pin: Json;
+  // Hàng sổ cái khớp pin ID@revision; null khi pin không giải được trong sổ.
+  resolved: {
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    artifactType: string | null;
+    artifactState: string;
+  } | null;
+  // Pin hash-đứng-một-mình (FS-002 d.629): nguồn ngoài sổ tự định danh bằng
+  // nội dung — hợp lệ mà không cần hàng sổ cái.
+  byContent: boolean;
+};
+
+export type OutputTrace = {
+  output: {
+    outputId: string;
+    revision: number;
+    state: string;
+    workItemId: string;
+    contentSha256: string;
+    checkEvidence: Json | null;
+  } | null;
+  workItem: { id: string; runId: string | null; projectId: string | null; state: string } | null;
+  sources: ResolvedSourcePin[];
+  registeredArtifacts: Array<{
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    artifactType: string | null;
+    artifactState: string;
+    storageRef: string | null;
+    sourceRefs: Json[] | null;
+  }>;
+  effectiveApprovals: Array<{ recordId: string; outcome: string }>;
+  aiSessions: Array<{ sessionId: string; agentId: string; engine: string }>;
+  missing: string[];
+};
+
+// Sáu mối của câu bất biến + hai trường tiêu chí 2, dưới dạng khóa thiếu:
+//   work-item / project    — đầu ra → work-item (→ Project);
+//   spec                   — ≥1 nguồn giải được thuộc loại kế hoạch/spec;
+//   nguon                  — mọi pin ID@revision CỦA CHÍNH đầu ra giải được
+//                            trong sổ (B6: không dính hàng sổ cái toàn cục);
+//   artifact / noi-luu     — nội dung đầu ra được đăng ký sổ cái, có nơi lưu;
+//   artifact-khai-nguon    — khóa run-level: mọi hàng sổ cái trùng nội dung
+//                            đều chưa khai nguồn (ngoài cổng pre-decision);
+//   quyet-dinh-kiem        — approval hiệu lực trên đúng (output, revision);
+//   phien-chay-ai          — Phiên chạy AI đã ghi nhận (confirmed) đúng nội
+//                            dung này.
+export async function traceCriticalOutput(
+  ctx: CommandContext,
+  outputId: string,
+  revision: number,
+): Promise<OutputTrace> {
+  const outputRows = await rows<{
+    id: string;
+    revision: number;
+    state: string;
+    work_item_id: string;
+    content_sha256: string;
+    check_evidence: Json | null;
+    source_refs: unknown;
+  }>(
+    ctx,
+    sql`SELECT id, revision, state, work_item_id, content_sha256, check_evidence, source_refs
+        FROM dopaios_output_versions
+        WHERE id = ${outputId} AND revision = ${revision}`,
+  );
+  if (outputRows.length === 0) {
+    return {
+      output: null,
+      workItem: null,
+      sources: [],
+      registeredArtifacts: [],
+      effectiveApprovals: [],
+      aiSessions: [],
+      missing: ["output"],
+    };
+  }
+  const o = outputRows[0];
+  const missing: string[] = [];
+
+  const workItemRows = await rows<{
+    id: string;
+    run_id: string | null;
+    project_id: string | null;
+    state: string;
+  }>(
+    ctx,
+    sql`SELECT id, run_id, project_id, state FROM dopaios_work_items WHERE id = ${o.work_item_id}`,
+  );
+  const workItem = workItemRows[0]
+    ? {
+        id: workItemRows[0].id,
+        runId: workItemRows[0].run_id,
+        projectId: workItemRows[0].project_id,
+        state: workItemRows[0].state,
+      }
+    : null;
+  if (!workItem) missing.push("work-item");
+  if (workItem && workItem.projectId === null) missing.push("project");
+
+  const pins: Json[] = Array.isArray(o.source_refs) ? (o.source_refs as Json[]) : [];
+  const sources: ResolvedSourcePin[] = [];
+  for (const pin of pins) {
+    const pinArtifactId = pin["artifactId"];
+    const pinRevision = pin["revision"];
+    if (typeof pinArtifactId === "string" && typeof pinRevision === "number") {
+      const ledger = await rows<{
+        id: string;
+        revision: number;
+        sha256: string;
+        artifact_type: string | null;
+        artifact_state: string;
+      }>(
+        ctx,
+        sql`SELECT id, revision, sha256, artifact_type, artifact_state
+            FROM dopaios_artifacts WHERE id = ${pinArtifactId} AND revision = ${pinRevision}`,
+      );
+      sources.push({
+        pin,
+        resolved: ledger[0]
+          ? {
+              artifactId: ledger[0].id,
+              revision: ledger[0].revision,
+              sha256: ledger[0].sha256,
+              artifactType: ledger[0].artifact_type,
+              artifactState: ledger[0].artifact_state,
+            }
+          : null,
+        byContent: false,
+      });
+    } else {
+      sources.push({ pin, resolved: null, byContent: typeof pin["sha256"] === "string" });
+    }
+  }
+  const hasSpecSource = sources.some(
+    (s) => s.resolved !== null && SPEC_ARTIFACT_TYPES.includes(s.resolved.artifactType ?? ""),
+  );
+  if (!hasSpecSource) missing.push("spec");
+  const unresolvedPin = sources.some((s) => s.resolved === null && !s.byContent);
+
+  const artifactRows = await rows<{
+    id: string;
+    revision: number;
+    sha256: string;
+    artifact_type: string | null;
+    artifact_state: string;
+    storage_ref: string | null;
+    source_refs: unknown;
+  }>(
+    ctx,
+    sql`SELECT id, revision, sha256, artifact_type, artifact_state, storage_ref, source_refs
+        FROM dopaios_artifacts WHERE sha256 = ${o.content_sha256} ORDER BY id, revision`,
+  );
+  const registeredArtifacts = artifactRows.map((row) => ({
+    artifactId: row.id,
+    revision: row.revision,
+    sha256: row.sha256,
+    artifactType: row.artifact_type,
+    artifactState: row.artifact_state,
+    storageRef: row.storage_ref,
+    sourceRefs: Array.isArray(row.source_refs) ? (row.source_refs as Json[]) : null,
+  }));
+  if (registeredArtifacts.length === 0) missing.push("artifact");
+  // "noi-luu" xét toàn cục theo nội dung: sổ cái định vị bằng sha256 —
+  // nơi lưu của BẤT KỲ hàng nào trùng hash đều chứa đúng nội dung này
+  // (content-addressed); căn cứ ghi hồ sơ B6.
+  if (registeredArtifacts.length > 0 && !registeredArtifacts.some((a) => a.storageRef !== null)) {
+    missing.push("noi-luu");
+  }
+  // B6 (major review lens 2): mối "nguồn" của GATE chỉ xét pin của CHÍNH
+  // đầu ra — hàng sổ cái cũ (trước 0515, source_refs null) trùng nội dung
+  // ở nơi khác không được phép chặn oan đầu ra mới tại cổng máy-kiểm.
+  if (unresolvedPin) {
+    missing.push("nguon");
+  }
+  // Vế "artifact đăng ký chưa khai nguồn" tách thành khóa run-level riêng,
+  // KHÔNG thuộc PRE_DECISION_TRACE_HOPS của cổng.
+  if (registeredArtifacts.length > 0 && registeredArtifacts.every((a) => a.sourceRefs === null)) {
+    missing.push("artifact-khai-nguon");
+  }
+
+  const approvalRows = await rows<{ id: string; outcome: string }>(
+    ctx,
+    sql`SELECT id, outcome FROM dopaios_approval_records
+        WHERE target_id = ${outputId} AND target_revision = ${revision}
+          AND outcome IN ('approve', 'approve-with-conditions')
+          AND invalidated_at IS NULL
+        ORDER BY id`,
+  );
+  const effectiveApprovals = approvalRows.map((row) => ({ recordId: row.id, outcome: row.outcome }));
+  if (effectiveApprovals.length === 0) missing.push("quyet-dinh-kiem");
+
+  // B6 (minor m-7): chỉ bản ghi CONFIRMED mới là bằng chứng Phiên chạy AI —
+  // khớp ngữ nghĩa "đầu ra đã được xác nhận lưu thành công" của KC-02.
+  const sessionRows = await rows<{ id: string; agent_id: string; engine: string }>(
+    ctx,
+    sql`SELECT DISTINCT s.id, s.agent_id, s.engine
+        FROM dopaios_session_artifacts sa
+        JOIN dopaios_ai_sessions s ON s.id = sa.session_id
+        WHERE sa.sha256 = ${o.content_sha256} AND sa.confirmed = true
+          AND s.work_item_id = ${o.work_item_id}
+        ORDER BY s.id`,
+  );
+  const aiSessions = sessionRows.map((row) => ({
+    sessionId: row.id,
+    agentId: row.agent_id,
+    engine: row.engine,
+  }));
+  if (aiSessions.length === 0) missing.push("phien-chay-ai");
+
+  return {
+    output: {
+      outputId: o.id,
+      revision: o.revision,
+      state: o.state,
+      workItemId: o.work_item_id,
+      contentSha256: o.content_sha256,
+      checkEvidence: o.check_evidence,
+    },
+    workItem,
+    sources,
+    registeredArtifacts,
+    effectiveApprovals,
+    aiSessions,
+    missing,
+  };
+}
+
+// Truy vấn XUÔI của FR-21 ("chức năng X xong chưa?"): mọi phiên bản đầu ra
+// từng pin ĐÚNG phiên bản spec này. Khác currentOutputsPinningSource (impact
+// set — chỉ bản hiện hành, loại run terminal): đây là cách đọc lịch sử đầy
+// đủ theo revision, phục vụ truy vết, không phục vụ vô hiệu.
+export async function outputsPinningSourceRevision(
+  ctx: CommandContext,
+  artifactId: string,
+  revision: number,
+): Promise<Array<{ outputId: string; revision: number; state: string; workItemId: string }>> {
+  const result = await rows<{
+    output_id: string;
+    revision: number;
+    state: string;
+    work_item_id: string;
+  }>(
+    ctx,
+    sql`SELECT o.id AS output_id, o.revision, o.state, o.work_item_id
+        FROM dopaios_output_versions o
+        WHERE o.source_refs IS NOT NULL
+          AND jsonb_typeof(o.source_refs) = 'array'
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(o.source_refs) AS ref
+            WHERE ref->>'artifactId' = ${artifactId}
+              -- B6 (minor m-5): guard kiểu trước khi cast — một pin dị dạng
+              -- lọt vào event bất biến không được phép nổ 22P02 cho MỌI
+              -- transaction gọi truy vấn xuôi về sau.
+              AND jsonb_typeof(ref->'revision') = 'number'
+              AND (ref->>'revision')::int = ${revision}
+          )
+        ORDER BY o.id, o.revision`,
+  );
+  return result.map((row) => ({
+    outputId: row.output_id,
+    revision: row.revision,
+    state: row.state,
+    workItemId: row.work_item_id,
+  }));
+}
+
+// "Đầu ra trọng yếu" của một run (QD-6): phiên bản HIỆN HÀNH (revision cao
+// nhất) của mọi dòng đầu ra thuộc work-item trong run — tập đầu vào cho phép
+// kiểm câu bất biến.
+export async function listCurrentRunOutputs(
+  ctx: CommandContext,
+  runId: string,
+): Promise<Array<{ outputId: string; revision: number }>> {
+  const result = await rows<{ output_id: string; revision: number }>(
+    ctx,
+    sql`SELECT o.id AS output_id, max(o.revision) AS revision
+        FROM dopaios_output_versions o
+        JOIN dopaios_work_items w ON w.id = o.work_item_id
+        WHERE w.run_id = ${runId}
+        GROUP BY o.id
+        ORDER BY o.id`,
+  );
+  return result.map((row) => ({ outputId: row.output_id, revision: Number(row.revision) }));
+}
+
+// Tiêu chí 2 KC-04: "Mỗi artifact chỉ ra Project, work-item, Phiên chạy AI,
+// phiên bản, hash và nơi lưu" — provenance của một hàng sổ cái, đọc qua
+// liên kết sẵn có: Phiên chạy AI ghi nhận đúng nội dung (session_artifacts
+// khớp sha256) → work-item của phiên → Project.
+export async function artifactProvenance(
+  ctx: CommandContext,
+  artifactId: string,
+  revision: number,
+): Promise<{
+  artifact: {
+    artifactId: string;
+    revision: number;
+    sha256: string;
+    artifactType: string | null;
+    artifactState: string;
+    storageRef: string | null;
+    sourceRefs: Json[] | null;
+    createdBy: string | null;
+  } | null;
+  producers: Array<{
+    sessionId: string;
+    agentId: string;
+    engine: string;
+    workItemId: string | null;
+    runId: string | null;
+    projectId: string | null;
+  }>;
+}> {
+  const artifactRows = await rows<{
+    id: string;
+    revision: number;
+    sha256: string;
+    artifact_type: string | null;
+    artifact_state: string;
+    storage_ref: string | null;
+    source_refs: unknown;
+    created_by: string | null;
+  }>(
+    ctx,
+    sql`SELECT id, revision, sha256, artifact_type, artifact_state, storage_ref, source_refs, created_by
+        FROM dopaios_artifacts WHERE id = ${artifactId} AND revision = ${revision}`,
+  );
+  if (artifactRows.length === 0) {
+    return { artifact: null, producers: [] };
+  }
+  const a = artifactRows[0];
+  // B6 (major review lens 2, M-2): neo producer vào work-item THỰC SỰ đã
+  // nộp nội dung này (tồn tại phiên bản đầu ra cùng sha trên cùng work-item)
+  // + chỉ bản ghi confirmed — trùng nội dung thuần túy ở Project khác không
+  // còn nhiễm chéo vào câu trả lời tiêu chí 2.
+  const producerRows = await rows<{
+    id: string;
+    agent_id: string;
+    engine: string;
+    work_item_id: string | null;
+    run_id: string | null;
+    project_id: string | null;
+  }>(
+    ctx,
+    sql`SELECT DISTINCT s.id, s.agent_id, s.engine, s.work_item_id, w.run_id, w.project_id
+        FROM dopaios_session_artifacts sa
+        JOIN dopaios_ai_sessions s ON s.id = sa.session_id
+        JOIN dopaios_work_items w ON w.id = s.work_item_id
+        JOIN dopaios_output_versions o
+          ON o.work_item_id = s.work_item_id AND o.content_sha256 = ${a.sha256}
+        WHERE sa.sha256 = ${a.sha256} AND sa.confirmed = true
+        ORDER BY s.id`,
+  );
+  return {
+    artifact: {
+      artifactId: a.id,
+      revision: a.revision,
+      sha256: a.sha256,
+      artifactType: a.artifact_type,
+      artifactState: a.artifact_state,
+      storageRef: a.storage_ref,
+      sourceRefs: Array.isArray(a.source_refs) ? (a.source_refs as Json[]) : null,
+      createdBy: a.created_by,
+    },
+    producers: producerRows.map((row) => ({
+      sessionId: row.id,
+      agentId: row.agent_id,
+      engine: row.engine,
+      workItemId: row.work_item_id,
+      runId: row.run_id,
+      projectId: row.project_id,
+    })),
+  };
+}
