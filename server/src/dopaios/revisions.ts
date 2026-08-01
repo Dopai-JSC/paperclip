@@ -2,15 +2,21 @@ import { sql } from "drizzle-orm";
 import {
   type Db,
   type CommandResult,
-  executeCommand,
   CommandRejectedError,
 } from "./event-store.js";
+import { executeAuditedCommand } from "./approval.js";
 import {
   applyOutputRevisionEntry,
   maybePassChecks,
   requireRunningRunOfWorkItem,
 } from "./commands.js";
-import { validateQualityContractPin, type QualityContractRef } from "./lifecycle.js";
+import { unsatisfiedDependencies } from "./graph-repo.js";
+import {
+  validateQualityContractPin,
+  validateSourceRefs,
+  type QualityContractRef,
+  type SourceRef,
+} from "./lifecycle.js";
 
 // KC-14 B4: submit-fixture-revision — hàng `NONE (revision kế tiếp)` của bảng
 // đầu ra FS-003. Bản sửa KHÔNG mở work-item: self-check và Review Evidence
@@ -39,6 +45,7 @@ export async function submitFixtureRevision(
     contentSha256: string;
     outputType: string;
     qualityContractRef: QualityContractRef;
+    sourceRefs?: SourceRef[];
     selfCheckEvidence: { ref: string; sha256: string; targetSha256: string; by: string };
     expectedSelfCheckSha256: string;
     reviewEvidence: { ref: string; sha256: string; targetSha256: string; conclusion: string; by: string };
@@ -51,7 +58,10 @@ export async function submitFixtureRevision(
     };
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  // KC-15 B5 (major review lens 2): lệnh này mang guard re-entry trọng yếu
+  // (pin nguồn superseded bị chặn) — mọi rejection phải để vệt audit bất
+  // biến như các lệnh anh em (SQR-001); đổi executeCommand trần sang audited.
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -79,6 +89,21 @@ export async function submitFixtureRevision(
         p["qualityContractRef"] as QualityContractRef,
         p["outputType"] as string,
       );
+      // KC-15 B3 (QD-4): pin nguồn của bản sửa kiểm cùng chuẩn — nguồn
+      // superseded bị chặn, buộc re-entry qua đúng revision nguồn được duyệt.
+      await validateSourceRefs(ctx, p["sourceRefs"] as SourceRef[] | undefined);
+      // KC-15 B5 (major review lens 1): đường vào trục thứ hai cũng phải qua
+      // guard đồ thị — bản sửa của dòng thuộc work-item hạ nguồn đang bị chặn
+      // không được vào trục khi thượng nguồn chưa thỏa.
+      const revUnsatisfied = await unsatisfiedDependencies(ctx, prior[0].work_item_id);
+      if (revUnsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Revision ready-check: unsatisfied dependencies — ${revUnsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
+        );
+      }
 
       // Thành phần bản sửa phải đúng hash đã pin trong gói fixture (SFR-020,
       // DEV-011/DEV-012) — thiếu hoặc sai là chặn TẠI CỬA, không ghi phiên bản.
@@ -126,6 +151,7 @@ export async function submitFixtureRevision(
         workItemId: prior[0].work_item_id,
         contentSha256: contentSha,
         qualityContractRef: p["qualityContractRef"] as unknown as Json,
+        sourceRefs: p["sourceRefs"] as SourceRef[] | undefined,
       });
 
       // Binding bằng chứng trên chính phiên bản (DEV-011) + hai hàng

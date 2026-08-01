@@ -128,4 +128,5 @@ export {
   dopaiosExecutionContracts,
   dopaiosQualityContracts,
   dopaiosRunSteps,
+  dopaiosWorkItemDependencies,
 } from "./dopaios_kc01.js";

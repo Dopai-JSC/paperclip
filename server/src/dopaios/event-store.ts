@@ -28,6 +28,7 @@ import {
   dopaiosExecutionContracts,
   dopaiosQualityContracts,
   dopaiosRunSteps,
+  dopaiosWorkItemDependencies,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -258,7 +259,11 @@ export async function executeCommand(
         }
       }
       // Serialization failure / deadlock: thử lại trọn transaction.
-      if ((code === "40001" || code === "40P01") && attempt < SERIALIZATION_RETRIES) {
+      // KC-15 B5 (minor review lens 2): 23505 trên bảng KHÁC dopaios_commands
+      // trong đua song song cũng retry — lần chạy lại đọc snapshot mới và
+      // guard tương ứng trả rejection sạch (an toàn vì idempotency theo
+      // command_id và handler thuần đọc-tx + emit).
+      if ((code === "40001" || code === "40P01" || code === "23505") && attempt < SERIALIZATION_RETRIES) {
         continue;
       }
       throw error;
@@ -506,6 +511,8 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         qualityContractRef: d["qualityContractRef"] ?? null,
         checkEvidence: d["checkEvidence"] ?? null,
         replacesRevision: d["replacesRevision"] ?? null,
+        // KC-15: pin danh sách nguồn của phiên bản (0514).
+        sourceRefs: d["sourceRefs"] ?? null,
       });
       break;
     case "OutputVersionStateChanged":
@@ -820,6 +827,18 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           set: { state: "open", openedByRecordId: (d["recordId"] ?? null) as string | null },
         });
       break;
+    // ===== KC-15: đồ thị phụ thuộc dùng chung =====
+    // Cạnh phụ thuộc là event (QD-1) — bảng cạnh dựng thuần từ log, replay
+    // byte-identical; guard chu trình/trùng cạnh nằm ở tầng lệnh (graph-repo).
+    case "WorkItemDependencyDeclared":
+      await tx.insert(dopaiosWorkItemDependencies).values({
+        workItemId: d["workItemId"],
+        dependsOnWorkItemId: d["dependsOnWorkItemId"],
+        runId: d["runId"],
+        declaredBy: d["declaredBy"],
+        basis: d["basis"] ?? null,
+      });
+      break;
     case "RunStepReblocked":
       await tx
         .update(dopaiosRunSteps)
@@ -862,6 +881,7 @@ const PROJECTION_TABLES = [
   dopaiosExecutionContracts,
   dopaiosQualityContracts,
   dopaiosRunSteps,
+  dopaiosWorkItemDependencies,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

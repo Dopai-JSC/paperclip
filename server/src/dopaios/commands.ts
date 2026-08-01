@@ -9,6 +9,12 @@ import {
 } from "./event-store.js";
 import { validateQualityContractPin } from "./lifecycle.js";
 import { executeAuditedCommand } from "./approval.js";
+import {
+  unsatisfiedDependencies,
+  invalidateEffectiveApprovalsAndReblockSteps,
+  invalidateOpenPackagesAndRequestsForOutput,
+} from "./graph-repo.js";
+import { validateSourceRefs, type SourceRef } from "./lifecycle.js";
 
 // KC-01 spike command set: the minimum surface needed to drive the canonical
 // fixtures fx-01 (NONE → PREPARING, FS-001) and fx-02 (run-test chain,
@@ -305,6 +311,7 @@ export async function runFixtureExecution(
     contentSha256: string;
     outputType: string;
     qualityContractRef: { id: string; revision: number; sha256: string };
+    sourceRefs?: SourceRef[];
   },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
@@ -328,6 +335,25 @@ export async function runFixtureExecution(
         p["qualityContractRef"] as { id: string; revision: number; sha256: string },
         p["outputType"] as string,
       );
+      // KC-15 B2 (QD-2): ready-check đọc đồ thị qua graph-repo — mọi phụ
+      // thuộc thượng nguồn phải có phiên bản hiện hành được duyệt còn hiệu
+      // lực (invalidated_at của KC-14). Chặn ĐÚNG nhánh phụ thuộc; work-item
+      // không nằm hạ nguồn không bị chạm ("đúng impact set" SFR-031/050 đọc
+      // ở mức work-item). Item không khai cạnh: danh sách rỗng, không đổi
+      // hành vi các suite KC-01/KC-14 sẵn có.
+      const unsatisfied = await unsatisfiedDependencies(ctx, p["workItemId"] as string);
+      if (unsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Ready-check: unsatisfied dependencies — ${unsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
+        );
+      }
+      // KC-15 B3 (QD-4): pin nguồn của đầu ra kiểm theo chuẩn pin FS-002 —
+      // đúng hash, artifact còn approved (superseded bị chặn — re-entry chỉ
+      // qua revision được duyệt), impact ∈ {clear, reaffirmed}.
+      await validateSourceRefs(ctx, p["sourceRefs"] as SourceRef[] | undefined);
       const stream = `dopaiosWorkItem-${p["workItemId"]}`;
       for (const state of ["READY", "CLAIMED", "IN_PROGRESS", "SUBMITTED"]) {
         await ctx.emit({
@@ -342,6 +368,7 @@ export async function runFixtureExecution(
         workItemId: p["workItemId"] as string,
         contentSha256: p["contentSha256"] as string,
         qualityContractRef: p["qualityContractRef"] as Json,
+        sourceRefs: p["sourceRefs"] as SourceRef[] | undefined,
       });
       return { workItemId: p["workItemId"] as string, state: "SUBMITTED", outputState: "SUBMITTED" };
     },
@@ -362,6 +389,7 @@ export async function applyOutputRevisionEntry(
     workItemId: string;
     contentSha256: string;
     qualityContractRef: Json;
+    sourceRefs?: SourceRef[];
   },
 ): Promise<{ replacesRevision: number | null }> {
   const prior = await one<{ revision: number; state: string; work_item_id: string }>(
@@ -410,6 +438,10 @@ export async function applyOutputRevisionEntry(
       contentSha256: input.contentSha256,
       qualityContractRef: input.qualityContractRef,
       replacesRevision: prior?.revision ?? null,
+      // KC-15: pin danh sách nguồn FS-002 của phiên bản (QD-4). B5: chuẩn
+      // hóa — chỉ mảng khác rỗng vào event, mọi giá trị khác thành null
+      // (validateSourceRefs đã chặn dị dạng ở cửa lệnh).
+      sourceRefs: Array.isArray(input.sourceRefs) && input.sourceRefs.length > 0 ? input.sourceRefs : null,
     },
     ...(prior ? {} : { expectedVersion: -1 }),
   });
@@ -430,6 +462,9 @@ export async function applyOutputRevisionEntry(
 //  - APPROVED | ACCEPTED → GIỮ NGUYÊN (lịch sử không viết lại); Approval
 //    Record hết hiệu lực trong đúng impact set, bước đã mở theo record đó bị
 //    tái chặn; gói EXCEPTION đang chờ trên bản cũ (nếu có) hết hiệu lực.
+// KC-15 B3: cả hai nhánh vô hiệu dùng helper CHUNG trong graph-repo — một cơ
+// chế duy nhất cho hai đường kích hoạt SFR-031 (bản mới vào trục ở đây;
+// artifact nguồn đổi nghĩa ở lifecycle.createArtifactRevision).
 async function invalidatePriorVersion(
   ctx: CommandContext,
   outputId: string,
@@ -442,80 +477,28 @@ async function invalidatePriorVersion(
       type: "OutputVersionStateChanged",
       data: { outputId, revision: prior.revision, state: "REWORK_REQUIRED" },
     });
-    await invalidateOpenPackagesAndRequests(ctx, outputId, prior.revision, sourceEvent);
+    await invalidateOpenPackagesAndRequestsForOutput(ctx, outputId, prior.revision, {
+      reason: "target-changed",
+      sourceEvent,
+    });
     return;
   }
   if (prior.state === "APPROVED" || prior.state === "ACCEPTED") {
-    const records = (await ctx.tx.execute(sql`
-      SELECT id FROM dopaios_approval_records
-      WHERE target_id = ${outputId} AND target_revision = ${prior.revision}
-        AND outcome IN ('approve', 'approve-with-conditions')
-        AND invalidated_at IS NULL
-      ORDER BY id
-    `)) as unknown as Array<{ id: string }>;
-    for (const record of records) {
-      await ctx.emit({
-        streamName: `dopaiosApprovalRecord-${record.id}`,
-        type: "ApprovalInvalidated",
-        data: { recordId: record.id, reason: `target-changed: ${sourceEvent} vào trục (SFR-031)` },
-      });
-      const steps = (await ctx.tx.execute(sql`
-        SELECT run_id, step_id FROM dopaios_run_steps
-        WHERE opened_by_record_id = ${record.id} AND state = 'open'
-        ORDER BY run_id, step_id
-      `)) as unknown as Array<{ run_id: string; step_id: string }>;
-      for (const step of steps) {
-        await ctx.emit({
-          streamName: `dopaiosRunStep-${step.run_id}-${step.step_id}`,
-          type: "RunStepReblocked",
-          data: { runId: step.run_id, stepId: step.step_id },
-        });
-      }
-    }
-    await invalidateOpenPackagesAndRequests(ctx, outputId, prior.revision, sourceEvent);
+    await invalidateEffectiveApprovalsAndReblockSteps(
+      ctx,
+      outputId,
+      prior.revision,
+      `target-changed: ${sourceEvent} vào trục (SFR-031)`,
+    );
+    await invalidateOpenPackagesAndRequestsForOutput(ctx, outputId, prior.revision, {
+      reason: "target-changed",
+      sourceEvent,
+    });
     return;
   }
   // REJECTED / REWORK_REQUIRED: terminal đã có quyết định — không side effect
   // vô hiệu (SFR-045); các trạng thái chưa quyết định khác không hợp lệ cho
   // đường bản sửa và bị guard của lệnh nộp chặn trước khi tới đây.
-}
-
-async function invalidateOpenPackagesAndRequests(
-  ctx: CommandContext,
-  outputId: string,
-  revision: number,
-  sourceEvent: string,
-): Promise<void> {
-  const packages = (await ctx.tx.execute(sql`
-    SELECT id, revision FROM dopaios_decision_packages
-    WHERE state IN ('OPEN', 'AWAITING_INFO')
-      AND target->>'outputId' = ${outputId}
-      AND (target->>'revision')::int = ${revision}
-    ORDER BY id, revision
-  `)) as unknown as Array<{ id: string; revision: number }>;
-  for (const pkg of packages) {
-    await ctx.emit({
-      streamName: `dopaiosDecisionPackage-${pkg.id}`,
-      type: "DecisionPackageRevisionStateChanged",
-      data: { packageId: pkg.id, revision: pkg.revision, state: "INVALIDATED-TARGET-CHANGED" },
-    });
-    const requests = (await ctx.tx.execute(sql`
-      SELECT id FROM dopaios_action_requests
-      WHERE package_id = ${pkg.id} AND package_revision = ${pkg.revision}
-        AND state IN ('OPEN', 'ROUTED', 'ACKNOWLEDGED', 'EXPIRED')
-      ORDER BY id
-    `)) as unknown as Array<{ id: string }>;
-    for (const request of requests) {
-      await ctx.emit({
-        streamName: `dopaiosActionRequest-${request.id}`,
-        type: "ActionRequestInvalidated",
-        data: {
-          requestId: request.id,
-          invalidation: { reason: "target-changed", sourceEvent },
-        },
-      });
-    }
-  }
 }
 
 // Hàng SUBMITTED → SELF_CHECK: validate-self-check (runtime tự động). Guard:
@@ -891,9 +874,9 @@ export async function advanceToDecision(
       // KC-03 (FX-03-B04, AC-FR-24.2): output AI chỉ được trình duyệt khi đã
       // qua trọn chuỗi tự kiểm → kiểm độc lập (CHECK_PASSED) — thiếu chuỗi
       // review độc lập thì chặn ngay tại bước trình.
-      const output = await one<{ state: string }>(
+      const output = await one<{ state: string; work_item_id: string; source_refs: unknown }>(
         ctx,
-        sql`SELECT state FROM dopaios_output_versions
+        sql`SELECT state, work_item_id, source_refs FROM dopaios_output_versions
             WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
       );
       if (!output || output.state !== "CHECK_PASSED") {
@@ -902,6 +885,22 @@ export async function advanceToDecision(
           "Output lacks the independent review chain — self-check and independent check must pass before advancing to decision",
         );
       }
+      // KC-15 B5 (major cả hai lens — "chặn một phần chỉ kiểm một lần"):
+      // trình điểm là cửa DÙNG cuối trước quyết định — re-check trên cùng
+      // snapshot: (a) phụ thuộc thượng nguồn còn thỏa (item in-flight lúc
+      // thượng nguồn bị vô hiệu không được tới quyết định); (b) pin nguồn
+      // của chính phiên bản còn hiệu lực (nguồn superseded/vô hiệu sau khi
+      // nộp thì không trình được — đường tiếp là bản sửa pin nguồn mới).
+      const advUnsatisfied = await unsatisfiedDependencies(ctx, output.work_item_id);
+      if (advUnsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Advance-to-decision re-check: unsatisfied dependencies — ${advUnsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
+        );
+      }
+      await validateSourceRefs(ctx, (output.source_refs ?? undefined) as SourceRef[] | undefined);
       // KC-14 B4: gói revision > 1 là "gói mới" của cùng điểm phê duyệt
       // (SFR-053 sau vòng sửa) — revision trước phải tồn tại và đã kết thúc;
       // gói đang mở thì phải đi đường vô hiệu SFR-031, không chồng gói.
@@ -1127,6 +1126,18 @@ export async function recordApproval(
         throw new CommandRejectedError(
           "ERR-STATE",
           `Decision applies to AWAITING_DECISION only, got ${output.state}`,
+        );
+      }
+      // KC-15 B5 (major cả hai lens): quyết định trên item có cạnh phụ thuộc
+      // re-check đồ thị trên cùng snapshot — thượng nguồn mất hiệu lực giữa
+      // trình điểm và quyết định thì lệnh quyết định bị chặn fail-closed.
+      const decUnsatisfied = await unsatisfiedDependencies(ctx, output.work_item_id);
+      if (decUnsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Decision re-check: unsatisfied dependencies — ${decUnsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
         );
       }
 
@@ -1467,6 +1478,18 @@ export async function interruptRetryReassign(
         throw new CommandRejectedError("DEV-010", "Work item is not ACCEPTED");
       }
       await requireRunningRunOfWorkItem(ctx, p["workItemId"] as string);
+      // KC-15 B5 (major review lens 1): exhibit này cũng đi hàng ready-check
+      // ACCEPTED → CLAIMED — item hạ nguồn đang bị chặn không được thực thi
+      // qua bất kỳ đường nào.
+      const chainUnsatisfied = await unsatisfiedDependencies(ctx, p["workItemId"] as string);
+      if (chainUnsatisfied.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-DEP-UNSATISFIED",
+          `Ready-check: unsatisfied dependencies — ${chainUnsatisfied
+            .map((u) => `${u.dependsOnWorkItemId}:${u.reason}`)
+            .join(", ")}`,
+        );
+      }
       const stream = `dopaiosWorkItem-${p["workItemId"]}`;
       const hops: Array<{ state: string; executor?: string }> = [
         { state: "CLAIMED", executor: p["firstExecutor"] as string },
