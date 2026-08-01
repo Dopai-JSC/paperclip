@@ -1023,6 +1023,13 @@
       "when": 1785514000000,
       "tag": "0511_dopaios_kc13_routing_columns",
       "breakpoints": true
+    },
+    {
+      "idx": 512,
+      "version": "7",
+      "when": 1785514100000,
+      "tag": "0512_dopaios_kc14_two_lifecycles",
+      "breakpoints": true
     }
   ]
 }

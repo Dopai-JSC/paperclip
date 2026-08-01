@@ -26,6 +26,8 @@ import {
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosQualityContracts,
+  dopaiosRunSteps,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -432,6 +434,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         executor: d["executor"] ?? null,
         projectId: d["projectId"] ?? null,
         role: d["role"] ?? null,
+        // KC-14: biến thể rework của SFR-022 mang liên kết bản trước.
+        reworkOfWorkItemId: d["reworkOfWorkItemId"] ?? null,
+        reworkOfOutputRef: d["reworkOfOutputRef"] ?? null,
       });
       break;
     // KC-13 B4: kết quả định tuyến — đích + căn cứ chọn (FR-42).
@@ -454,6 +459,10 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         workItemId: d["workItemId"],
         state: d["state"],
         contentSha256: d["contentSha256"],
+        // KC-14: pin Hợp đồng chất lượng lúc nộp + quan hệ thay thế (SFR-030).
+        qualityContractRef: d["qualityContractRef"] ?? null,
+        checkEvidence: d["checkEvidence"] ?? null,
+        replacesRevision: d["replacesRevision"] ?? null,
       });
       break;
     case "OutputVersionStateChanged":
@@ -708,6 +717,71 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           sql`${dopaiosExecutionContracts.id} = ${d["contractId"]} AND ${dopaiosExecutionContracts.revision} = ${d["revision"]}`,
         );
       break;
+    // ===== KC-14: hai vòng đời thực hiện và chất lượng =====
+    // Nội dung Hợp đồng chất lượng theo (id, revision); hiệu lực do guard đọc
+    // sổ artifact FS-002 trong cùng transaction (QD-2 kế hoạch KC-14).
+    case "QualityContractRegistered":
+      await tx.insert(dopaiosQualityContracts).values({
+        id: d["contractId"],
+        revision: d["revision"],
+        outputType: d["outputType"],
+        requiredChecks: d["requiredChecks"],
+        sha256: d["sha256"],
+        registeredBy: d["registeredBy"],
+      });
+      break;
+    // Bằng chứng của MỘT loại kiểm gắn vào đúng phiên bản đầu ra; merge jsonb
+    // tuần tự theo global_position nên replay tái dựng đúng (SQR-003).
+    case "OutputVersionCheckEvidenceAdded":
+      await tx
+        .update(dopaiosOutputVersions)
+        .set({
+          checkEvidence: sql`coalesce(${dopaiosOutputVersions.checkEvidence}, '{}'::jsonb) || ${JSON.stringify({ [d["checkKey"] as string]: d["evidence"] })}::jsonb`,
+        })
+        .where(
+          sql`${dopaiosOutputVersions.id} = ${d["outputId"]} AND ${dopaiosOutputVersions.revision} = ${d["revision"]}`,
+        );
+      break;
+    // Approval hết hiệu lực (SFR-031/034): lifecycle của phiên bản KHÔNG đổi,
+    // chỉ record mang invalidated_at/invalidation_reason từ event bất biến.
+    case "ApprovalInvalidated":
+      await tx
+        .update(dopaiosApprovalRecords)
+        .set({ invalidatedAt: event.time, invalidationReason: d["reason"] })
+        .where(eq(dopaiosApprovalRecords.id, d["recordId"]));
+      break;
+    // Yêu cầu liên kết gói vô hiệu do target đổi (SFR-031, DEV-009): terminal
+    // của revision, KHÔNG ghi quan hệ tới record tương lai.
+    case "ActionRequestInvalidated":
+      await tx
+        .update(dopaiosActionRequests)
+        .set({ state: "SUPERSEDED-TARGET-CHANGED", invalidation: d["invalidation"] })
+        .where(eq(dopaiosActionRequests.id, d["requestId"]));
+      break;
+    // Bước mở theo approval (SFR-029) — upsert để tái mở sau tái chặn giữ
+    // đúng một hàng theo (run, step).
+    case "RunStepOpened":
+      await tx
+        .insert(dopaiosRunSteps)
+        .values({
+          runId: d["runId"],
+          stepId: d["stepId"],
+          state: "open",
+          openedByRecordId: d["recordId"] ?? null,
+        })
+        .onConflictDoUpdate({
+          target: [dopaiosRunSteps.runId, dopaiosRunSteps.stepId],
+          set: { state: "open", openedByRecordId: (d["recordId"] ?? null) as string | null },
+        });
+      break;
+    case "RunStepReblocked":
+      await tx
+        .update(dopaiosRunSteps)
+        .set({ state: "reblocked" })
+        .where(
+          sql`${dopaiosRunSteps.runId} = ${d["runId"]} AND ${dopaiosRunSteps.stepId} = ${d["stepId"]}`,
+        );
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
@@ -740,6 +814,8 @@ const PROJECTION_TABLES = [
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosQualityContracts,
+  dopaiosRunSteps,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

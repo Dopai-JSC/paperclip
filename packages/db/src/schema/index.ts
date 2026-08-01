@@ -126,4 +126,6 @@ export {
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosQualityContracts,
+  dopaiosRunSteps,
 } from "./dopaios_kc01.js";
