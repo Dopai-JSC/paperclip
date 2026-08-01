@@ -1037,6 +1037,13 @@
       "when": 1785514200000,
       "tag": "0513_dopaios_kc15_dependency_graph",
       "breakpoints": true
+    },
+    {
+      "idx": 514,
+      "version": "7",
+      "when": 1785514300000,
+      "tag": "0514_dopaios_kc15_output_source_refs",
+      "breakpoints": true
     }
   ]
 }

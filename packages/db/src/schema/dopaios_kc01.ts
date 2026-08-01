@@ -96,6 +96,9 @@ export const dopaiosOutputVersions = pgTable(
     qualityContractRef: jsonb("quality_contract_ref").$type<Record<string, unknown>>(),
     checkEvidence: jsonb("check_evidence").$type<Record<string, unknown>>(),
     replacesRevision: integer("replaces_revision"),
+    // KC-15 (0514): danh sách pin nguồn ID@revision@sha256 theo FS-002
+    // (EDGE-001) — nối phiên bản đầu ra với artifact nguồn trong sổ (QD-4).
+    sourceRefs: jsonb("source_refs").$type<Array<Record<string, unknown>>>(),
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );

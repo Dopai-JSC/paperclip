@@ -192,6 +192,127 @@ export async function wouldCreateCycle(
   return upstreamOfTarget.includes(workItemId);
 }
 
+// KC-15 B3 — cách đọc "impact set" (QD-2): phần bị ảnh hưởng TRỰC TIẾP ở trục
+// run khi một artifact nguồn đổi nghĩa là các phiên bản đầu ra HIỆN HÀNH
+// (revision cao nhất của dòng) pin artifact đó trong source_refs (pin FS-002,
+// QD-4); hạ nguồn bắc cầu đọc bằng transitiveDependents trên bảng cạnh.
+export async function currentOutputsPinningSource(
+  ctx: CommandContext,
+  artifactId: string,
+): Promise<Array<{ outputId: string; revision: number; workItemId: string; runId: string | null }>> {
+  const result = await rows<{
+    output_id: string;
+    revision: number;
+    work_item_id: string;
+    run_id: string | null;
+  }>(
+    ctx,
+    sql`WITH current_rev AS (
+          SELECT id, max(revision) AS revision
+          FROM dopaios_output_versions
+          GROUP BY id
+        )
+        SELECT o.id AS output_id, o.revision, o.work_item_id, w.run_id
+        FROM dopaios_output_versions o
+        JOIN current_rev c ON c.id = o.id AND c.revision = o.revision
+        JOIN dopaios_work_items w ON w.id = o.work_item_id
+        WHERE o.source_refs IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM jsonb_array_elements(o.source_refs) AS ref
+            WHERE ref->>'artifactId' = ${artifactId}
+          )
+        ORDER BY o.id`,
+  );
+  return result.map((row) => ({
+    outputId: row.output_id,
+    revision: row.revision,
+    workItemId: row.work_item_id,
+    runId: row.run_id,
+  }));
+}
+
+// Side effect dùng chung của KC-14 (SFR-031/050) — MỘT cơ chế cho cả hai
+// đường kích hoạt (bản mới vào trục thay bản đã pin; artifact nguồn đổi
+// nghĩa): approval hiệu lực trên đúng (output, revision) nhận invalidated_at,
+// bước đã mở theo record đó bị tái chặn. Lifecycle của phiên bản KHÔNG đổi —
+// lịch sử không viết lại.
+export async function invalidateEffectiveApprovalsAndReblockSteps(
+  ctx: CommandContext,
+  outputId: string,
+  revision: number,
+  reason: string,
+): Promise<number> {
+  const records = await rows<{ id: string }>(
+    ctx,
+    sql`SELECT id FROM dopaios_approval_records
+        WHERE target_id = ${outputId} AND target_revision = ${revision}
+          AND outcome IN ('approve', 'approve-with-conditions')
+          AND invalidated_at IS NULL
+        ORDER BY id`,
+  );
+  for (const record of records) {
+    await ctx.emit({
+      streamName: `dopaiosApprovalRecord-${record.id}`,
+      type: "ApprovalInvalidated",
+      data: { recordId: record.id, reason },
+    });
+    const steps = await rows<{ run_id: string; step_id: string }>(
+      ctx,
+      sql`SELECT run_id, step_id FROM dopaios_run_steps
+          WHERE opened_by_record_id = ${record.id} AND state = 'open'
+          ORDER BY run_id, step_id`,
+    );
+    for (const step of steps) {
+      await ctx.emit({
+        streamName: `dopaiosRunStep-${step.run_id}-${step.step_id}`,
+        type: "RunStepReblocked",
+        data: { runId: step.run_id, stepId: step.step_id },
+      });
+    }
+  }
+  return records.length;
+}
+
+// Gói đang chờ và Yêu cầu liên kết trên đúng (output, revision) kết thúc
+// trong CÙNG transaction (SFR-031, DEV-009) — dùng chung cho cả hai đường
+// kích hoạt như trên.
+export async function invalidateOpenPackagesAndRequestsForOutput(
+  ctx: CommandContext,
+  outputId: string,
+  revision: number,
+  invalidation: { reason: string; sourceEvent: string },
+): Promise<void> {
+  const packages = await rows<{ id: string; revision: number }>(
+    ctx,
+    sql`SELECT id, revision FROM dopaios_decision_packages
+        WHERE state IN ('OPEN', 'AWAITING_INFO')
+          AND target->>'outputId' = ${outputId}
+          AND (target->>'revision')::int = ${revision}
+        ORDER BY id, revision`,
+  );
+  for (const pkg of packages) {
+    await ctx.emit({
+      streamName: `dopaiosDecisionPackage-${pkg.id}`,
+      type: "DecisionPackageRevisionStateChanged",
+      data: { packageId: pkg.id, revision: pkg.revision, state: "INVALIDATED-TARGET-CHANGED" },
+    });
+    const requests = await rows<{ id: string }>(
+      ctx,
+      sql`SELECT id FROM dopaios_action_requests
+          WHERE package_id = ${pkg.id} AND package_revision = ${pkg.revision}
+            AND state IN ('OPEN', 'ROUTED', 'ACKNOWLEDGED', 'EXPIRED')
+          ORDER BY id`,
+    );
+    for (const request of requests) {
+      await ctx.emit({
+        streamName: `dopaiosActionRequest-${request.id}`,
+        type: "ActionRequestInvalidated",
+        data: { requestId: request.id, invalidation },
+      });
+    }
+  }
+}
+
 export type UnsatisfiedDependency = {
   dependsOnWorkItemId: string;
   reason:

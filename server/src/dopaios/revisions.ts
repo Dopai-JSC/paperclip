@@ -10,7 +10,12 @@ import {
   maybePassChecks,
   requireRunningRunOfWorkItem,
 } from "./commands.js";
-import { validateQualityContractPin, type QualityContractRef } from "./lifecycle.js";
+import {
+  validateQualityContractPin,
+  validateSourceRefs,
+  type QualityContractRef,
+  type SourceRef,
+} from "./lifecycle.js";
 
 // KC-14 B4: submit-fixture-revision — hàng `NONE (revision kế tiếp)` của bảng
 // đầu ra FS-003. Bản sửa KHÔNG mở work-item: self-check và Review Evidence
@@ -39,6 +44,7 @@ export async function submitFixtureRevision(
     contentSha256: string;
     outputType: string;
     qualityContractRef: QualityContractRef;
+    sourceRefs?: SourceRef[];
     selfCheckEvidence: { ref: string; sha256: string; targetSha256: string; by: string };
     expectedSelfCheckSha256: string;
     reviewEvidence: { ref: string; sha256: string; targetSha256: string; conclusion: string; by: string };
@@ -79,6 +85,9 @@ export async function submitFixtureRevision(
         p["qualityContractRef"] as QualityContractRef,
         p["outputType"] as string,
       );
+      // KC-15 B3 (QD-4): pin nguồn của bản sửa kiểm cùng chuẩn — nguồn
+      // superseded bị chặn, buộc re-entry qua đúng revision nguồn được duyệt.
+      await validateSourceRefs(ctx, p["sourceRefs"] as SourceRef[] | undefined);
 
       // Thành phần bản sửa phải đúng hash đã pin trong gói fixture (SFR-020,
       // DEV-011/DEV-012) — thiếu hoặc sai là chặn TẠI CỬA, không ghi phiên bản.
@@ -126,6 +135,7 @@ export async function submitFixtureRevision(
         workItemId: prior[0].work_item_id,
         contentSha256: contentSha,
         qualityContractRef: p["qualityContractRef"] as unknown as Json,
+        sourceRefs: p["sourceRefs"] as SourceRef[] | undefined,
       });
 
       // Binding bằng chứng trên chính phiên bản (DEV-011) + hai hàng

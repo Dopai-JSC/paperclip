@@ -507,6 +507,8 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         qualityContractRef: d["qualityContractRef"] ?? null,
         checkEvidence: d["checkEvidence"] ?? null,
         replacesRevision: d["replacesRevision"] ?? null,
+        // KC-15: pin danh sách nguồn của phiên bản (0514).
+        sourceRefs: d["sourceRefs"] ?? null,
       });
       break;
     case "OutputVersionStateChanged":
