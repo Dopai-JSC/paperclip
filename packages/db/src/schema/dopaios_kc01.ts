@@ -67,9 +67,12 @@ export const dopaiosSopRuns = pgTable("dopaios_sop_runs", {
 
 export const dopaiosWorkItems = pgTable("dopaios_work_items", {
   id: text("id").primaryKey(),
-  runId: text("run_id").notNull(),
+  // KC-13 (0510): run_id thả NOT NULL — work-item P0 thuộc Project (project_id)
+  // chưa có SOP run; work-item run test KC-01 giữ run_id, không gắn Project.
+  runId: text("run_id"),
   state: text("state").notNull(),
   executor: text("executor"),
+  projectId: text("project_id"),
 });
 
 export const dopaiosOutputVersions = pgTable(

@@ -242,6 +242,15 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         createdBy: d["createdBy"],
       });
       break;
+    // KC-13: P0-01 stub theo nguồn PRD (UJ-10/FR-1/AC-FR-69.2 — FS-001 chủ đích
+    // không có command dương ra khỏi PREPARING, đường đó thuộc DS-2; spike dựng
+    // để có bối cảnh P0, ghi giới hạn tại hồ sơ).
+    case "ProjectEnteredP0":
+      await tx
+        .update(dopaiosProjects)
+        .set({ state: "P0_ACTIVE" })
+        .where(eq(dopaiosProjects.id, d["projectId"]));
+      break;
     case "ArtifactRegistered":
       await tx.insert(dopaiosArtifacts).values({
         id: d["artifactId"],
@@ -399,9 +408,10 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
     case "WorkItemCreated":
       await tx.insert(dopaiosWorkItems).values({
         id: d["workItemId"],
-        runId: d["runId"],
+        runId: d["runId"] ?? null,
         state: d["state"],
         executor: d["executor"] ?? null,
+        projectId: d["projectId"] ?? null,
       });
       break;
     case "WorkItemStateChanged":

@@ -13,6 +13,7 @@ import {
   runWorkItemSession,
   type SessionRunOutcome,
 } from "./engine.js";
+import { executeAuditedCommand } from "./approval.js";
 
 // KC-02 B5: bề mặt kích hoạt mà KC-13 sẽ gọi (FS-003 SFR-011 — kích hoạt
 // đúng-một-lần idempotent, claim compare-and-set theo DEV-010) và
@@ -27,15 +28,30 @@ export async function requestActivation(
   commandId: string,
   payload: { activationId: string; workItemId: string; agentId: string; engine: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const workItem = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_work_items WHERE id = ${p["workItemId"]}
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, project_id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
+      `)) as unknown as Array<{ state: string; project_id: string | null }>;
       if (workItem.length === 0) {
         throw new CommandRejectedError("ERR-WORKITEM", `Work item ${p["workItemId"]} not found`);
+      }
+      // KC-13 khóa cửa PREPARING (FS-001 SFR-003, FX-01-C13): work-item gắn
+      // Project chỉ được mở Phiên chạy AI khi Project đã qua approval P0-01.
+      // Fail-closed: mọi trạng thái ngoài P0_ACTIVE — kể cả Project không
+      // tồn tại trong registry — đều chặn.
+      if (workItem[0].project_id) {
+        const project = (await ctx.tx.execute(sql`
+          SELECT state FROM dopaios_projects WHERE id = ${workItem[0].project_id}
+        `)) as unknown as Array<{ state: string }>;
+        if (project.length === 0 || project[0].state !== "P0_ACTIVE") {
+          throw new CommandRejectedError(
+            "SFR-003",
+            `Project ${workItem[0].project_id} does not allow AI sessions (state ${project[0]?.state ?? "unknown"}) — FS-001 SFR-003`,
+          );
+        }
       }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
