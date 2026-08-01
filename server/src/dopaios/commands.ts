@@ -743,9 +743,31 @@ export async function advanceToDecision(
   });
 }
 
-// fx-02 S09: acknowledge + record approval. The approval must pin refs
-// byte-equivalent to the decision package (SFR-028); request DECIDED and
-// output APPROVED commit in the same transaction.
+// fx-02 S09: acknowledge + record approval — KC-14 mở đủ BỐN outcome của
+// điểm phê duyệt trên trục Phiên bản đầu ra (bảng FS-003 d.1599-1603):
+//  - approve            → APPROVED; mở đúng bước khai (SFR-029, RunStepOpened);
+//  - approve-with-conditions → ACCEPTED + condition theo dõi được (SFR-033),
+//    condition blocks_next_step chặn quyết định (SFR-022); mở bước như approve;
+//  - reject             → REJECTED terminal, KHÔNG mở bước; đường tiếp là bản
+//    sửa (submit-fixture-revision) hoặc hủy run (SFR-045/051);
+//  - reject kèm reEntryPoint (kết quả nghiệp vụ "yêu cầu sửa") → REJECTED +
+//    tạo work-item rework liên kết bản trước, PROPOSED → ACCEPTED máy-kiểm
+//    cùng transaction (SFR-022/017);
+//  - request-more-information → output GIỮ AWAITING_DECISION; record RMI ghi
+//    phần cần bổ sung + điểm quay lại; đúng một Yêu cầu clarification định
+//    tuyến Pod-của-run (SFR-046); không mở bước nào.
+// Mọi outcome: transaction nguyên tử trên cả hai trục; record pin target
+// ID@revision@hash của phiên bản để hiệu lực tra được về sau (SFR-030/031).
+export type RunApprovalCondition = {
+  conditionId: string;
+  scope: Json;
+  risk: string;
+  owner: string;
+  deadline: string;
+  closureCriteria: string;
+  blocksNextStep: boolean;
+};
+
 export async function recordApproval(
   db: Db,
   commandId: string,
@@ -758,6 +780,13 @@ export async function recordApproval(
     actor: string;
     outputId: string;
     outputRevision: number;
+    outcome?: "approve" | "approve-with-conditions" | "reject" | "request-more-information";
+    conditions?: RunApprovalCondition[];
+    reEntryPoint?: string;
+    reworkWorkItemId?: string;
+    requiredInfo?: string;
+    clarificationRequestId?: string;
+    openedStep?: string;
   },
 ): Promise<CommandResult> {
   return executeCommand(db, {
@@ -769,16 +798,21 @@ export async function recordApproval(
       // actor phải ĐÚNG người quyết được pin của run tại request-test-run và
       // là actor NGƯỜI đang active — AI hay định danh lạ đều bị chặn. KC-01
       // để trống guard này vì slice chưa có consumer tự động.
-      const request = await one<{ run_id: string }>(
+      const request = await one<{ run_id: string; state: string }>(
         ctx,
-        sql`SELECT run_id FROM dopaios_action_requests WHERE id = ${p["requestId"]}`,
+        sql`SELECT run_id, state FROM dopaios_action_requests WHERE id = ${p["requestId"]}`,
       );
       if (!request) {
         throw new CommandRejectedError("ERR-REQUEST", "Action request not found");
       }
-      const run = await one<{ decider: string }>(
+      // KC-14: yêu cầu đã kết thúc (DECIDED hoặc vô hiệu do target đổi)
+      // không nhận quyết định nữa (SFR-031/048).
+      if (request.state === "DECIDED" || request.state === "SUPERSEDED-TARGET-CHANGED") {
+        throw new CommandRejectedError("SFR-048", `Action request is ${request.state} — no further decision`);
+      }
+      const run = await one<{ decider: string; state: string }>(
         ctx,
-        sql`SELECT decider FROM dopaios_sop_runs WHERE id = ${request.run_id}`,
+        sql`SELECT decider, state FROM dopaios_sop_runs WHERE id = ${request.run_id}`,
       );
       if (!run || run.decider !== p["actor"]) {
         throw new CommandRejectedError("SFR-042", "Actor is not the pinned decider of this run");
@@ -796,13 +830,23 @@ export async function recordApproval(
           "AI holds no approval authority — the run decider must be a human Staff",
         );
       }
-      const pkg = await one<{ refs: Json }>(
+      // KC-14 (SFR-057 + hàng record-approval): guard thẩm quyền đứng trước
+      // (thứ tự KC-13 B7 cố định), rồi mới tới trạng thái run — run không
+      // RUNNING từ chối mọi quyết định trên record thuộc run.
+      if (run.state !== "RUNNING") {
+        throw new CommandRejectedError("SFR-057", `Run ${request.run_id} is ${run.state} — command refused`);
+      }
+      const pkg = await one<{ refs: Json; state: string }>(
         ctx,
-        sql`SELECT refs FROM dopaios_decision_packages
+        sql`SELECT refs, state FROM dopaios_decision_packages
             WHERE id = ${p["packageId"]} AND revision = ${p["packageRevision"]}`,
       );
       if (!pkg) {
         throw new CommandRejectedError("ERR-PKG", "Decision package not found");
+      }
+      // SFR-031/047: chỉ gói revision hiện hành còn hiệu lực nhận quyết định.
+      if (pkg.state !== "OPEN") {
+        throw new CommandRejectedError("SFR-047", `Decision package is ${pkg.state} — decisions apply to the open revision only`);
       }
       if (payloadSha256(pkg.refs) !== payloadSha256(p["pinnedRefs"])) {
         throw new CommandRejectedError(
@@ -810,6 +854,65 @@ export async function recordApproval(
           "Approval refs are not byte-equivalent to the decision package",
         );
       }
+      const output = await one<{ state: string; content_sha256: string; work_item_id: string }>(
+        ctx,
+        sql`SELECT state, content_sha256, work_item_id FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output) {
+        throw new CommandRejectedError("ERR-TARGET", "Output version not found");
+      }
+      // from_state của mọi hàng quyết định là AWAITING_DECISION — trạng thái
+      // quyết định của một revision là bất biến sau khi ghi (không đường lùi).
+      if (output.state !== "AWAITING_DECISION") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Decision applies to AWAITING_DECISION only, got ${output.state}`,
+        );
+      }
+
+      const outcome = (p["outcome"] as string | undefined) ?? "approve";
+      const conditions = (p["conditions"] as RunApprovalCondition[] | undefined) ?? [];
+      if (!["approve", "approve-with-conditions", "reject", "request-more-information"].includes(outcome)) {
+        throw new CommandRejectedError("ERR-002", `Unknown outcome: ${outcome}`);
+      }
+      if (outcome === "approve" && conditions.length > 0) {
+        throw new CommandRejectedError("ERR-002", "Conditions are only valid with approve-with-conditions");
+      }
+      if (outcome === "approve-with-conditions") {
+        if (conditions.length === 0) {
+          throw new CommandRejectedError("ERR-002", "Approve-with-conditions requires at least one condition");
+        }
+        for (const condition of conditions) {
+          for (const field of [
+            "conditionId",
+            "scope",
+            "risk",
+            "owner",
+            "deadline",
+            "closureCriteria",
+            "blocksNextStep",
+          ]) {
+            if ((condition as unknown as Json)[field] === undefined) {
+              throw new CommandRejectedError("SFR-033", `Condition is missing required field ${field}`);
+            }
+          }
+          if (condition.blocksNextStep === true) {
+            throw new CommandRejectedError("SFR-022", "A condition with blocks_next_step: true blocks the decision");
+          }
+        }
+      }
+      if (outcome === "request-more-information" && !p["requiredInfo"]) {
+        throw new CommandRejectedError("SFR-046", "request-more-information must state the missing part");
+      }
+      if (outcome === "request-more-information" && !p["clarificationRequestId"]) {
+        throw new CommandRejectedError("SFR-046", "request-more-information requires the clarification request id");
+      }
+      const reworkRequested = outcome === "reject" && Boolean(p["reEntryPoint"]);
+      if (reworkRequested && !p["reworkWorkItemId"]) {
+        throw new CommandRejectedError("SFR-022", "Re-entry requires the rework work-item id");
+      }
+
       await ctx.emit({
         streamName: `dopaiosActionRequest-${p["requestId"]}`,
         type: "ActionRequestStateChanged",
@@ -822,28 +925,230 @@ export async function recordApproval(
           recordId: p["recordId"],
           packageId: p["packageId"],
           packageRevision: p["packageRevision"],
-          outcome: "approve",
+          outcome,
           pinnedRefs: p["pinnedRefs"],
           actor: p["actor"],
+          // Pin target ID@revision@hash của phiên bản (SFR-030) — hiệu lực
+          // của approval tra được và vô hiệu được về sau (SFR-031/034).
+          targetId: p["outputId"],
+          targetRevision: p["outputRevision"],
+          targetSha256: output.content_sha256,
+          reEntryPoint: p["reEntryPoint"] ?? null,
+          openedStep: outcome === "approve" || outcome === "approve-with-conditions" ? (p["openedStep"] ?? null) : null,
+          findings:
+            outcome === "reject"
+              ? [{ firstArtifactToFix: { outputId: p["outputId"], revision: p["outputRevision"] } }]
+              : outcome === "request-more-information"
+                ? [{ requiredInfo: p["requiredInfo"], returnPoint: "AWAITING_DECISION" }]
+                : null,
         },
         expectedVersion: -1,
       });
       await ctx.emit({
         streamName: `dopaiosDecisionPackage-${p["packageId"]}`,
-        type: "DecisionPackageStateChanged",
-        data: { packageId: p["packageId"], state: "DECIDED" },
+        type: "DecisionPackageRevisionStateChanged",
+        data: {
+          packageId: p["packageId"],
+          revision: p["packageRevision"],
+          state: outcome === "request-more-information" ? "AWAITING_INFO" : "DECIDED",
+        },
       });
-      await ctx.emit({
-        streamName: `dopaiosOutput-${p["outputId"]}`,
-        type: "OutputVersionStateChanged",
-        data: { outputId: p["outputId"], revision: p["outputRevision"], state: "APPROVED" },
-      });
+
+      if (outcome === "approve" || outcome === "approve-with-conditions") {
+        await ctx.emit({
+          streamName: `dopaiosOutput-${p["outputId"]}`,
+          type: "OutputVersionStateChanged",
+          data: {
+            outputId: p["outputId"],
+            revision: p["outputRevision"],
+            state: outcome === "approve" ? "APPROVED" : "ACCEPTED",
+          },
+        });
+        for (const condition of conditions) {
+          await ctx.emit({
+            streamName: `dopaiosCondition-${condition.conditionId}`,
+            type: "ConditionOpened",
+            data: {
+              conditionId: condition.conditionId,
+              recordId: p["recordId"],
+              scope: condition.scope,
+              risk: condition.risk,
+              owner: condition.owner,
+              deadline: condition.deadline,
+              closureCriteria: condition.closureCriteria,
+              compensatingObligation: null,
+              blocksNextStep: condition.blocksNextStep,
+            },
+            expectedVersion: -1,
+          });
+        }
+        // SFR-029: mở ĐÚNG bước được khai trong định nghĩa điểm kiểm soát,
+        // không bước nào khác.
+        if (p["openedStep"]) {
+          await ctx.emit({
+            streamName: `dopaiosRunStep-${request.run_id}-${p["openedStep"]}`,
+            type: "RunStepOpened",
+            data: { runId: request.run_id, stepId: p["openedStep"], recordId: p["recordId"] },
+          });
+        }
+      } else if (outcome === "reject") {
+        await ctx.emit({
+          streamName: `dopaiosOutput-${p["outputId"]}`,
+          type: "OutputVersionStateChanged",
+          data: { outputId: p["outputId"], revision: p["outputRevision"], state: "REJECTED" },
+        });
+        if (reworkRequested) {
+          // SFR-022: work-item rework liên kết work-item và phiên bản trước;
+          // acceptance máy-kiểm trong CÙNG transaction (SFR-017) — bước khai
+          // trực tiếp trong định nghĩa sinh ra nó.
+          const reworkStream = `dopaiosWorkItem-${p["reworkWorkItemId"]}`;
+          await ctx.emit({
+            streamName: reworkStream,
+            type: "WorkItemCreated",
+            data: {
+              workItemId: p["reworkWorkItemId"],
+              runId: request.run_id,
+              state: "PROPOSED",
+              reworkOfWorkItemId: output.work_item_id,
+              reworkOfOutputRef: { outputId: p["outputId"], revision: p["outputRevision"] },
+            },
+            expectedVersion: -1,
+          });
+          await ctx.emit({
+            streamName: reworkStream,
+            type: "WorkItemStateChanged",
+            data: { workItemId: p["reworkWorkItemId"], state: "ACCEPTED" },
+          });
+        }
+      } else if (outcome === "request-more-information") {
+        // SFR-046: output GIỮ AWAITING_DECISION — không event trạng thái nào
+        // trên trục đầu ra; đúng một Yêu cầu bổ sung loại clarification định
+        // tuyến Pod-của-run.
+        await ctx.emit({
+          streamName: `dopaiosActionRequest-${p["clarificationRequestId"]}`,
+          type: "ActionRequestCreated",
+          data: { requestId: p["clarificationRequestId"], kind: "clarification", runId: request.run_id },
+          expectedVersion: -1,
+        });
+      }
+
       await ctx.emit({
         streamName: `dopaiosActionRequest-${p["requestId"]}`,
         type: "ActionRequestStateChanged",
         data: { requestId: p["requestId"], state: "DECIDED", decidedBy: p["actor"] },
       });
-      return { recordId: p["recordId"] as string, outcome: "approve" };
+      return {
+        recordId: p["recordId"] as string,
+        outcome,
+        reworkWorkItemId: reworkRequested ? (p["reworkWorkItemId"] as string) : null,
+      };
+    },
+  });
+}
+
+// SFR-047 (nhánh run): câu trả lời của Yêu cầu clarification tạo Gói quyết
+// định revision mới supersede gói trước và ĐÚNG MỘT Yêu cầu quyết định mới —
+// CHỈ khi gói nguồn còn hiệu lực (AWAITING_INFO của RMI) và target vẫn là
+// phiên bản hiện hành; gói đã vô hiệu do target đổi thì không tạo gì.
+export async function answerClarification(
+  db: Db,
+  commandId: string,
+  payload: {
+    clarificationRequestId: string;
+    answer: string;
+    answeredBy: string;
+    packageId: string;
+    newPackageRevision: number;
+    refs: Json;
+    newDecisionRequestId: string;
+    outputId: string;
+    outputRevision: number;
+  },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const clarification = await one<{ state: string; run_id: string }>(
+        ctx,
+        sql`SELECT state, run_id FROM dopaios_action_requests WHERE id = ${p["clarificationRequestId"]}`,
+      );
+      if (!clarification || clarification.state === "DECIDED" || clarification.state === "SUPERSEDED-TARGET-CHANGED") {
+        throw new CommandRejectedError("SFR-046", "Clarification request is missing or already closed/invalidated");
+      }
+      const run = await one<{ state: string; pod: string }>(
+        ctx,
+        sql`SELECT state, pod FROM dopaios_sop_runs WHERE id = ${clarification.run_id}`,
+      );
+      if (!run || run.state !== "RUNNING") {
+        throw new CommandRejectedError("SFR-057", "Run of the clarification is not RUNNING");
+      }
+      // Pod-của-run là đích định tuyến của clarification (SFR-046) — người
+      // trả lời phải đúng Pod.
+      if ((p["answeredBy"] as string) !== run.pod) {
+        throw new CommandRejectedError("SFR-046", "Clarifications are answered by the run Pod");
+      }
+      if (!p["answer"]) {
+        throw new CommandRejectedError("SFR-052", "Answer must state its content, scope and impacted revisions");
+      }
+      const priorRevision = (p["newPackageRevision"] as number) - 1;
+      const prior = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_decision_packages
+            WHERE id = ${p["packageId"]} AND revision = ${priorRevision}`,
+      );
+      if (!prior) {
+        throw new CommandRejectedError("SFR-047", `Package revision ${priorRevision} does not exist`);
+      }
+      // Gói nguồn phải còn hiệu lực (đang chờ bổ sung) — đã vô hiệu do target
+      // đổi thì KHÔNG tạo gói/yêu cầu mới (SFR-047).
+      if (prior.state !== "AWAITING_INFO") {
+        throw new CommandRejectedError(
+          "SFR-047",
+          `Package revision ${priorRevision} is ${prior.state} — no new package is assembled`,
+        );
+      }
+      // Target vẫn phải là phiên bản hiện hành đang chờ quyết định.
+      const output = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output || output.state !== "AWAITING_DECISION") {
+        throw new CommandRejectedError("SFR-047", "Target is no longer the current version awaiting decision");
+      }
+
+      await ctx.emit({
+        streamName: `dopaiosActionRequest-${p["clarificationRequestId"]}`,
+        type: "ActionRequestStateChanged",
+        data: { requestId: p["clarificationRequestId"], state: "DECIDED", decidedBy: p["answeredBy"] },
+      });
+      await ctx.emit({
+        streamName: `dopaiosDecisionPackage-${p["packageId"]}`,
+        type: "DecisionPackageRevisionStateChanged",
+        data: { packageId: p["packageId"], revision: priorRevision, state: "SUPERSEDED" },
+      });
+      await ctx.emit({
+        streamName: `dopaiosDecisionPackage-${p["packageId"]}`,
+        type: "DecisionPackageAssembled",
+        data: {
+          packageId: p["packageId"],
+          revision: p["newPackageRevision"],
+          refs: p["refs"],
+          fields: { answer: p["answer"], answeredBy: p["answeredBy"] },
+        },
+      });
+      await ctx.emit({
+        streamName: `dopaiosActionRequest-${p["newDecisionRequestId"]}`,
+        type: "ActionRequestCreated",
+        data: { requestId: p["newDecisionRequestId"], kind: "decision", runId: clarification.run_id },
+        expectedVersion: -1,
+      });
+      return {
+        packageId: p["packageId"] as string,
+        newPackageRevision: p["newPackageRevision"] as number,
+        newDecisionRequestId: p["newDecisionRequestId"] as string,
+      };
     },
   });
 }
