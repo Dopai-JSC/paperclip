@@ -615,7 +615,12 @@ export async function maybePassChecks(
         WHERE id = ${input.outputId} AND revision = ${input.outputRevision}`,
   );
   if (!output || output.state !== "INDEPENDENT_CHECK") {
-    return { passed: false, missing: ["output not in INDEPENDENT_CHECK"] };
+    // B6 (minor m-3): nêu rõ trạng thái thực — "đã CHECK_PASSED rồi" và
+    // "chưa tới lượt kiểm" là hai thông điệp khác nhau với caller.
+    return {
+      passed: false,
+      missing: [`output not in INDEPENDENT_CHECK (state=${output?.state ?? "missing"})`],
+    };
   }
   if (!output.quality_contract_ref) {
     return { passed: false, missing: ["no quality contract pinned"] };

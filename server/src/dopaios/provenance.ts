@@ -38,6 +38,14 @@ export function parseRegisteredSourcePins(raw: unknown): RegisteredSourcePin[] {
     const hasId = typeof artifactId === "string" && artifactId.length > 0;
     const hasRevision = typeof revision === "number" && Number.isInteger(revision) && revision >= 1;
     const hasSha = typeof sha256 === "string" && SHA256_HEX.test(sha256);
+    // B6 (minor m6): artifactId có mặt nhưng không hợp lệ (rỗng, sai kiểu)
+    // bị từ chối tường minh — không nuốt lặng thành pin hash-đứng-một-mình.
+    if (artifactId !== undefined && !hasId) {
+      throw new CommandRejectedError(
+        "ERR-SOURCE-PIN",
+        `sourceRefs[${index}] artifactId must be a non-empty string when present`,
+      );
+    }
     // Pin hợp lệ: ID@revision (kèm hash nếu khai) HOẶC hash đứng một mình.
     // Mọi dạng khác — revision không phải số nguyên (kể cả "latest"), ID
     // không kèm revision, hash sai định dạng — đều bị từ chối.

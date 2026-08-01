@@ -33,8 +33,15 @@ export const PRODUCTION_BRANCH_PATTERN = /^ai-prod\//;
 export const PROTECTED_PATH_PATTERNS = [
   /^server\/src\/__tests__\//,
   /(^|\/)vitest\.config\.[^/]+$/,
+  /(^|\/)vitest\.workspace\.[^/]+$/,
   /^\.github\//,
-  /^scripts\/check-test-protection\.mjs$/,
+  // B6 (major review lens 1): vector vô-hiệu-hóa-test không chạm __tests__ —
+  // đổi lệnh test trong package.json hoặc gutting runner script. Chặn
+  // package.json MỌI cấp (fail-closed là đúng hướng của tiêu chí 4; nhu cầu
+  // thêm dependency của tác nhân sản xuất đi qua đường review có người) và
+  // toàn bộ scripts/ chạy trong CI.
+  /(^|\/)package\.json$/,
+  /^scripts\//,
 ];
 
 /**
@@ -52,13 +59,28 @@ export function evaluateChangedPaths(headBranch, changedPaths) {
   return { applies: true, violations };
 }
 
-/** Danh sách file đổi giữa hai commit — --no-renames để xóa/đổi tên hiện đủ hai vế. */
+/**
+ * Danh sách file PR đổi: three-dot (từ merge-base tới head) — B6 (major
+ * review lens 2): two-dot so sánh hai cây nên base tiến xa sau điểm fork làm
+ * check đỏ oan (file đổi trên base bị tính cho PR) và có đường lọt khi head
+ * đưa file về trùng nội dung với base mới. --no-renames để xóa/đổi tên hiện
+ * đủ hai vế.
+ */
 export function listChangedPaths(baseSha, headSha, cwd) {
-  const stdout = execFileSync(
-    "git",
-    ["diff", "--name-only", "--no-renames", `${baseSha}..${headSha}`, "--"],
-    { cwd, encoding: "utf8" },
-  );
+  let stdout;
+  try {
+    stdout = execFileSync(
+      "git",
+      ["diff", "--name-only", "--no-renames", `${baseSha}...${headSha}`, "--"],
+      { cwd, encoding: "utf8" },
+    );
+  } catch (error) {
+    // Fail-closed với thông điệp chẩn đoán được (base bị force-push mất SHA,
+    // checkout thiếu lịch sử...) thay vì stack trace thô.
+    throw new Error(
+      `Không diff được ${baseSha}...${headSha} (thiếu SHA trong checkout? base bị force-push?): ${error.message}`,
+    );
+  }
   return stdout.split("\n").filter((line) => line.length > 0);
 }
 
@@ -86,7 +108,12 @@ function main() {
     console.error("Usage: node scripts/check-test-protection.mjs <base-sha> <head-sha> <head-branch>");
     process.exit(2);
   }
-  process.exit(runCheck(baseSha, headSha, headBranch));
+  try {
+    process.exit(runCheck(baseSha, headSha, headBranch));
+  } catch (error) {
+    console.error(`CHẶN (fail-closed do lỗi môi trường): ${error.message}`);
+    process.exit(1);
+  }
 }
 
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

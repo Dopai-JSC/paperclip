@@ -501,11 +501,14 @@ export type OutputTrace = {
 // Sáu mối của câu bất biến + hai trường tiêu chí 2, dưới dạng khóa thiếu:
 //   work-item / project    — đầu ra → work-item (→ Project);
 //   spec                   — ≥1 nguồn giải được thuộc loại kế hoạch/spec;
-//   nguon                  — mọi pin ID@revision giải được trong sổ và
-//                            artifact đăng ký khai nguồn (không null);
+//   nguon                  — mọi pin ID@revision CỦA CHÍNH đầu ra giải được
+//                            trong sổ (B6: không dính hàng sổ cái toàn cục);
 //   artifact / noi-luu     — nội dung đầu ra được đăng ký sổ cái, có nơi lưu;
+//   artifact-khai-nguon    — khóa run-level: mọi hàng sổ cái trùng nội dung
+//                            đều chưa khai nguồn (ngoài cổng pre-decision);
 //   quyet-dinh-kiem        — approval hiệu lực trên đúng (output, revision);
-//   phien-chay-ai          — Phiên chạy AI đã ghi nhận đúng nội dung này.
+//   phien-chay-ai          — Phiên chạy AI đã ghi nhận (confirmed) đúng nội
+//                            dung này.
 export async function traceCriticalOutput(
   ctx: CommandContext,
   outputId: string,
@@ -622,13 +625,22 @@ export async function traceCriticalOutput(
     sourceRefs: Array.isArray(row.source_refs) ? (row.source_refs as Json[]) : null,
   }));
   if (registeredArtifacts.length === 0) missing.push("artifact");
+  // "noi-luu" xét toàn cục theo nội dung: sổ cái định vị bằng sha256 —
+  // nơi lưu của BẤT KỲ hàng nào trùng hash đều chứa đúng nội dung này
+  // (content-addressed); căn cứ ghi hồ sơ B6.
   if (registeredArtifacts.length > 0 && !registeredArtifacts.some((a) => a.storageRef !== null)) {
     missing.push("noi-luu");
   }
-  // Mối "nguồn" đứt khi pin của đầu ra không giải được HOẶC artifact đăng ký
-  // từ nội dung này chưa khai nguồn qua đường provenance (B1).
-  if (unresolvedPin || registeredArtifacts.some((a) => a.sourceRefs === null)) {
+  // B6 (major review lens 2): mối "nguồn" của GATE chỉ xét pin của CHÍNH
+  // đầu ra — hàng sổ cái cũ (trước 0515, source_refs null) trùng nội dung
+  // ở nơi khác không được phép chặn oan đầu ra mới tại cổng máy-kiểm.
+  if (unresolvedPin) {
     missing.push("nguon");
+  }
+  // Vế "artifact đăng ký chưa khai nguồn" tách thành khóa run-level riêng,
+  // KHÔNG thuộc PRE_DECISION_TRACE_HOPS của cổng.
+  if (registeredArtifacts.length > 0 && registeredArtifacts.every((a) => a.sourceRefs === null)) {
+    missing.push("artifact-khai-nguon");
   }
 
   const approvalRows = await rows<{ id: string; outcome: string }>(
@@ -642,12 +654,15 @@ export async function traceCriticalOutput(
   const effectiveApprovals = approvalRows.map((row) => ({ recordId: row.id, outcome: row.outcome }));
   if (effectiveApprovals.length === 0) missing.push("quyet-dinh-kiem");
 
+  // B6 (minor m-7): chỉ bản ghi CONFIRMED mới là bằng chứng Phiên chạy AI —
+  // khớp ngữ nghĩa "đầu ra đã được xác nhận lưu thành công" của KC-02.
   const sessionRows = await rows<{ id: string; agent_id: string; engine: string }>(
     ctx,
     sql`SELECT DISTINCT s.id, s.agent_id, s.engine
         FROM dopaios_session_artifacts sa
         JOIN dopaios_ai_sessions s ON s.id = sa.session_id
-        WHERE sa.sha256 = ${o.content_sha256} AND s.work_item_id = ${o.work_item_id}
+        WHERE sa.sha256 = ${o.content_sha256} AND sa.confirmed = true
+          AND s.work_item_id = ${o.work_item_id}
         ORDER BY s.id`,
   );
   const aiSessions = sessionRows.map((row) => ({
@@ -698,6 +713,10 @@ export async function outputsPinningSourceRevision(
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.source_refs) AS ref
             WHERE ref->>'artifactId' = ${artifactId}
+              -- B6 (minor m-5): guard kiểu trước khi cast — một pin dị dạng
+              -- lọt vào event bất biến không được phép nổ 22P02 cho MỌI
+              -- transaction gọi truy vấn xuôi về sau.
+              AND jsonb_typeof(ref->'revision') = 'number'
               AND (ref->>'revision')::int = ${revision}
           )
         ORDER BY o.id, o.revision`,
@@ -775,6 +794,10 @@ export async function artifactProvenance(
     return { artifact: null, producers: [] };
   }
   const a = artifactRows[0];
+  // B6 (major review lens 2, M-2): neo producer vào work-item THỰC SỰ đã
+  // nộp nội dung này (tồn tại phiên bản đầu ra cùng sha trên cùng work-item)
+  // + chỉ bản ghi confirmed — trùng nội dung thuần túy ở Project khác không
+  // còn nhiễm chéo vào câu trả lời tiêu chí 2.
   const producerRows = await rows<{
     id: string;
     agent_id: string;
@@ -787,8 +810,10 @@ export async function artifactProvenance(
     sql`SELECT DISTINCT s.id, s.agent_id, s.engine, s.work_item_id, w.run_id, w.project_id
         FROM dopaios_session_artifacts sa
         JOIN dopaios_ai_sessions s ON s.id = sa.session_id
-        LEFT JOIN dopaios_work_items w ON w.id = s.work_item_id
-        WHERE sa.sha256 = ${a.sha256}
+        JOIN dopaios_work_items w ON w.id = s.work_item_id
+        JOIN dopaios_output_versions o
+          ON o.work_item_id = s.work_item_id AND o.content_sha256 = ${a.sha256}
+        WHERE sa.sha256 = ${a.sha256} AND sa.confirmed = true
         ORDER BY s.id`,
   );
   return {

@@ -55,6 +55,25 @@ test("nhánh sản xuất chạm CI hoặc chính script bảo vệ: chặn (t�
   );
 });
 
+test("B6: vector vô hiệu test không chạm __tests__ — package.json, runner script, vitest.workspace: chặn", () => {
+  assert.deepEqual(
+    evaluateChangedPaths("ai-prod/x", ["package.json"]).violations,
+    ["package.json"],
+  );
+  assert.deepEqual(
+    evaluateChangedPaths("ai-prod/x", ["server/package.json"]).violations,
+    ["server/package.json"],
+  );
+  assert.deepEqual(
+    evaluateChangedPaths("ai-prod/x", ["scripts/run-vitest-stable.mjs"]).violations,
+    ["scripts/run-vitest-stable.mjs"],
+  );
+  assert.deepEqual(
+    evaluateChangedPaths("ai-prod/x", ["vitest.workspace.ts"]).violations,
+    ["vitest.workspace.ts"],
+  );
+});
+
 // Tích hợp với git thật: repo tạm, hai nhánh, chạy runCheck trên diff thật —
 // chứng minh cả vế XÓA test hiện diện trong danh sách file đổi.
 
@@ -90,6 +109,18 @@ test("tích hợp git: sửa src cho qua, xóa test bị chặn", () => {
     gitIn(repo, ["commit", "--quiet", "-m", "xóa test"]);
     const delHead = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
     assert.equal(runCheck(base, delHead, "ai-prod/delete-test", repo), 1);
+
+    // B6 (three-dot): base tiến xa sau điểm fork, chạm cả đường bảo vệ —
+    // PR chỉ sửa src vẫn PHẢI qua (two-dot sẽ đỏ oan vì tính file đổi của
+    // base cho PR).
+    gitIn(repo, ["checkout", "--quiet", "main"]);
+    mkdirSync(path.join(repo, ".github/workflows"), { recursive: true });
+    writeFileSync(path.join(repo, ".github/workflows/ci.yml"), "name: ci\n");
+    writeFileSync(path.join(repo, "server/src/__tests__/sample.test.ts"), "// test v2\n");
+    gitIn(repo, ["add", "-A"]);
+    gitIn(repo, ["commit", "--quiet", "-m", "base tiến xa: đổi CI + test"]);
+    const advancedBase = execFileSync("git", ["rev-parse", "HEAD"], { cwd: repo, encoding: "utf8" }).trim();
+    assert.equal(runCheck(advancedBase, okHead, "ai-prod/ok", repo), 0);
   } finally {
     rmSync(repo, { recursive: true, force: true });
   }
