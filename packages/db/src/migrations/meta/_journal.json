@@ -988,6 +988,20 @@
       "when": 1785483286123,
       "tag": "0506_dopaios_kc02_activation",
       "breakpoints": true
+    },
+    {
+      "idx": 507,
+      "version": "7",
+      "when": 1785513600000,
+      "tag": "0507_dopaios_kc03_approval_engine",
+      "breakpoints": true
+    },
+    {
+      "idx": 508,
+      "version": "7",
+      "when": 1785513700000,
+      "tag": "0508_dopaios_kc03_artifact_type",
+      "breakpoints": true
     }
   ]
 }

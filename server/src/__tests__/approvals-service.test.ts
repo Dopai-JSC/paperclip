@@ -71,7 +71,7 @@ describe("approvalService resolution idempotency", () => {
     );
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.approve("approval-1", "board", "ship it");
+    const result = await svc.approve("approval-1", "user-decider-1", "ship it");
 
     expect(result.applied).toBe(false);
     expect(result.approval.status).toBe("approved");
@@ -86,7 +86,7 @@ describe("approvalService resolution idempotency", () => {
     );
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.reject("approval-1", "board", "not now");
+    const result = await svc.reject("approval-1", "user-decider-1", "not now");
 
     expect(result.applied).toBe(false);
     expect(result.approval.status).toBe("rejected");
@@ -98,7 +98,7 @@ describe("approvalService resolution idempotency", () => {
     const dbStub = createDbStub([[createApproval("pending")]], [approved]);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.approve("approval-1", "board", "ship it");
+    const result = await svc.approve("approval-1", "user-decider-1", "ship it");
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.activatePendingApproval).toHaveBeenCalledWith("agent-1");
@@ -124,7 +124,7 @@ describe("approvalService resolution idempotency", () => {
     const dbStub = createDbStub([[{ ...createApproval("pending"), payload: approved.payload }]], [approved]);
 
     const svc = approvalService(dbStub.db as any);
-    const result = await svc.approve("approval-1", "board", "ship it");
+    const result = await svc.approve("approval-1", "user-decider-1", "ship it");
 
     expect(result.applied).toBe(true);
     expect(mockAgentService.create).toHaveBeenCalledWith(
@@ -133,6 +133,55 @@ describe("approvalService resolution idempotency", () => {
         adapterConfig: approved.payload.adapterConfig,
       }),
     );
+  });
+});
+
+// Dopaios KC-03 (FS-002 SFR-013/014): quyết định phải có định danh thật và
+// người quyết không được là người đã yêu cầu — fail-closed ở tầng service.
+describe("approvalService separation of duties", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  it("rejects the legacy anonymous 'board' decider", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], []);
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.approve("approval-1", "board", "x")).rejects.toThrow(
+      /real decider identity/i,
+    );
+  });
+
+  it("rejects an empty decider identity", async () => {
+    const dbStub = createDbStub([[createApproval("pending")]], []);
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.reject("approval-1", "", "x")).rejects.toThrow(/real decider identity/i);
+  });
+
+  it("rejects self-approval when the decider is the requesting user", async () => {
+    const selfRequested = { ...createApproval("pending"), requestedByUserId: "user-decider-1" };
+    const dbStub = createDbStub([[selfRequested]], []);
+    const svc = approvalService(dbStub.db as any);
+    await expect(svc.approve("approval-1", "user-decider-1", "x")).rejects.toThrow(
+      /Requester and decider must differ/i,
+    );
+  });
+
+  it("allows the requester to reject (withdraw) their own pending request", async () => {
+    const selfRequested = { ...createApproval("pending"), requestedByUserId: "user-decider-1" };
+    const rejected = { ...selfRequested, status: "rejected" };
+    const dbStub = createDbStub([[selfRequested]], [rejected]);
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.reject("approval-1", "user-decider-1", "rút yêu cầu");
+    expect(result.applied).toBe(true);
+  });
+
+  it("exempts the single-operator local-board sentinel from separation of duties", async () => {
+    const selfRequested = { ...createApproval("pending"), requestedByUserId: "local-board" };
+    const approved = { ...selfRequested, status: "approved" };
+    const dbStub = createDbStub([[selfRequested]], [approved]);
+    const svc = approvalService(dbStub.db as any);
+    const result = await svc.approve("approval-1", "local-board", "x");
+    expect(result.applied).toBe(true);
   });
 });
 

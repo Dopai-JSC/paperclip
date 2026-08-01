@@ -304,7 +304,13 @@ export function costRoutes(
       assertBoard(req);
       const companyId = req.params.companyId as string;
       assertCompanyAccess(req, companyId);
-      const summary = await budgets.upsertPolicy(companyId, req.body, req.actor.userId ?? "board");
+      // Dopaios KC-03: quyết định ngân sách cũng cần định danh thật.
+      const deciderUserId = req.actor.userId;
+      if (!deciderUserId) {
+        res.status(403).json({ error: "A real decider identity is required — anonymous budget decision is not allowed" });
+        return;
+      }
+      const summary = await budgets.upsertPolicy(companyId, req.body, deciderUserId);
       res.json(summary);
     },
   );
@@ -317,7 +323,12 @@ export function costRoutes(
       const companyId = req.params.companyId as string;
       const incidentId = req.params.incidentId as string;
       assertCompanyAccess(req, companyId);
-      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, req.actor.userId ?? "board");
+      const deciderUserId = req.actor.userId;
+      if (!deciderUserId) {
+        res.status(403).json({ error: "A real decider identity is required — anonymous incident resolution is not allowed" });
+        return;
+      }
+      const incident = await budgets.resolveIncident(companyId, incidentId, req.body, deciderUserId);
       res.json(incident);
     },
   );

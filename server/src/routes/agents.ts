@@ -3055,7 +3055,12 @@ export function agentRoutes(
     // shared approval side effects: agent activation, budget policy, and the
     // hire-approved notification. Fall back to direct activation if no open
     // approval record exists (e.g. agents created before approvals were tracked).
-    const decidedByUserId = req.actor.userId ?? "board";
+    // Dopaios KC-03: cùng hợp đồng định danh thật như routes/approvals.ts.
+    const decidedByUserId = req.actor.userId;
+    if (!decidedByUserId) {
+      res.status(403).json({ error: "A real decider identity is required — anonymous approval is not allowed" });
+      return;
+    }
     const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
 
     let agent: Awaited<ReturnType<typeof svc.getById>> | null = null;
@@ -3111,7 +3116,14 @@ export function agentRoutes(
     if (existing.status === "pending_approval") {
       const openApproval = await approvalsSvc.findOpenHireApprovalForAgent(existing.companyId, id);
       if (openApproval) {
-        await approvalsSvc.reject(openApproval.id, req.actor.userId ?? "board");
+        // Dopaios KC-03: reject cần định danh thật — chặn sớm để fallback
+        // terminate bên dưới không bị nuốt bởi lỗi service giữa chừng.
+        const deciderUserId = req.actor.userId;
+        if (!deciderUserId) {
+          res.status(403).json({ error: "A real decider identity is required — anonymous rejection is not allowed" });
+          return;
+        }
+        await approvalsSvc.reject(openApproval.id, deciderUserId);
         agent = await svc.getById(id);
       }
     }

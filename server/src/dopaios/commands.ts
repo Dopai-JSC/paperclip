@@ -397,6 +397,20 @@ export async function advanceToDecision(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-03 (FX-03-B04, AC-FR-24.2): output AI chỉ được trình duyệt khi đã
+      // qua trọn chuỗi tự kiểm → kiểm độc lập (CHECK_PASSED) — thiếu chuỗi
+      // review độc lập thì chặn ngay tại bước trình.
+      const output = await one<{ state: string }>(
+        ctx,
+        sql`SELECT state FROM dopaios_output_versions
+            WHERE id = ${p["outputId"]} AND revision = ${p["outputRevision"]}`,
+      );
+      if (!output || output.state !== "CHECK_PASSED") {
+        throw new CommandRejectedError(
+          "AC-FR-24.2",
+          "Output lacks the independent review chain — self-check and independent check must pass before advancing to decision",
+        );
+      }
       await ctx.emit({
         streamName: `dopaiosOutput-${p["outputId"]}`,
         type: "OutputVersionStateChanged",
