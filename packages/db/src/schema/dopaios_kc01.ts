@@ -67,9 +67,16 @@ export const dopaiosSopRuns = pgTable("dopaios_sop_runs", {
 
 export const dopaiosWorkItems = pgTable("dopaios_work_items", {
   id: text("id").primaryKey(),
-  runId: text("run_id").notNull(),
+  // KC-13 (0510): run_id thả NOT NULL — work-item P0 thuộc Project (project_id)
+  // chưa có SOP run; work-item run test KC-01 giữ run_id, không gắn Project.
+  runId: text("run_id"),
   state: text("state").notNull(),
   executor: text("executor"),
+  projectId: text("project_id"),
+  // KC-13 (0511): vai AI của việc + đích định tuyến + căn cứ chọn (FR-42).
+  role: text("role"),
+  routedTo: text("routed_to"),
+  routingBasis: jsonb("routing_basis").$type<Record<string, unknown>>(),
 });
 
 export const dopaiosOutputVersions = pgTable(
@@ -149,6 +156,12 @@ export const dopaiosActivations = pgTable("dopaios_activations", {
   state: text("state").notNull(),
   claimedBy: text("claimed_by"),
   outcome: text("outcome"),
+  // KC-13: lease TTL — claim bền vững giữa các lệnh nên claimer chết phải thu
+  // hồi được; epoch tăng mỗi lần requeue để chặn claimer cũ ghi muộn.
+  claimLeaseUntil: timestamp("claim_lease_until"),
+  leaseEpoch: integer("lease_epoch").notNull().default(0),
+  contractId: text("contract_id"),
+  contractRevision: integer("contract_revision"),
 });
 
 export const dopaiosAuthBreakers = pgTable("dopaios_auth_breakers", {
@@ -248,3 +261,92 @@ export const dopaiosGateRecords = pgTable("dopaios_gate_records", {
   runId: text("run_id"),
   approvalRecordId: text("approval_record_id").notNull(),
 });
+
+// ===== KC-13: định tuyến + kích hoạt =====
+
+// Staff AI (PRD FR-69/FR-42): FS-001 chỉ định nghĩa Staff người, Staff AI
+// thuộc FS-004 chưa viết — spike dựng theo PRD. model_version giữ cửa cho
+// trust theo vai × model-version (FR-42).
+export const dopaiosStaffAi = pgTable("dopaios_staff_ai", {
+  id: text("id").primaryKey(),
+  workStatus: text("work_status").notNull(),
+  capabilities: jsonb("capabilities").$type<string[]>().notNull(),
+  skills: jsonb("skills").$type<string[]>().notNull(),
+  permissions: jsonb("permissions").$type<string[]>().notNull(),
+  resources: jsonb("resources").$type<string[]>().notNull(),
+  autonomyLimits: jsonb("autonomy_limits").$type<Record<string, unknown>>(),
+  modelVersion: text("model_version"),
+  capacityLimit: integer("capacity_limit").notNull(),
+  profileRevision: integer("profile_revision").notNull(),
+});
+
+// Pool khởi động có phiên bản (PRD FR-69/AC-FR-69.1): đủ năm vai AI chính/dự
+// phòng. Pool TỰ NÓ không có quyền chạy Project — quyền chỉ sinh khi được pin
+// vào Team Manifest và Manifest được Orchestrator duyệt.
+export const dopaiosStartupPools = pgTable(
+  "dopaios_startup_pools",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    roles: jsonb("roles").$type<Record<string, { primary: string; fallback: string }>>().notNull(),
+    readiness: text("readiness").notNull(),
+    state: text("state").notNull(),
+    pinnedBy: text("pinned_by").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+// Team Manifest (PRD FR-8): revision + manifest_stage bootstrap|delivery, đủ
+// bộ trường hợp đồng — ánh xạ vai → Staff chính/dự phòng, luật định tuyến/
+// kích hoạt, giới hạn, đường dự phòng, hiệu lực. Thay đổi đội = revision mới
+// cần Orchestrator duyệt, không mutate tại chỗ.
+export const dopaiosTeamManifests = pgTable(
+  "dopaios_team_manifests",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    stage: text("stage").notNull(),
+    projectId: text("project_id").notNull(),
+    state: text("state").notNull(),
+    poolRef: jsonb("pool_ref").$type<Record<string, unknown>>().notNull(),
+    roleAssignments: jsonb("role_assignments")
+      .$type<Record<string, { primary: string; fallback: string }>>()
+      .notNull(),
+    orchestrator: text("orchestrator").notNull(),
+    pod: text("pod").notNull(),
+    capacity: jsonb("capacity").$type<Record<string, number>>().notNull(),
+    permissions: jsonb("permissions").$type<string[]>().notNull(),
+    resources: jsonb("resources").$type<string[]>().notNull(),
+    routingRules: jsonb("routing_rules").$type<Record<string, unknown>>().notNull(),
+    timeouts: jsonb("timeouts").$type<Record<string, unknown>>(),
+    escalation: jsonb("escalation").$type<Record<string, unknown>>(),
+    fallbackPaths: jsonb("fallback_paths").$type<Record<string, unknown>>(),
+    costLimits: jsonb("cost_limits").$type<Record<string, unknown>>(),
+    autonomy: text("autonomy"),
+    effectiveAt: timestamp("effective_at"),
+    createdBy: text("created_by").notNull(),
+    approvedBy: text("approved_by"),
+    approvedAt: timestamp("approved_at"),
+    sha256: text("sha256").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+// Hợp đồng thực hiện AI (PRD FR-63): biên dịch từ 4 nguồn CÓ PHIÊN BẢN (SOP,
+// Team Manifest đúng giai đoạn, Project, work-item); "không đổi âm thầm phiên
+// đang chạy" cưỡng chế bằng pin ID@revision@hash — sửa hợp đồng tạo revision
+// mới, phiên đang hoạt động giữ pin cũ.
+export const dopaiosExecutionContracts = pgTable(
+  "dopaios_execution_contracts",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    workItemId: text("work_item_id").notNull(),
+    sources: jsonb("sources").$type<Record<string, unknown>>().notNull(),
+    fields: jsonb("fields").$type<Record<string, unknown>>().notNull(),
+    state: text("state").notNull(),
+    sha256: text("sha256").notNull(),
+    compiledBy: text("compiled_by").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);

@@ -122,4 +122,8 @@ export {
   dopaiosConditions,
   dopaiosImpactRecords,
   dopaiosGateRecords,
+  dopaiosStaffAi,
+  dopaiosStartupPools,
+  dopaiosTeamManifests,
+  dopaiosExecutionContracts,
 } from "./dopaios_kc01.js";

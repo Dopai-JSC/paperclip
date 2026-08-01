@@ -454,6 +454,38 @@ export async function recordApproval(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      // KC-13 B7 (finding review đối kháng — SFR-023/SFR-042): S09 là điểm
+      // quyết định mà runner dừng chờ, nên thẩm quyền phải đóng fail-closed:
+      // actor phải ĐÚNG người quyết được pin của run tại request-test-run và
+      // là actor NGƯỜI đang active — AI hay định danh lạ đều bị chặn. KC-01
+      // để trống guard này vì slice chưa có consumer tự động.
+      const request = await one<{ run_id: string }>(
+        ctx,
+        sql`SELECT run_id FROM dopaios_action_requests WHERE id = ${p["requestId"]}`,
+      );
+      if (!request) {
+        throw new CommandRejectedError("ERR-REQUEST", "Action request not found");
+      }
+      const run = await one<{ decider: string }>(
+        ctx,
+        sql`SELECT decider FROM dopaios_sop_runs WHERE id = ${request.run_id}`,
+      );
+      if (!run || run.decider !== p["actor"]) {
+        throw new CommandRejectedError("SFR-042", "Actor is not the pinned decider of this run");
+      }
+      const deciderActor = await one<{ kind: string; active: boolean }>(
+        ctx,
+        sql`SELECT kind, active FROM dopaios_actors WHERE id = ${p["actor"]}`,
+      );
+      if (!deciderActor || !deciderActor.active) {
+        throw new CommandRejectedError("ERR-ACTOR", "Decider is not a registered active actor");
+      }
+      if (deciderActor.kind !== "human") {
+        throw new CommandRejectedError(
+          "SFR-023",
+          "AI holds no approval authority — the run decider must be a human Staff",
+        );
+      }
       const pkg = await one<{ refs: Json }>(
         ctx,
         sql`SELECT refs FROM dopaios_decision_packages

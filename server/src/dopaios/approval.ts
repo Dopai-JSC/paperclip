@@ -409,12 +409,20 @@ export async function recordApprovalDecision(
         );
       }
 
-      const actorRows = await queryRows<{ active: boolean; capabilities: string[] }>(
+      const actorRows = await queryRows<{ active: boolean; kind: string; capabilities: string[] }>(
         ctx,
-        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${actor}`,
+        sql`SELECT active, kind, capabilities FROM dopaios_actors WHERE id = ${actor}`,
       );
       if (actorRows.length === 0 || !actorRows[0].active) {
         throw new CommandRejectedError("ERR-ACTOR", "Approver is not a registered active actor");
+      }
+      // KC-13 B6 (FS-003 SFR-023): vai quyết định của mọi điểm kiểm soát là
+      // vai NGƯỜI — AI cầm đúng capability vẫn không được phê duyệt.
+      if (actorRows[0].kind !== "human") {
+        throw new CommandRejectedError(
+          "SFR-023",
+          "AI holds no approval authority — the deciding role of every control point is a human role",
+        );
       }
       const requiredCapability = policy["approver_capability"] as string;
       if (!actorRows[0].capabilities.includes(requiredCapability)) {

@@ -13,6 +13,9 @@ import {
   runWorkItemSession,
   type SessionRunOutcome,
 } from "./engine.js";
+import { executeAuditedCommand } from "./approval.js";
+import { requireActiveContract } from "./contract.js";
+import { requireClaimEligibility } from "./router.js";
 
 // KC-02 B5: bề mặt kích hoạt mà KC-13 sẽ gọi (FS-003 SFR-011 — kích hoạt
 // đúng-một-lần idempotent, claim compare-and-set theo DEV-010) và
@@ -25,17 +28,55 @@ type Json = Record<string, unknown>;
 export async function requestActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; workItemId: string; agentId: string; engine: string },
+  payload: {
+    activationId: string;
+    workItemId: string;
+    agentId: string;
+    engine: string;
+    // KC-13 B3: pin Hợp đồng thực hiện AI tại thời điểm yêu cầu kích hoạt —
+    // phiên giữ pin này kể cả khi hợp đồng có revision mới (FR-63).
+    contract?: { contractId: string; revision: number };
+  },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const workItem = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_work_items WHERE id = ${p["workItemId"]}
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, project_id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
+      `)) as unknown as Array<{ state: string; project_id: string | null }>;
       if (workItem.length === 0) {
         throw new CommandRejectedError("ERR-WORKITEM", `Work item ${p["workItemId"]} not found`);
+      }
+      // KC-13 khóa cửa PREPARING (FS-001 SFR-003, FX-01-C13): work-item gắn
+      // Project chỉ được mở Phiên chạy AI khi Project đã qua approval P0-01.
+      // Fail-closed: mọi trạng thái ngoài P0_ACTIVE — kể cả Project không
+      // tồn tại trong registry — đều chặn.
+      if (workItem[0].project_id) {
+        const project = (await ctx.tx.execute(sql`
+          SELECT state FROM dopaios_projects WHERE id = ${workItem[0].project_id}
+        `)) as unknown as Array<{ state: string }>;
+        if (project.length === 0 || project[0].state !== "P0_ACTIVE") {
+          throw new CommandRejectedError(
+            "SFR-003",
+            `Project ${workItem[0].project_id} does not allow AI sessions (state ${project[0]?.state ?? "unknown"}) — FS-001 SFR-003`,
+          );
+        }
+      }
+      const contractPin = p["contract"] as { contractId: string; revision: number } | undefined;
+      // Fail-closed FR-63 (finding review đối kháng): work-item gắn Project
+      // BẮT BUỘC pin Hợp đồng thực hiện AI ngay tại lệnh xin kích hoạt —
+      // thiếu là AI không bắt đầu, không phụ thuộc caller tự giác. Đường run
+      // test KC-01/KC-02 (không gắn Project) giữ nguyên không pin.
+      if (workItem[0].project_id && !contractPin) {
+        throw new CommandRejectedError(
+          "ERR-CONTRACT",
+          `Work item ${p["workItemId"]} is Project-bound — an execution contract pin is required (FR-63)`,
+        );
+      }
+      if (contractPin) {
+        // Hợp đồng phải active và đủ trường ngay tại thời điểm xin kích hoạt.
+        await requireActiveContract(ctx, contractPin.contractId, contractPin.revision);
       }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
@@ -45,6 +86,8 @@ export async function requestActivation(
           workItemId: p["workItemId"],
           agentId: p["agentId"],
           engine: p["engine"],
+          contractId: contractPin?.contractId ?? null,
+          contractRevision: contractPin?.revision ?? null,
         },
         expectedVersion: -1,
       });
@@ -55,28 +98,70 @@ export async function requestActivation(
 
 // Claim compare-and-set: chỉ thắng khi activation còn QUEUED trên chính
 // snapshot của transaction — hai claimer song song thì đúng một bên thắng.
+// KC-13 B4: với work-item gắn Project, bốn điều kiện FR-15 được kiểm LẠI
+// tại thời điểm claim (trạng thái có thể đã đổi từ lúc route) và claimer
+// phải đúng Staff đã được định tuyến; đường run test KC-01/KC-02 giữ nguyên.
 export async function claimActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; claimedBy: string },
+  payload: {
+    activationId: string;
+    claimedBy: string;
+    // KC-13 B5: lease TTL — claim bền vững giữa các lệnh nên claimer chết
+    // phải thu hồi được (requeueExpiredActivations). Không lease = đường
+    // KC-02 cũ, watchdog không thu hồi.
+    lease?: { untilMs: number };
+  },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const rows = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_activations WHERE id = ${p["activationId"]} FOR UPDATE
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, work_item_id, contract_id, contract_revision FROM dopaios_activations
+        WHERE id = ${p["activationId"]} FOR UPDATE
+      `)) as unknown as Array<{
+        state: string;
+        work_item_id: string;
+        contract_id: string | null;
+        contract_revision: number | null;
+      }>;
       if (rows.length === 0) {
         throw new CommandRejectedError("ERR-ACTIVATION", "Activation not found");
       }
       if (rows[0].state !== "QUEUED") {
         throw new CommandRejectedError("DEV-010", "Activation already claimed");
       }
+      await requireClaimEligibility(ctx, {
+        workItemId: rows[0].work_item_id,
+        claimedBy: p["claimedBy"] as string,
+      });
+      // Finding review đối kháng: cửa sổ request→claim — hợp đồng pin phải
+      // CÒN active tại thời điểm claim (revision bị supersede thì lượt CHƯA
+      // bắt đầu không được khởi động trên hợp đồng cũ); work-item Project mà
+      // activation không mang pin (seed ngoài đường lệnh) cũng chặn.
+      if (rows[0].contract_id) {
+        await requireActiveContract(ctx, rows[0].contract_id, Number(rows[0].contract_revision));
+      } else {
+        const workItemRow = (await ctx.tx.execute(sql`
+          SELECT project_id FROM dopaios_work_items WHERE id = ${rows[0].work_item_id}
+        `)) as unknown as Array<{ project_id: string | null }>;
+        if (workItemRow[0]?.project_id) {
+          throw new CommandRejectedError(
+            "ERR-CONTRACT",
+            `Activation ${p["activationId"]} carries no execution contract pin for a Project work item (FR-63)`,
+          );
+        }
+      }
+      const lease = p["lease"] as { untilMs: number } | undefined;
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
         type: "ActivationClaimed",
-        data: { activationId: p["activationId"], claimedBy: p["claimedBy"] },
+        data: {
+          activationId: p["activationId"],
+          claimedBy: p["claimedBy"],
+          leaseUntil: lease ? new Date(lease.untilMs).toISOString() : null,
+        },
       });
       return { activationId: p["activationId"] as string, state: "RUNNING" };
     },
@@ -86,17 +171,45 @@ export async function claimActivation(
 export async function completeActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; outcome: string },
+  payload: {
+    activationId: string;
+    outcome: string;
+    // KC-13 B5: claimer giữ epoch của lượt claim mình — activation đã bị thu
+    // hồi và giao lại (epoch tăng) thì claimer cũ ghi muộn bị chặn.
+    leaseEpoch?: number;
+  },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const rows = (await ctx.tx.execute(sql`
-        SELECT state FROM dopaios_activations WHERE id = ${p["activationId"]}
-      `)) as unknown as Array<{ state: string }>;
+        SELECT state, lease_epoch, claim_lease_until FROM dopaios_activations
+        WHERE id = ${p["activationId"]} FOR UPDATE
+      `)) as unknown as Array<{
+        state: string;
+        lease_epoch: number;
+        claim_lease_until: Date | string | null;
+      }>;
       if (rows.length === 0 || rows[0].state !== "RUNNING") {
         throw new CommandRejectedError("ERR-ACTIVATION-STATE", "Activation is not RUNNING");
+      }
+      // Finding review đối kháng: fence không được là opt-in — activation có
+      // lease (hoặc đã qua requeue) thì leaseEpoch BẮT BUỘC và phải khớp;
+      // claimer cũ bỏ trống trường này không ghi đè được lượt mới. Đường
+      // KC-02 không lease (claim_lease_until null, epoch 0) giữ nguyên.
+      const fenced = rows[0].claim_lease_until !== null || Number(rows[0].lease_epoch) > 0;
+      if (fenced && p["leaseEpoch"] === undefined) {
+        throw new CommandRejectedError(
+          "ERR-LEASE-EPOCH",
+          `Activation ${p["activationId"]} is lease-fenced — completion requires the claimer's leaseEpoch`,
+        );
+      }
+      if (p["leaseEpoch"] !== undefined && Number(rows[0].lease_epoch) !== Number(p["leaseEpoch"])) {
+        throw new CommandRejectedError(
+          "ERR-LEASE-EPOCH",
+          `Stale claimer: activation ${p["activationId"]} is at lease epoch ${rows[0].lease_epoch}, claimer holds ${p["leaseEpoch"]}`,
+        );
       }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
