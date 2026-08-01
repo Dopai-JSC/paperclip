@@ -322,6 +322,8 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         agentId: d["agentId"],
         engine: d["engine"],
         state: "QUEUED",
+        contractId: d["contractId"] ?? null,
+        contractRevision: d["contractRevision"] ?? null,
       });
       break;
     case "ActivationClaimed":

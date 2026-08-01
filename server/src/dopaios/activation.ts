@@ -14,6 +14,7 @@ import {
   type SessionRunOutcome,
 } from "./engine.js";
 import { executeAuditedCommand } from "./approval.js";
+import { requireActiveContract } from "./contract.js";
 
 // KC-02 B5: bề mặt kích hoạt mà KC-13 sẽ gọi (FS-003 SFR-011 — kích hoạt
 // đúng-một-lần idempotent, claim compare-and-set theo DEV-010) và
@@ -26,7 +27,15 @@ type Json = Record<string, unknown>;
 export async function requestActivation(
   db: Db,
   commandId: string,
-  payload: { activationId: string; workItemId: string; agentId: string; engine: string },
+  payload: {
+    activationId: string;
+    workItemId: string;
+    agentId: string;
+    engine: string;
+    // KC-13 B3: pin Hợp đồng thực hiện AI tại thời điểm yêu cầu kích hoạt —
+    // phiên giữ pin này kể cả khi hợp đồng có revision mới (FR-63).
+    contract?: { contractId: string; revision: number };
+  },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
     commandId,
@@ -53,6 +62,12 @@ export async function requestActivation(
           );
         }
       }
+      const contractPin = p["contract"] as { contractId: string; revision: number } | undefined;
+      if (contractPin) {
+        // Fail-closed FR-63: hợp đồng phải active và đủ trường ngay tại
+        // thời điểm xin kích hoạt — thiếu là AI không bắt đầu.
+        await requireActiveContract(ctx, contractPin.contractId, contractPin.revision);
+      }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
         type: "ActivationRequested",
@@ -61,6 +76,8 @@ export async function requestActivation(
           workItemId: p["workItemId"],
           agentId: p["agentId"],
           engine: p["engine"],
+          contractId: contractPin?.contractId ?? null,
+          contractRevision: contractPin?.revision ?? null,
         },
         expectedVersion: -1,
       });
