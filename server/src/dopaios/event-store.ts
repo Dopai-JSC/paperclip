@@ -22,6 +22,10 @@ import {
   dopaiosConditions,
   dopaiosImpactRecords,
   dopaiosGateRecords,
+  dopaiosStaffAi,
+  dopaiosStartupPools,
+  dopaiosTeamManifests,
+  dopaiosExecutionContracts,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -562,6 +566,111 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         approvalRecordId: d["approvalRecordId"],
       });
       break;
+    // ===== KC-13: định tuyến + kích hoạt =====
+    case "StaffAiRegistered":
+      await tx.insert(dopaiosStaffAi).values({
+        id: d["staffId"],
+        workStatus: d["workStatus"],
+        capabilities: d["capabilities"],
+        skills: d["skills"],
+        permissions: d["permissions"],
+        resources: d["resources"],
+        autonomyLimits: d["autonomyLimits"] ?? null,
+        modelVersion: d["modelVersion"] ?? null,
+        capacityLimit: d["capacityLimit"],
+        profileRevision: d["profileRevision"],
+      });
+      break;
+    case "StaffAiStatusChanged":
+      await tx
+        .update(dopaiosStaffAi)
+        .set({ workStatus: d["workStatus"] })
+        .where(eq(dopaiosStaffAi.id, d["staffId"]));
+      break;
+    case "StartupPoolPinned":
+      await tx.insert(dopaiosStartupPools).values({
+        id: d["poolId"],
+        revision: d["revision"],
+        roles: d["roles"],
+        readiness: d["readiness"],
+        state: "active",
+        pinnedBy: d["pinnedBy"],
+      });
+      break;
+    case "StartupPoolRevisionStateChanged":
+      await tx
+        .update(dopaiosStartupPools)
+        .set({ state: d["state"] })
+        .where(
+          sql`${dopaiosStartupPools.id} = ${d["poolId"]} AND ${dopaiosStartupPools.revision} = ${d["revision"]}`,
+        );
+      break;
+    case "TeamManifestProposed":
+      await tx.insert(dopaiosTeamManifests).values({
+        id: d["manifestId"],
+        revision: d["revision"],
+        stage: d["stage"],
+        projectId: d["projectId"],
+        state: "proposed",
+        poolRef: d["poolRef"],
+        roleAssignments: d["roleAssignments"],
+        orchestrator: d["orchestrator"],
+        pod: d["pod"],
+        capacity: d["capacity"],
+        permissions: d["permissions"],
+        resources: d["resources"],
+        routingRules: d["routingRules"],
+        timeouts: d["timeouts"] ?? null,
+        escalation: d["escalation"] ?? null,
+        fallbackPaths: d["fallbackPaths"] ?? null,
+        costLimits: d["costLimits"] ?? null,
+        autonomy: d["autonomy"] ?? null,
+        createdBy: d["createdBy"],
+        sha256: d["sha256"],
+      });
+      break;
+    case "TeamManifestApproved":
+      // effective_at lấy từ event time bất biến — replay dựng lại đúng mốc.
+      await tx
+        .update(dopaiosTeamManifests)
+        .set({
+          state: "approved",
+          approvedBy: d["approvedBy"],
+          approvedAt: event.time,
+          effectiveAt: event.time,
+        })
+        .where(
+          sql`${dopaiosTeamManifests.id} = ${d["manifestId"]} AND ${dopaiosTeamManifests.revision} = ${d["revision"]}`,
+        );
+      break;
+    case "TeamManifestRevisionStateChanged":
+      await tx
+        .update(dopaiosTeamManifests)
+        .set({ state: d["state"] })
+        .where(
+          sql`${dopaiosTeamManifests.id} = ${d["manifestId"]} AND ${dopaiosTeamManifests.revision} = ${d["revision"]}`,
+        );
+      break;
+    case "ExecutionContractCompiled":
+      await tx.insert(dopaiosExecutionContracts).values({
+        id: d["contractId"],
+        revision: d["revision"],
+        workItemId: d["workItemId"],
+        sources: d["sources"],
+        fields: d["fields"],
+        state: "active",
+        sha256: d["sha256"],
+        compiledBy: d["compiledBy"],
+      });
+      break;
+    case "ExecutionContractRevisionStateChanged":
+      await tx
+        .update(dopaiosExecutionContracts)
+        .set({ state: d["state"] })
+        .where(
+          sql`${dopaiosExecutionContracts.id} = ${d["contractId"]} AND ${dopaiosExecutionContracts.revision} = ${d["revision"]}`,
+        );
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
@@ -590,6 +699,10 @@ const PROJECTION_TABLES = [
   dopaiosConditions,
   dopaiosImpactRecords,
   dopaiosGateRecords,
+  dopaiosStaffAi,
+  dopaiosStartupPools,
+  dopaiosTeamManifests,
+  dopaiosExecutionContracts,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {
