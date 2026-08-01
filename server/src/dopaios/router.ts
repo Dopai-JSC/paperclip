@@ -258,7 +258,21 @@ export async function requireClaimEligibility(
       `Work item ${input.workItemId} is routed to ${workItem.routed_to ?? "no one"}, not ${input.claimedBy}`,
     );
   }
+  // Finding review đối kháng: khóa hàng Staff trước khi đếm tải — hai claim
+  // song song cùng Staff serialize qua khóa này, chống write-skew vượt trần
+  // capacity (FR-15 điều kiện 3).
+  await ctx.tx.execute(sql`SELECT id FROM dopaios_staff_ai WHERE id = ${input.claimedBy} FOR UPDATE`);
   const manifest = await loadEffectiveManifest(ctx, workItem.project_id);
+  // Finding review đối kháng: đổi đội giữa chừng — claimer phải CÒN trong
+  // danh sách pin của Manifest hiệu lực cho đúng vai tại thời điểm claim,
+  // không chỉ đúng routed_to của lần route cũ (FR-15/AC-FR-8.3).
+  const entry = manifest.role_assignments[workItem.role];
+  if (!entry || (input.claimedBy !== entry.primary && input.claimedBy !== entry.fallback)) {
+    throw new CommandRejectedError(
+      "ERR-OUTSIDE-MANIFEST",
+      `Staff ${input.claimedBy} is no longer in the pinned list for role ${workItem.role} of the effective manifest ${manifest.id}@${manifest.revision}`,
+    );
+  }
   const reason = await disqualify(ctx, input.claimedBy, workItem.role, manifest);
   if (reason) {
     throw new CommandRejectedError(

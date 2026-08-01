@@ -6,7 +6,14 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
-import { registerActor, createProjectShell } from "../dopaios/commands.ts";
+import {
+  registerActor,
+  createProjectShell,
+  registerApprovedArtifact,
+  createSopDefinition,
+  publishSopDefinition,
+} from "../dopaios/commands.ts";
+import { compileExecutionContract } from "../dopaios/contract.ts";
 import {
   registerStaffAi,
   setStaffAiStatus,
@@ -160,6 +167,24 @@ describeEmbeddedPostgres("dopaios KC-13 B4 — router bốn điều kiện FR-15
         role,
       });
     }
+
+    // B7 (FR-63): kích hoạt đòi pin hợp đồng — dựng SOP published + hợp đồng
+    // cho work-item của ca claim.
+    await registerApprovedArtifact(db, cmd("sop-art"), {
+      artifactId: "SOP-ART-B4",
+      revision: 1,
+      sha256: SHA,
+    });
+    await createSopDefinition(db, cmd("sop-def"), {
+      definitionId: "SOPDEF-B4",
+      revision: 1,
+      sopPin: { artifactId: "SOP-ART-B4", revision: 1, sha256: SHA },
+    });
+    await publishSopDefinition(db, cmd("sop-pub"), {
+      definitionId: "SOPDEF-B4",
+      definitionContentSha256: SHA,
+      expectedSopSha256: SHA,
+    });
   }, 120_000);
 
   afterAll(async () => {
@@ -274,11 +299,33 @@ describeEmbeddedPostgres("dopaios KC-13 B4 — router bốn điều kiện FR-15
   });
 
   it("re-checks the four conditions at claim time (FR-15 two checkpoints)", async () => {
+    await compileExecutionContract(db, cmd("xc"), {
+      contractId: "XC-WI-AI-Lead",
+      workItemId: "WI-AI-Lead",
+      compiledBy: "system-router",
+      sopRef: { id: "SOPDEF-B4", revision: 1, sha256: SHA },
+      fields: {
+        objective: "chạy bước T1",
+        scope: "fixture",
+        inputs: [],
+        outputs: [{ id: "OUT-1", quality: "self-check" }],
+        context: [],
+        permissions: ["repo-read"],
+        tools: ["engine"],
+        limits: { timeMs: 60000, costUsd: 1, loops: 1 },
+        requiredChecks: ["self-check"],
+        requiredEvidence: ["output-hash"],
+        stopConditions: ["step-done"],
+        escalationEvents: ["missing-input"],
+        fallbackPath: "AI-AI-Lead-FB",
+      },
+    });
     await requestActivation(db, cmd("act"), {
       activationId: "ACT-LEAD",
       workItemId: "WI-AI-Lead",
       agentId: "AI-AI-Lead",
       engine: "fake",
+      contract: { contractId: "XC-WI-AI-Lead", revision: 1 },
     });
 
     // Claimer khác Staff đã định tuyến → chặn.

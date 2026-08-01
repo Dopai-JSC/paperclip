@@ -374,7 +374,7 @@ describeEmbeddedPostgres("dopaios KC-13 B2 — pool, Team Manifest bootstrap, kh
     await approveTeamManifest(db, cmd("approve-r4"), { manifestId: "TM-A", revision: 4, actor: "ORCH-1" });
   });
 
-  it("P0-01 needs the approved bootstrap pair, then AI work items and activation open (AC-FR-69.2)", async () => {
+  it("P0-01 needs the approved bootstrap pair; work items open but activation still demands a contract pin (AC-FR-69.2 + FR-63)", async () => {
     const noPair = cmd("p0-no-manifest");
     await expect(
       approveProjectInitiation(db, noPair, {
@@ -403,13 +403,19 @@ describeEmbeddedPostgres("dopaios KC-13 B2 — pool, Team Manifest bootstrap, kh
     });
     expect(created).toMatchObject({ workItemId: "WI-P0-1", state: "READY" });
 
-    const activation = await requestActivation(db, cmd("act"), {
-      activationId: "ACT-P0-1",
-      workItemId: "WI-P0-1",
-      agentId: "AI-AI-Lead",
-      engine: "fake",
-    });
-    expect(activation).toMatchObject({ activationId: "ACT-P0-1", state: "QUEUED" });
+    // B7 (FR-63 fail-closed): work-item gắn Project không pin Hợp đồng thực
+    // hiện AI thì KHÔNG mở được kích hoạt — đường dương có pin chứng minh ở
+    // suite B3/B5.
+    const noContract = cmd("act-no-contract");
+    await expect(
+      requestActivation(db, noContract, {
+        activationId: "ACT-P0-1",
+        workItemId: "WI-P0-1",
+        agentId: "AI-AI-Lead",
+        engine: "fake",
+      }),
+    ).rejects.toMatchObject({ code: "ERR-CONTRACT" });
+    await expectAudited(noContract);
 
     // SC-003 (FS-001): không tồn tại work-item AI nào gắn Project PREPARING.
     const preparingItems = (await db.execute(sql`

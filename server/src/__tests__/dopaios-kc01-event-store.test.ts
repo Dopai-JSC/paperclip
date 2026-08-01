@@ -77,6 +77,14 @@ describeEmbeddedPostgres("dopaios KC-01 event store", () => {
         capabilities,
       });
     }
+    // KC-13 B7: record-approval nay đòi actor là NGƯỜI QUYẾT được pin của
+    // run, đăng ký và active (SFR-023/SFR-042) — đăng ký decider của fx-02.
+    await registerActor(db, "CMD-SEED-FX02-DECIDER", {
+      actorId: fx02.fixture_package.decider as string,
+      kind: "human",
+      active: true,
+      capabilities: ["run-decider"],
+    });
   }, 60_000);
 
   afterAll(async () => {

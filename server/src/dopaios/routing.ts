@@ -303,6 +303,31 @@ export async function proposeTeamManifest(
           `Actor ${p["actor"]} is not the assigned Orchestrator of ${p["projectId"]}`,
         );
       }
+      // Finding review đối kháng: delivery đứng SAU P0 trong vòng đời —
+      // Project chưa qua P0-01 không được nhận Manifest delivery (chặn nhảy
+      // cóc PREPARING → Release).
+      if (p["stage"] === "delivery" && project.state !== "P0_ACTIVE") {
+        throw new CommandRejectedError(
+          "ERR-PROJECT-STATE",
+          `Project ${p["projectId"]} is ${project.state} — delivery manifests require P0_ACTIVE`,
+        );
+      }
+      // Finding review đối kháng: BẤT BIẾN một-manifestId-mỗi-(project, stage)
+      // — "manifest hiệu lực" tra theo revision chỉ đúng khi mỗi (project,
+      // stage) có đúng một dòng manifestId; id thứ hai bị chặn từ cửa.
+      const otherId = await one<{ id: string }>(
+        ctx,
+        sql`SELECT DISTINCT id FROM dopaios_team_manifests
+            WHERE project_id = ${p["projectId"]} AND stage = ${p["stage"]}
+              AND state IN ('proposed', 'approved') AND id <> ${p["manifestId"]}
+            LIMIT 1`,
+      );
+      if (otherId) {
+        throw new CommandRejectedError(
+          "ERR-MANIFEST-DUP",
+          `Project ${p["projectId"]} already has manifest ${otherId.id} for stage ${p["stage"]} — propose a new revision of it instead`,
+        );
+      }
 
       const poolRef = p["poolRef"] as { poolId: string; revision: number };
       const pool = await one<{ roles: RoleMap; state: string; readiness: string }>(
@@ -628,6 +653,14 @@ export async function activateRelease(
         throw new CommandRejectedError(
           "ERR-ORCH-MISMATCH",
           `Actor ${p["actor"]} is not the assigned Orchestrator of ${p["projectId"]}`,
+        );
+      }
+      // Finding review đối kháng: Release đứng sau P0 — Project chưa qua
+      // P0-01 thì cổng delivery không có nghĩa.
+      if (project.state !== "P0_ACTIVE") {
+        throw new CommandRejectedError(
+          "ERR-PROJECT-STATE",
+          `Project ${p["projectId"]} is ${project.state} — Release requires the Project lifecycle to have passed P0-01`,
         );
       }
       const delivery = await one<{ id: string; revision: number }>(

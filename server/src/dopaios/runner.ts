@@ -4,6 +4,7 @@ import {
   type CommandResult,
   executeCommand,
   CommandRejectedError,
+  CommandPayloadMismatchError,
 } from "./event-store.js";
 import {
   activateSopRun,
@@ -60,7 +61,11 @@ async function rows<T>(db: Db, query: ReturnType<typeof sql>): Promise<T[]> {
 
 // Thu hồi claim mồ côi: lease hết hạn mà activation vẫn RUNNING → về QUEUED
 // với epoch tăng. Command id mang epoch nên tick lặp là idempotent replay,
-// không tăng kép.
+// không tăng kép. Finding review đối kháng (blocker): danh sách quét nằm
+// NGOÀI transaction — handler phải RE-CHECK trong cùng transaction (FOR
+// UPDATE) rằng activation vẫn RUNNING, đúng epoch và lease vẫn quá hạn;
+// claimer thật hoàn tất xen giữa thì lệnh bị từ chối, KHÔNG hồi sinh
+// activation đã DONE (chống chạy đúp work-item).
 export async function requeueExpiredActivations(
   db: Db,
   input: { nowMs: number },
@@ -75,25 +80,52 @@ export async function requeueExpiredActivations(
   );
   for (const activation of expired) {
     const commandId = `REQUEUE-${activation.id}-e${activation.lease_epoch}`;
-    await executeCommand(db, {
-      commandId,
-      payload: { activationId: activation.id, fromEpoch: activation.lease_epoch },
-      handler: async (ctx, p) => {
-        await ctx.emit({
-          streamName: `dopaiosActivation-${p["activationId"]}`,
-          type: "ActivationRequeued",
-          data: {
-            activationId: p["activationId"],
-            fromEpoch: p["fromEpoch"],
-            newEpoch: Number(p["fromEpoch"]) + 1,
-            reason: "lease-expired",
-          },
-          metadata: { commandId, audit: true },
-        });
-        return { activationId: p["activationId"] as string, state: "QUEUED" };
-      },
-    });
-    actions.push({ command: "requeue-activation", target: activation.id, outcome: "ok" });
+    await fire(actions, "requeue-activation", activation.id, () =>
+      executeCommand(db, {
+        commandId,
+        payload: {
+          activationId: activation.id,
+          fromEpoch: activation.lease_epoch,
+          nowMs: input.nowMs,
+        },
+        handler: async (ctx, p) => {
+          const current = (await ctx.tx.execute(sql`
+            SELECT state, lease_epoch, claim_lease_until FROM dopaios_activations
+            WHERE id = ${p["activationId"]} FOR UPDATE
+          `)) as unknown as Array<{
+            state: string;
+            lease_epoch: number;
+            claim_lease_until: Date | string | null;
+          }>;
+          const row = current[0];
+          const leaseMs = row?.claim_lease_until ? new Date(row.claim_lease_until).getTime() : null;
+          if (
+            !row ||
+            row.state !== "RUNNING" ||
+            Number(row.lease_epoch) !== Number(p["fromEpoch"]) ||
+            leaseMs === null ||
+            leaseMs >= Number(p["nowMs"])
+          ) {
+            throw new CommandRejectedError(
+              "ERR-REQUEUE-STALE",
+              `Activation ${p["activationId"]} is no longer an expired epoch-${p["fromEpoch"]} claim — refusing to requeue`,
+            );
+          }
+          await ctx.emit({
+            streamName: `dopaiosActivation-${p["activationId"]}`,
+            type: "ActivationRequeued",
+            data: {
+              activationId: p["activationId"],
+              fromEpoch: p["fromEpoch"],
+              newEpoch: Number(p["fromEpoch"]) + 1,
+              reason: "lease-expired",
+            },
+            metadata: { commandId, audit: true },
+          });
+          return { activationId: p["activationId"] as string, state: "QUEUED" };
+        },
+      }),
+    );
   }
   return actions;
 }
@@ -110,6 +142,13 @@ async function fire(
   } catch (error) {
     if (error instanceof CommandRejectedError) {
       actions.push({ command, target, outcome: "blocked", code: error.code });
+      return;
+    }
+    // Hai instance tick va nhau trên cùng command id với payload khác (vd
+    // nowMs trong lease) — bên thua ghi nhận blocked và đi tiếp, không sập
+    // cả tick (finding review đối kháng).
+    if (error instanceof CommandPayloadMismatchError) {
+      actions.push({ command, target, outcome: "blocked", code: "SFR-039" });
       return;
     }
     throw error;
@@ -287,10 +326,12 @@ export async function runnerTick(
       work_item_id: string;
       lease_epoch: number;
       routed_to: string;
+      xc_id: string | null;
       xc_rev: number;
     }>(
       db,
-      sql`SELECT a.id, a.work_item_id, a.lease_epoch, w.routed_to, a.contract_revision AS xc_rev
+      sql`SELECT a.id, a.work_item_id, a.lease_epoch, w.routed_to,
+                 a.contract_id AS xc_id, a.contract_revision AS xc_rev
           FROM dopaios_activations a
           JOIN dopaios_work_items w ON w.id = a.work_item_id
           WHERE a.state = 'QUEUED' AND w.routed_to IS NOT NULL
@@ -305,10 +346,24 @@ export async function runnerTick(
           claimedBy: activation.routed_to,
           lease: { untilMs: input.nowMs + cfg.leaseMs },
         });
-        claimed = true;
+        // Claim idempotent replay = một instance khác đã thắng lượt này —
+        // không chạy engine lần hai (finding review đối kháng).
+        claimed = result["idempotentReplay"] !== true;
         return result;
       });
       if (!claimed) continue;
+
+      // Phiên chạy theo ĐÚNG nội dung hợp đồng đã pin trên activation (steps
+      // nằm trong fields đã hash) — config runner chỉ là fallback; pin không
+      // chỉ để audit mà là thứ được thực thi (finding review đối kháng).
+      const pinned = activation.xc_id
+        ? await rows<{ fields: Json }>(
+            db,
+            sql`SELECT fields FROM dopaios_execution_contracts
+                WHERE id = ${activation.xc_id} AND revision = ${Number(activation.xc_rev ?? 1)}`,
+          )
+        : [];
+      const pinnedSteps = (pinned[0]?.fields?.["steps"] as string[] | undefined) ?? cfg.steps;
 
       const outcome = await runWorkItemSession(db, {
         sessionId: `SES-${activation.id}-e${epoch}`,
@@ -318,7 +373,7 @@ export async function runnerTick(
           workItemId: activation.work_item_id,
           contractRevision: Number(activation.xc_rev ?? 1),
           sopRef: `${cfg.sopRef.id}@${cfg.sopRef.revision}`,
-          steps: cfg.steps,
+          steps: pinnedSteps,
         },
       });
       if (outcome.kind === "succeeded") {
