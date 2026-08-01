@@ -1,19 +1,19 @@
-# KC-04 B5–B7 (Dopaios) — bảo vệ test bằng CI (FR-29, tiêu chí 4 KC-04, QD-4):
+# KC-04 B5–B8 (Dopaios) — bảo vệ test bằng CI (FR-29, tiêu chí 4 KC-04, QD-4):
 # tác nhân sản xuất (namespace nhánh ai-prod/**) sửa/xóa/vô hiệu test hoặc CI
 # thì check này đỏ.
 #
 # B6 (blocker review lens 2): dùng pull_request_target để PR không thể vô
-# hiệu chính check này. B7 làm đúng ngữ nghĩa GitHub: sự kiện
-# pull_request_target CHỈ kích hoạt từ file workflow trên NHÁNH MẶC ĐỊNH của
-# repo — bản trên nhánh mặc định là bản CHẠY; bản trong cây nguồn này là
-# NGUỒN, hợp nhất dần lên nhánh mặc định, hai bản phải giữ đồng nhất.
-# Script kiểm lấy từ checkout NHÁNH BASE của PR (mặc định của
-# actions/checkout dưới pull_request_target) — ai-prod không đẩy được vào
-# base nên đó là bản tin cậy. PR chỉ là DỮ LIỆU (hai SHA cho git diff),
-# không dòng code nào của PR được thực thi. Không filter branches (minor
-# m-6): luật tự thoát sớm theo head branch, đích merge nào cũng được kiểm;
-# nếu nhánh base chưa mang script luật thì bỏ qua sạch (base chưa có luật
-# để cưỡng chế — tránh đỏ oan PR có base chưa hợp nhất KC-04).
+# hiệu chính check này. B7/B8 làm đúng ngữ nghĩa GitHub đã kiểm chứng bằng
+# run thật: pull_request_target CHỈ kích hoạt từ file workflow trên NHÁNH
+# MẶC ĐỊNH của repo, và actions/checkout mặc định cũng checkout NHÁNH MẶC
+# ĐỊNH — nên workflow VÀ script (kèm unit test của script) đều phải nằm
+# trên nhánh mặc định; đó là trọn bộ bản TIN CẬY. Bản trong cây nguồn này
+# là NGUỒN, hợp nhất dần lên nhánh mặc định, hai bản phải giữ đồng nhất.
+# PR chỉ là DỮ LIỆU (hai SHA cho git diff), không dòng code nào của PR
+# được thực thi. Không guard tồn-tại-script: thiếu script trên checkout
+# tin cậy phải ĐỎ (fail-closed), không được lặng lẽ bỏ qua. Không filter
+# branches (minor m-6): luật tự thoát sớm theo head branch, đích merge
+# nào cũng được kiểm.
 name: Dopai test protection
 
 on:
@@ -26,21 +26,12 @@ jobs:
       - uses: actions/checkout@v7
         with:
           fetch-depth: 0
-      - name: Unit test luật bảo vệ (bản tin cậy từ base)
-        run: |
-          if [ ! -f scripts/check-test-protection.mjs ]; then
-            echo "Nhánh base chưa mang luật bảo vệ test — bỏ qua."
-            exit 0
-          fi
-          node --test scripts/check-test-protection.test.mjs
+      - name: Unit test luật bảo vệ (bản tin cậy từ nhánh mặc định)
+        run: node --test scripts/check-test-protection.test.mjs
       - name: Lấy head của PR làm dữ liệu diff
         run: git fetch origin "+refs/pull/${{ github.event.pull_request.number }}/head:refs/kc04/pr-head"
       - name: Kiểm đường bảo vệ trên diff của PR
         run: |
-          if [ ! -f scripts/check-test-protection.mjs ]; then
-            echo "Nhánh base chưa mang luật bảo vệ test — bỏ qua."
-            exit 0
-          fi
           node scripts/check-test-protection.mjs \
             "${{ github.event.pull_request.base.sha }}" \
             "${{ github.event.pull_request.head.sha }}" \
