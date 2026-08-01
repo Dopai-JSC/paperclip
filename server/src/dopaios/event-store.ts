@@ -259,7 +259,11 @@ export async function executeCommand(
         }
       }
       // Serialization failure / deadlock: thử lại trọn transaction.
-      if ((code === "40001" || code === "40P01") && attempt < SERIALIZATION_RETRIES) {
+      // KC-15 B5 (minor review lens 2): 23505 trên bảng KHÁC dopaios_commands
+      // trong đua song song cũng retry — lần chạy lại đọc snapshot mới và
+      // guard tương ứng trả rejection sạch (an toàn vì idempotency theo
+      // command_id và handler thuần đọc-tx + emit).
+      if ((code === "40001" || code === "40P01" || code === "23505") && attempt < SERIALIZATION_RETRIES) {
         continue;
       }
       throw error;

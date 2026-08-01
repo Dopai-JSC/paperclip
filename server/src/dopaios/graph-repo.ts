@@ -64,9 +64,9 @@ export async function declareWorkItemDependency(
       if (workItemId === dependsOn) {
         throw new CommandRejectedError("ERR-SELF-DEP", "A work item cannot depend on itself");
       }
-      const declarer = await rows<{ active: boolean }>(
+      const declarer = await rows<{ active: boolean; capabilities: string[] }>(
         ctx,
-        sql`SELECT active FROM dopaios_actors WHERE id = ${p["declaredBy"]} AND active = true`,
+        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${p["declaredBy"]} AND active = true`,
       );
       if (declarer.length === 0) {
         throw new CommandRejectedError("ERR-ACTOR", "Declarer is not a registered active actor");
@@ -90,17 +90,48 @@ export async function declareWorkItemDependency(
           "Dependency edges stay inside a single test run (QD-4)",
         );
       }
-      const run = await rows<{ state: string }>(
+      const run = await rows<{ state: string; decider: string }>(
         ctx,
-        sql`SELECT state FROM dopaios_sop_runs WHERE id = ${dependent.run_id}`,
+        sql`SELECT state, decider FROM dopaios_sop_runs WHERE id = ${dependent.run_id}`,
       );
       if (run.length === 0 || run[0].state !== "RUNNING") {
         throw new CommandRejectedError("SFR-057", `Run ${dependent.run_id} is not RUNNING — command refused`);
       }
-      // Bên phụ thuộc đã terminal thì cạnh mới vô nghĩa; thượng nguồn terminal
-      // là hợp lệ (phụ thuộc đã thỏa hoặc sẽ bị chặn theo cách đọc).
+      // B5 (major review lens 1): khai cạnh là quyền cấu trúc của run —
+      // không phải mọi actor active; chỉ người quyết định được pin của run
+      // hoặc người giữ capability orchestrator (đường sinh cạnh production
+      // từ định nghĩa SOP thuộc KC-06/FS-004).
+      if (
+        (p["declaredBy"] as string) !== run[0].decider &&
+        !declarer[0].capabilities.includes("orchestrator")
+      ) {
+        throw new CommandRejectedError(
+          "ERR-AUTH",
+          "Declaring a dependency requires the pinned run decider or an orchestrator capability",
+        );
+      }
+      // Bên phụ thuộc đã terminal thì cạnh mới vô nghĩa.
       if (dependent.state === "COMPLETED" || dependent.state === "CANCELLED") {
         throw new CommandRejectedError("ERR-STATE", `Dependent work item is terminal (${dependent.state})`);
+      }
+      // B5 (major review lens 1): cạnh bảo đảm deadlock bị chặn TẠI CỬA —
+      // thượng nguồn CANCELLED không bao giờ thỏa; thượng nguồn COMPLETED mà
+      // không có dòng đầu ra nào cũng không bao giờ thỏa (item terminal không
+      // tạo thêm đầu ra, slice không có lệnh gỡ cạnh).
+      if (upstream.state === "CANCELLED") {
+        throw new CommandRejectedError("ERR-STATE", "Upstream work item is CANCELLED — the edge can never be satisfied");
+      }
+      if (upstream.state === "COMPLETED") {
+        const upstreamOutputs = await rows<{ n: number }>(
+          ctx,
+          sql`SELECT count(*)::int AS n FROM dopaios_output_versions WHERE work_item_id = ${dependsOn}`,
+        );
+        if ((upstreamOutputs[0]?.n ?? 0) === 0) {
+          throw new CommandRejectedError(
+            "ERR-STATE",
+            "Upstream work item is COMPLETED with no output line — the edge can never be satisfied",
+          );
+        }
       }
       const existing = await rows<{ work_item_id: string }>(
         ctx,
@@ -118,8 +149,10 @@ export async function declareWorkItemDependency(
           `Edge ${workItemId} -> ${dependsOn} would create a dependency cycle`,
         );
       }
+      // B5 (minor cả hai lens): delimiter "=>" giữ tên stream đơn ánh với ID
+      // chứa dấu gạch ngang — hai cạnh khác nhau không thể trùng stream.
       await ctx.emit({
-        streamName: `dopaiosWorkItemDependency-${workItemId}-${dependsOn}`,
+        streamName: `dopaiosWorkItemDependency-${workItemId}=>${dependsOn}`,
         type: "WorkItemDependencyDeclared",
         data: {
           workItemId,
@@ -199,10 +232,18 @@ export async function wouldCreateCycle(
 export async function currentOutputsPinningSource(
   ctx: CommandContext,
   artifactId: string,
-): Promise<Array<{ outputId: string; revision: number; workItemId: string; runId: string | null }>> {
+): Promise<
+  Array<{ outputId: string; revision: number; state: string; workItemId: string; runId: string | null }>
+> {
+  // B5 (blocker review lens 1): impact set trục run KHÔNG chứa run terminal —
+  // SFR-057 cấm mọi sự kiện nội bộ trên record thuộc run đã COMPLETED/
+  // CANCELLED; nghĩa vụ của run terminal đã chốt bằng disposition record hủy.
+  // jsonb_typeof (lens 2): source_refs không phải mảng thì bỏ qua — phòng
+  // event dị dạng làm hỏng traversal vĩnh viễn.
   const result = await rows<{
     output_id: string;
     revision: number;
+    state: string;
     work_item_id: string;
     run_id: string | null;
   }>(
@@ -212,11 +253,14 @@ export async function currentOutputsPinningSource(
           FROM dopaios_output_versions
           GROUP BY id
         )
-        SELECT o.id AS output_id, o.revision, o.work_item_id, w.run_id
+        SELECT o.id AS output_id, o.revision, o.state, o.work_item_id, w.run_id
         FROM dopaios_output_versions o
         JOIN current_rev c ON c.id = o.id AND c.revision = o.revision
         JOIN dopaios_work_items w ON w.id = o.work_item_id
-        WHERE o.source_refs IS NOT NULL
+        JOIN dopaios_sop_runs r ON r.id = w.run_id
+        WHERE r.state NOT IN ('COMPLETED', 'CANCELLED')
+          AND o.source_refs IS NOT NULL
+          AND jsonb_typeof(o.source_refs) = 'array'
           AND EXISTS (
             SELECT 1 FROM jsonb_array_elements(o.source_refs) AS ref
             WHERE ref->>'artifactId' = ${artifactId}
@@ -226,6 +270,7 @@ export async function currentOutputsPinningSource(
   return result.map((row) => ({
     outputId: row.output_id,
     revision: row.revision,
+    state: row.state,
     workItemId: row.work_item_id,
     runId: row.run_id,
   }));

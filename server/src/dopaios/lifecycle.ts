@@ -110,6 +110,17 @@ export async function createArtifactRevision(
       if (typeof p["semanticChange"] !== "boolean") {
         throw new CommandRejectedError("ERR-002", "Revision must declare semanticChange explicitly");
       }
+      // B5 (major review lens 1): KC-15 nối side effect trục run vào lệnh này
+      // — người tạo revision phải là actor đã đăng ký và đang active (bản đồ
+      // capability theo loại artifact là giới hạn slice kế thừa KC-03/KC-14,
+      // ghi hồ sơ).
+      const creator = await queryRows<{ active: boolean }>(
+        ctx,
+        sql`SELECT active FROM dopaios_actors WHERE id = ${p["createdBy"]} AND active = true`,
+      );
+      if (creator.length === 0) {
+        throw new CommandRejectedError("ERR-ACTOR", "Revision creator is not a registered active actor");
+      }
       const revisions = await loadArtifactRevisions(ctx, p["artifactId"] as string);
       if (revisions.length === 0) {
         throw new CommandRejectedError("ERR-TARGET", "create-revision requires an existing artifact");
@@ -144,6 +155,16 @@ export async function createArtifactRevision(
         const affectedOutputs = await currentOutputsPinningSource(ctx, p["artifactId"] as string);
         const sourceEvent = `${p["artifactId"]}@${p["revision"]}`;
         for (const output of affectedOutputs) {
+          // B5 (minor review lens 1): giữ ĐỐI XỨNG với đường bản-mới-vào-trục
+          // (SFR-031) — bản đang AWAITING_DECISION chuyển REWORK_REQUIRED,
+          // không để phiên bản chờ quyết định mồ côi sau khi gói bị vô hiệu.
+          if (output.state === "AWAITING_DECISION") {
+            await ctx.emit({
+              streamName: `dopaiosOutput-${output.outputId}`,
+              type: "OutputVersionStateChanged",
+              data: { outputId: output.outputId, revision: output.revision, state: "REWORK_REQUIRED" },
+            });
+          }
           runLevelInvalidated += await invalidateEffectiveApprovalsAndReblockSteps(
             ctx,
             output.outputId,
@@ -521,9 +542,24 @@ export async function validateSourceRefs(
   ctx: CommandContext,
   refs: SourceRef[] | undefined,
 ): Promise<void> {
-  if (!refs || refs.length === 0) return;
+  if (refs === undefined || refs === null) return;
+  // B5 (major review lens 2): fail-closed với payload dị dạng — giá trị
+  // không phải mảng mà lọt vào event bất biến sẽ làm traversal jsonb hỏng
+  // vĩnh viễn và sống sót qua replay; chặn tại cửa, không nhận ngầm.
+  if (!Array.isArray(refs)) {
+    throw new CommandRejectedError("ERR-002", "sourceRefs must be an array of pins or absent");
+  }
+  if (refs.length === 0) return;
   for (const ref of refs) {
-    if (!ref?.artifactId || !ref?.revision || !ref?.sha256) {
+    if (
+      typeof ref !== "object" ||
+      ref === null ||
+      typeof ref.artifactId !== "string" ||
+      !ref.artifactId ||
+      typeof ref.revision !== "number" ||
+      typeof ref.sha256 !== "string" ||
+      !ref.sha256
+    ) {
       throw new CommandRejectedError("ERR-002", "Source ref must pin artifactId@revision@sha256");
     }
     const ledger = await queryRows<{
@@ -551,6 +587,16 @@ export async function validateSourceRefs(
       throw new CommandRejectedError(
         "SFR-011",
         `Pinned source ${ref.artifactId}@${ref.revision} is blocked for use inside its impact set`,
+      );
+    }
+    // B5 (major review lens 1): "được duyệt" là hiệu lực THẬT — có Approval
+    // Record approve/AWC đúng hash chưa vô hiệu; hàng ledger bootstrap không
+    // record không đủ (cùng chuẩn validateQualityContractPin của KC-14 B7).
+    const effective = await findEffectiveApproval(ctx, ref.artifactId, ref.revision, ref.sha256);
+    if (!effective) {
+      throw new CommandRejectedError(
+        "ERR-APPROVAL",
+        `Pinned source ${ref.artifactId}@${ref.revision} has no effective approval record`,
       );
     }
   }

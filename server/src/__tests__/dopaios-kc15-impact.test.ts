@@ -337,7 +337,7 @@ describeEmbeddedPostgres("dopaios KC-15 B3 — ca 2: thay đổi spec chỉ thay
       currentOutputsPinningSource(ctx, "SPEC-S"),
     );
     expect(direct).toEqual([
-      { outputId: OUT("WI-X1"), revision: 1, workItemId: "WI-X1", runId: RUN },
+      { outputId: OUT("WI-X1"), revision: 1, state: "APPROVED", workItemId: "WI-X1", runId: RUN },
     ]);
     const downstream = await inCommand("KC15-B3-READ-DOWN", (ctx) =>
       transitiveDependents(ctx, ["WI-X1"]),
