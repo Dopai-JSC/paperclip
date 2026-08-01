@@ -603,6 +603,33 @@ export async function recordApprovalDecision(
   });
 }
 
+// FX-03-B06 (SOP d.905, FS-003 US6-AC4): comment/kết luận ready/im lặng
+// KHÔNG thay Approval Record — lệnh này chỉ để lại event audit bất biến,
+// không đổi bất kỳ trạng thái nào (event không có projection).
+export async function recordReviewComment(
+  db: Db,
+  commandId: string,
+  payload: { artifactId: string; revision: number; author: string; comment: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      await ctx.emit({
+        streamName: `dopaiosComment-${p["artifactId"]}`,
+        type: "ReviewCommentRecorded",
+        data: {
+          artifactId: p["artifactId"],
+          revision: p["revision"],
+          author: p["author"],
+          comment: p["comment"],
+        },
+      });
+      return { artifactId: p["artifactId"] as string, stateChanged: false };
+    },
+  });
+}
+
 // Gate Record CHỈ cho Cổng A/B/C (FS-003 SFR-035): điểm không phải Cổng
 // không bao giờ có Gate Record — mọi yêu cầu khác bị từ chối kèm audit.
 export async function createGateRecord(
