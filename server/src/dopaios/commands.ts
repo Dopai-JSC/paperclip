@@ -332,28 +332,161 @@ export async function runFixtureExecution(
           data: { workItemId: p["workItemId"], state, executor: p["executor"] },
         });
       }
-      const outputStream = `dopaiosOutput-${p["outputId"]}`;
-      await ctx.emit({
-        streamName: outputStream,
-        type: "OutputVersionRecorded",
-        data: {
-          outputId: p["outputId"],
-          revision: p["outputRevision"],
-          workItemId: p["workItemId"],
-          state: "DRAFT",
-          contentSha256: p["contentSha256"],
-          qualityContractRef: p["qualityContractRef"],
-        },
-        expectedVersion: -1,
-      });
-      await ctx.emit({
-        streamName: outputStream,
-        type: "OutputVersionStateChanged",
-        data: { outputId: p["outputId"], revision: p["outputRevision"], state: "SUBMITTED" },
+      await applyOutputRevisionEntry(ctx, {
+        outputId: p["outputId"] as string,
+        revision: p["outputRevision"] as number,
+        workItemId: p["workItemId"] as string,
+        contentSha256: p["contentSha256"] as string,
+        qualityContractRef: p["qualityContractRef"] as Json,
       });
       return { workItemId: p["workItemId"] as string, state: "SUBMITTED", outputState: "SUBMITTED" };
     },
   });
+}
+
+// ===== KC-14 B4: bản sửa vào trục và side effect thay thế bản cũ =====
+// Hàng DRAFT → SUBMITTED của bảng đầu ra FS-003: bản mới KHÔNG kế thừa trạng
+// thái/quyết định của bản trước (SFR-030); nếu tồn tại bản trước chưa
+// terminal hoặc đã APPROVED/ACCEPTED thì side effect thay thế chạy NGUYÊN TỬ
+// trong cùng transaction của lệnh nộp (SFR-031); bản trước REJECTED/
+// REWORK_REQUIRED là terminal đã có quyết định — chỉ ghi quan hệ thay thế.
+export async function applyOutputRevisionEntry(
+  ctx: CommandContext,
+  input: {
+    outputId: string;
+    revision: number;
+    workItemId: string;
+    contentSha256: string;
+    qualityContractRef: Json;
+  },
+): Promise<{ replacesRevision: number | null }> {
+  const prior = await one<{ revision: number; state: string }>(
+    ctx,
+    sql`SELECT revision, state FROM dopaios_output_versions
+        WHERE id = ${input.outputId} ORDER BY revision DESC LIMIT 1`,
+  );
+  const expected = (prior?.revision ?? 0) + 1;
+  if (input.revision !== expected) {
+    throw new CommandRejectedError("ERR-REVISION", `Output revision must be ${expected}, got ${input.revision}`);
+  }
+  const outputStream = `dopaiosOutput-${input.outputId}`;
+  await ctx.emit({
+    streamName: outputStream,
+    type: "OutputVersionRecorded",
+    data: {
+      outputId: input.outputId,
+      revision: input.revision,
+      workItemId: input.workItemId,
+      state: "DRAFT",
+      contentSha256: input.contentSha256,
+      qualityContractRef: input.qualityContractRef,
+      replacesRevision: prior?.revision ?? null,
+    },
+    ...(prior ? {} : { expectedVersion: -1 }),
+  });
+  await ctx.emit({
+    streamName: outputStream,
+    type: "OutputVersionStateChanged",
+    data: { outputId: input.outputId, revision: input.revision, state: "SUBMITTED" },
+  });
+  if (prior) {
+    await invalidatePriorVersion(ctx, input.outputId, prior, `${input.outputId}@${input.revision}`);
+  }
+  return { replacesRevision: prior?.revision ?? null };
+}
+
+// Hai hàng bản-cũ của bảng đầu ra (SFR-031) + tái chặn bước (SFR-050):
+//  - AWAITING_DECISION → REWORK_REQUIRED (terminal); gói đang chờ hết hiệu
+//    lực; mọi Yêu cầu liên kết đang mở kết thúc SUPERSEDED-TARGET-CHANGED;
+//  - APPROVED | ACCEPTED → GIỮ NGUYÊN (lịch sử không viết lại); Approval
+//    Record hết hiệu lực trong đúng impact set, bước đã mở theo record đó bị
+//    tái chặn; gói EXCEPTION đang chờ trên bản cũ (nếu có) hết hiệu lực.
+async function invalidatePriorVersion(
+  ctx: CommandContext,
+  outputId: string,
+  prior: { revision: number; state: string },
+  sourceEvent: string,
+): Promise<void> {
+  if (prior.state === "AWAITING_DECISION") {
+    await ctx.emit({
+      streamName: `dopaiosOutput-${outputId}`,
+      type: "OutputVersionStateChanged",
+      data: { outputId, revision: prior.revision, state: "REWORK_REQUIRED" },
+    });
+    await invalidateOpenPackagesAndRequests(ctx, outputId, prior.revision, sourceEvent);
+    return;
+  }
+  if (prior.state === "APPROVED" || prior.state === "ACCEPTED") {
+    const records = (await ctx.tx.execute(sql`
+      SELECT id FROM dopaios_approval_records
+      WHERE target_id = ${outputId} AND target_revision = ${prior.revision}
+        AND outcome IN ('approve', 'approve-with-conditions')
+        AND invalidated_at IS NULL
+      ORDER BY id
+    `)) as unknown as Array<{ id: string }>;
+    for (const record of records) {
+      await ctx.emit({
+        streamName: `dopaiosApprovalRecord-${record.id}`,
+        type: "ApprovalInvalidated",
+        data: { recordId: record.id, reason: `target-changed: ${sourceEvent} vào trục (SFR-031)` },
+      });
+      const steps = (await ctx.tx.execute(sql`
+        SELECT run_id, step_id FROM dopaios_run_steps
+        WHERE opened_by_record_id = ${record.id} AND state = 'open'
+        ORDER BY run_id, step_id
+      `)) as unknown as Array<{ run_id: string; step_id: string }>;
+      for (const step of steps) {
+        await ctx.emit({
+          streamName: `dopaiosRunStep-${step.run_id}-${step.step_id}`,
+          type: "RunStepReblocked",
+          data: { runId: step.run_id, stepId: step.step_id },
+        });
+      }
+    }
+    await invalidateOpenPackagesAndRequests(ctx, outputId, prior.revision, sourceEvent);
+    return;
+  }
+  // REJECTED / REWORK_REQUIRED: terminal đã có quyết định — không side effect
+  // vô hiệu (SFR-045); các trạng thái chưa quyết định khác không hợp lệ cho
+  // đường bản sửa và bị guard của lệnh nộp chặn trước khi tới đây.
+}
+
+async function invalidateOpenPackagesAndRequests(
+  ctx: CommandContext,
+  outputId: string,
+  revision: number,
+  sourceEvent: string,
+): Promise<void> {
+  const packages = (await ctx.tx.execute(sql`
+    SELECT id, revision FROM dopaios_decision_packages
+    WHERE state IN ('OPEN', 'AWAITING_INFO')
+      AND target->>'outputId' = ${outputId}
+      AND (target->>'revision')::int = ${revision}
+    ORDER BY id, revision
+  `)) as unknown as Array<{ id: string; revision: number }>;
+  for (const pkg of packages) {
+    await ctx.emit({
+      streamName: `dopaiosDecisionPackage-${pkg.id}`,
+      type: "DecisionPackageRevisionStateChanged",
+      data: { packageId: pkg.id, revision: pkg.revision, state: "INVALIDATED-TARGET-CHANGED" },
+    });
+    const requests = (await ctx.tx.execute(sql`
+      SELECT id FROM dopaios_action_requests
+      WHERE package_id = ${pkg.id} AND package_revision = ${pkg.revision}
+        AND state IN ('OPEN', 'ROUTED', 'ACKNOWLEDGED', 'EXPIRED')
+      ORDER BY id
+    `)) as unknown as Array<{ id: string }>;
+    for (const request of requests) {
+      await ctx.emit({
+        streamName: `dopaiosActionRequest-${request.id}`,
+        type: "ActionRequestInvalidated",
+        data: {
+          requestId: request.id,
+          invalidation: { reason: "target-changed", sourceEvent },
+        },
+      });
+    }
+  }
 }
 
 // Hàng SUBMITTED → SELF_CHECK: validate-self-check (runtime tự động). Guard:
@@ -419,7 +552,7 @@ export async function validateSelfCheck(
 
 // Guard chung SFR-057: mọi lệnh/sự kiện trên record thuộc run terminal bị từ
 // chối kèm audit — đọc run của work-item trên cùng snapshot.
-async function requireRunningRunOfWorkItem(ctx: CommandContext, workItemId: string): Promise<string> {
+export async function requireRunningRunOfWorkItem(ctx: CommandContext, workItemId: string): Promise<string> {
   const row = await one<{ run_id: string | null; run_state: string | null }>(
     ctx,
     sql`SELECT w.run_id, r.state AS run_state
@@ -441,7 +574,7 @@ async function requireRunningRunOfWorkItem(ctx: CommandContext, workItemId: stri
 // → COMPLETED trước, rồi side effect chuyển phiên bản INDEPENDENT_CHECK →
 // CHECK_PASSED qua đúng hàng bảng đầu ra (SFR-044). Thiếu kiểm: giữ nguyên,
 // lý do ghi trong kết quả lệnh bền vững (dopaios_commands).
-async function maybePassChecks(
+export async function maybePassChecks(
   ctx: CommandContext,
   input: { outputId: string; outputRevision: number },
 ): Promise<{ passed: boolean; missing: string[] }> {
@@ -721,6 +854,23 @@ export async function advanceToDecision(
           "Output lacks the independent review chain — self-check and independent check must pass before advancing to decision",
         );
       }
+      // KC-14 B4: gói revision > 1 là "gói mới" của cùng điểm phê duyệt
+      // (SFR-053 sau vòng sửa) — revision trước phải tồn tại và đã kết thúc;
+      // gói đang mở thì phải đi đường vô hiệu SFR-031, không chồng gói.
+      const packageRevision = p["packageRevision"] as number;
+      if (packageRevision > 1) {
+        const prior = await one<{ state: string }>(
+          ctx,
+          sql`SELECT state FROM dopaios_decision_packages
+              WHERE id = ${p["packageId"]} AND revision = ${packageRevision - 1}`,
+        );
+        if (!prior) {
+          throw new CommandRejectedError("SFR-047", `Package revision ${packageRevision - 1} does not exist`);
+        }
+        if (prior.state === "OPEN" || prior.state === "AWAITING_INFO") {
+          throw new CommandRejectedError("SFR-047", "Prior package revision is still open — invalidate or decide it first");
+        }
+      }
       await ctx.emit({
         streamName: `dopaiosOutput-${p["outputId"]}`,
         type: "OutputVersionStateChanged",
@@ -729,13 +879,26 @@ export async function advanceToDecision(
       await ctx.emit({
         streamName: `dopaiosDecisionPackage-${p["packageId"]}`,
         type: "DecisionPackageAssembled",
-        data: { packageId: p["packageId"], revision: p["packageRevision"], refs: p["refs"] },
-        expectedVersion: -1,
+        data: {
+          packageId: p["packageId"],
+          revision: packageRevision,
+          refs: p["refs"],
+          // KC-14: gói đường run pin target phiên bản để vô hiệu theo
+          // target đổi tra được (SFR-031).
+          target: { outputId: p["outputId"], revision: p["outputRevision"] },
+        },
+        ...(packageRevision === 1 ? { expectedVersion: -1 } : {}),
       });
       await ctx.emit({
         streamName: `dopaiosActionRequest-${p["requestId"]}`,
         type: "ActionRequestCreated",
-        data: { requestId: p["requestId"], kind: "decision", runId: p["runId"] },
+        data: {
+          requestId: p["requestId"],
+          kind: "decision",
+          runId: p["runId"],
+          packageId: p["packageId"],
+          packageRevision,
+        },
         expectedVersion: -1,
       });
       return { packageId: p["packageId"] as string, requestState: "OPEN" };
@@ -1027,7 +1190,13 @@ export async function recordApproval(
         await ctx.emit({
           streamName: `dopaiosActionRequest-${p["clarificationRequestId"]}`,
           type: "ActionRequestCreated",
-          data: { requestId: p["clarificationRequestId"], kind: "clarification", runId: request.run_id },
+          data: {
+            requestId: p["clarificationRequestId"],
+            kind: "clarification",
+            runId: request.run_id,
+            packageId: p["packageId"],
+            packageRevision: p["packageRevision"],
+          },
           expectedVersion: -1,
         });
       }
@@ -1135,13 +1304,20 @@ export async function answerClarification(
           packageId: p["packageId"],
           revision: p["newPackageRevision"],
           refs: p["refs"],
+          target: { outputId: p["outputId"], revision: p["outputRevision"] },
           fields: { answer: p["answer"], answeredBy: p["answeredBy"] },
         },
       });
       await ctx.emit({
         streamName: `dopaiosActionRequest-${p["newDecisionRequestId"]}`,
         type: "ActionRequestCreated",
-        data: { requestId: p["newDecisionRequestId"], kind: "decision", runId: clarification.run_id },
+        data: {
+          requestId: p["newDecisionRequestId"],
+          kind: "decision",
+          runId: clarification.run_id,
+          packageId: p["packageId"],
+          packageRevision: p["newPackageRevision"],
+        },
         expectedVersion: -1,
       });
       return {

@@ -116,6 +116,9 @@ export async function detectOverdueConditions(
     FROM dopaios_conditions c
     JOIN dopaios_approval_records r ON r.id = c.record_id
     WHERE c.state = 'open' AND c.deadline < to_timestamp(${input.nowMs / 1000})
+      -- KC-14 (SFR-031/016): approval đã hết hiệu lực thì nghĩa vụ theo dõi
+      -- condition của nó kết thúc — watchdog không tuyên bố quá hạn nữa.
+      AND r.invalidated_at IS NULL
     ORDER BY c.id
   `)) as unknown as Array<{
     id: string;

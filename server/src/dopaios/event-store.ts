@@ -479,6 +479,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         kind: d["kind"],
         state: "OPEN",
         runId: d["runId"],
+        // KC-14: yêu cầu link gói để vô hiệu theo target đổi (SFR-031).
+        packageId: d["packageId"] ?? null,
+        packageRevision: d["packageRevision"] ?? null,
       });
       break;
     case "ActionRequestStateChanged":
