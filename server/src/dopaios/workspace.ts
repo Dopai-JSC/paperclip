@@ -388,6 +388,39 @@ export async function recordWorkspacePurge(
   });
 }
 
+// Guard của đường worker (B3/B4): work-item thuộc một Release chỉ được chạy
+// phiên trong workspace ACTIVE của ĐÚNG Release đó — không có workspace sống
+// thì không chạy (fail-closed). Tích hợp guard này vào claim của engine
+// thuộc FS-004/FS-006; slice giữ ở tầng gọi phiên, ghi giới hạn tại hồ sơ.
+export async function requireActiveWorkspace(
+  db: Db,
+  releaseId: string,
+): Promise<{ id: string; relPath: string; cacheRelPath: string; port: number; credentialRef: WorkspaceCredentialRef }> {
+  const rows = (await db.execute(sql`
+    SELECT id, rel_path, cache_rel_path, port, credential_ref
+    FROM dopaios_workspaces WHERE release_id = ${releaseId} AND state = 'ACTIVE'
+  `)) as unknown as Array<{
+    id: string;
+    rel_path: string;
+    cache_rel_path: string;
+    port: number;
+    credential_ref: WorkspaceCredentialRef;
+  }>;
+  if (rows.length === 0) {
+    throw new CommandRejectedError(
+      "ERR-WS-NO-ACTIVE",
+      `Release ${releaseId} không có workspace ACTIVE — không chạy phiên (FR-17 fail-closed)`,
+    );
+  }
+  return {
+    id: rows[0].id,
+    relPath: rows[0].rel_path,
+    cacheRelPath: rows[0].cache_rel_path,
+    port: rows[0].port,
+    credentialRef: rows[0].credential_ref,
+  };
+}
+
 // Đọc credential theo scope (KC-09 chuẩn "chặn cả đọc" — NFR-4 AC-4.1/4.2):
 // truy cập chéo Release hoặc sau khi thu hồi (workspace rời ACTIVE) bị chặn
 // kèm vệt audit. Trả về ref để tầng fs đọc file fixture trong scope.

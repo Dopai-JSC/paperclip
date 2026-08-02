@@ -91,6 +91,13 @@ export function payloadSha256(payload: unknown): string {
   return createHash("sha256").update(canonicalJson(payload), "utf8").digest("hex");
 }
 
+// KC-05: xuất dạng chuỗi canonical để tầng fs ghi nội dung có sha256 khớp
+// đúng công thức payloadSha256 (credential fixture, artifact tạm) — thuần
+// cộng, không đổi hành vi KC-01.
+export function canonicalJsonString(value: unknown): string {
+  return canonicalJson(value);
+}
+
 export async function writeEvent(
   tx: Tx,
   input: {
