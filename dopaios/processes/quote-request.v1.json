@@ -1,0 +1,144 @@
+{
+  "schemaVersion": "1.0",
+  "id": "quote-request",
+  "title": "SOP Báo giá tham chiếu",
+  "revision": 1,
+  "sourceAuthority": "business-text",
+  "initial": "prepare-quote",
+  "inputs": ["requester", "scope", "source", "assumptions", "due-date"],
+  "outputs": ["scope", "exclusions", "price-or-estimate", "assumptions", "validity", "source-trace"],
+  "runtimeContracts": [
+    "versioned-definition",
+    "work-item",
+    "decision-request",
+    "output-version",
+    "approval-record",
+    "audit",
+    "invalidation"
+  ],
+  "states": {
+    "prepare-quote": {
+      "kind": "automatic",
+      "actor": "ai-staff",
+      "activity": "prepare-quote",
+      "activationGuards": [
+        "input.requester.present",
+        "input.scope.present",
+        "input.source.present",
+        "input.assumptions.present",
+        "input.due-date.present"
+      ],
+      "inputs": ["quote-request", "quality-contract"],
+      "outputs": ["quote-draft"],
+      "evidence": ["quote-draft", "source-trace", "quality-contract"],
+      "onCompleted": "independent-review"
+    },
+    "independent-review": {
+      "kind": "automatic",
+      "actor": "ai-reviewer",
+      "activity": "independent-review",
+      "activationGuards": ["quote-draft.submitted"],
+      "inputs": ["quote-draft", "quality-contract"],
+      "outputs": ["review-evidence"],
+      "evidence": ["review-evidence"],
+      "onCompleted": "orchestrator-decision"
+    },
+    "orchestrator-decision": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "activationGuards": ["independent-review.passed"],
+      "inputs": ["quote-draft", "review-evidence", "decision-package"],
+      "evidence": ["approval-record"],
+      "decisionEffects": {
+        "approve": ["output.approve"],
+        "reject": ["output.reject"],
+        "request-rework": ["output.create-successor-revision"]
+      },
+      "decisions": {
+        "approve": "completed",
+        "reject": "rejected",
+        "request-rework": "prepare-quote"
+      }
+    },
+    "completed": { "kind": "final" },
+    "rejected": { "kind": "final" }
+  },
+  "sourceContracts": [
+    {
+      "sourceId": "brief-quote-minimum",
+      "path": "docs/product/brief/brief.md",
+      "gitBlob": "be82e5af3dcc634b3e32648a7ae392941dd042b3",
+      "assertions": [
+        {
+          "sourceContains": "Có SOP Báo giá tham chiếu tối giản: nhận `Quote Request`, AI tạo `Quote Draft`, Orchestrator quyết định `approve`/`reject` từ bằng chứng nguồn và Hợp đồng chất lượng; một lần sửa quay lại đúng bước.",
+          "processPath": "/states/prepare-quote/onCompleted",
+          "equals": "independent-review"
+        }
+      ]
+    },
+    {
+      "sourceId": "prd-fr-48",
+      "path": "docs/product/prd/prd.md",
+      "gitBlob": "555954d286d2c2b6619a23a3e8ad623d82946a3a",
+      "assertions": [
+        {
+          "sourceContains": "Input là `Quote Request` có requester, phạm vi, nguồn, giả định và hạn;",
+          "processPath": "/inputs",
+          "equals": ["requester", "scope", "source", "assumptions", "due-date"]
+        },
+        {
+          "sourceContains": "một work type AI `prepare-quote` tạo `Quote Draft` có phạm vi, loại trừ, giá/ước lượng, giả định, hiệu lực và source trace theo Hợp đồng chất lượng.",
+          "processPath": "/states/prepare-quote/activity",
+          "equals": "prepare-quote"
+        },
+        {
+          "sourceContains": "một work type AI `prepare-quote` tạo `Quote Draft` có phạm vi, loại trừ, giá/ước lượng, giả định, hiệu lực và source trace theo Hợp đồng chất lượng.",
+          "processPath": "/outputs",
+          "equals": ["scope", "exclusions", "price-or-estimate", "assumptions", "validity", "source-trace"]
+        },
+        {
+          "sourceContains": "AI-Reviewer kiểm độc lập; Orchestrator quyết định `approve`, `reject` hoặc `request-rework`;",
+          "processPath": "/states/independent-review/actor",
+          "equals": "ai-reviewer"
+        },
+        {
+          "sourceContains": "AI-Reviewer kiểm độc lập; Orchestrator quyết định `approve`, `reject` hoặc `request-rework`;",
+          "processPath": "/states/orchestrator-decision/actor",
+          "equals": "orchestrator"
+        },
+        {
+          "sourceContains": "Orchestrator quyết định `approve`, `reject` hoặc `request-rework`;",
+          "processPath": "/states/orchestrator-decision/decisions",
+          "equals": {
+            "approve": "completed",
+            "reject": "rejected",
+            "request-rework": "prepare-quote"
+          }
+        },
+        {
+          "sourceContains": "request-rework tạo revision mới của Quote Draft và quay lại cùng bước.",
+          "processPath": "/states/orchestrator-decision/decisions/request-rework",
+          "equals": "prepare-quote"
+        },
+        {
+          "sourceContains": "request-rework tạo revision mới của Quote Draft và quay lại cùng bước.",
+          "processPath": "/states/orchestrator-decision/decisionEffects/request-rework",
+          "equals": ["output.create-successor-revision"]
+        },
+        {
+          "sourceContains": "Runtime dùng chung cơ chế version SOP, work-item, Yêu cầu quyết định, output version, Approval Record, audit và invalidation;",
+          "processPath": "/runtimeContracts",
+          "equals": [
+            "versioned-definition",
+            "work-item",
+            "decision-request",
+            "output-version",
+            "approval-record",
+            "audit",
+            "invalidation"
+          ]
+        }
+      ]
+    }
+  ]
+}
