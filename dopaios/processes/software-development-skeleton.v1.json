@@ -1,0 +1,221 @@
+{
+  "schemaVersion": "1.0",
+  "id": "software-development-skeleton",
+  "title": "Skeleton SOP Phát triển phần mềm P0–P4",
+  "revision": 1,
+  "sourceAuthority": "business-text",
+  "initial": "p0-initiation",
+  "states": {
+    "p0-initiation": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["project-initiation-request", "team-manifest-bootstrap", "approval-record"],
+      "decisions": { "approve": "p0-source-review", "reject": "terminated" }
+    },
+    "p0-source-review": {
+      "kind": "automatic",
+      "actor": "ai-spec",
+      "activity": "project-source-review",
+      "evidence": ["input-package", "intake-review-record"],
+      "onCompleted": "p0-charter"
+    },
+    "p0-charter": {
+      "kind": "automatic",
+      "actor": "ai-lead",
+      "activity": "project-charter-drafting",
+      "evidence": ["project-charter"],
+      "onCompleted": "p0-independent-review"
+    },
+    "p0-independent-review": {
+      "kind": "automatic",
+      "actor": "ai-reviewer",
+      "activity": "project-opening-review",
+      "evidence": ["review-evidence", "decision-package"],
+      "onCompleted": "p0-open-decision"
+    },
+    "p0-open-decision": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["approval-record"],
+      "decisions": { "approve": "p1-baseline", "reject": "p0-charter" }
+    },
+    "p1-baseline": {
+      "kind": "automatic",
+      "actor": "ai-lead",
+      "activity": "product-baseline-preparation",
+      "evidence": ["product-baseline", "team-manifest-delivery", "release-roadmap"],
+      "onCompleted": "p1-independent-review"
+    },
+    "p1-independent-review": {
+      "kind": "automatic",
+      "actor": "ai-reviewer",
+      "activity": "product-baseline-review",
+      "evidence": ["review-evidence", "decision-package"],
+      "onCompleted": "p1-baseline-decision"
+    },
+    "p1-baseline-decision": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["approval-record"],
+      "decisions": { "approve": "b0-spec-design", "reject": "p1-baseline" }
+    },
+    "b0-spec-design": {
+      "kind": "automatic",
+      "actor": "ai-spec",
+      "activity": "release-spec-design",
+      "evidence": ["release-spec-baseline", "design-evidence"],
+      "onCompleted": "gate-a"
+    },
+    "gate-a": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["gate-a-record", "approval-record"],
+      "decisions": { "approve": "b1-build", "reject": "b0-spec-design" }
+    },
+    "b1-build": {
+      "kind": "automatic",
+      "actor": "ai-build",
+      "activity": "release-build",
+      "evidence": ["build-output", "self-check", "independent-review"],
+      "onCompleted": "gate-b"
+    },
+    "gate-b": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["gate-b-record", "approval-record"],
+      "decisions": { "approve": "b2-test", "reject": "b1-build" }
+    },
+    "b2-test": {
+      "kind": "automatic",
+      "actor": "ai-test",
+      "activity": "release-verification",
+      "evidence": ["test-evidence", "nfr-evidence", "independent-review"],
+      "onCompleted": "gate-c"
+    },
+    "gate-c": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["gate-c-record", "approval-record"],
+      "decisions": { "approve": "b3-acceptance", "reject": "b2-test" }
+    },
+    "b3-acceptance": {
+      "kind": "human-decision",
+      "actor": "pod",
+      "evidence": ["uat-evidence"],
+      "decisions": { "accepted": "go-no-go", "rework": "b1-build" }
+    },
+    "go-no-go": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["go-no-go-record"],
+      "decisions": { "go": "release", "no-go": "b1-build" }
+    },
+    "release": {
+      "kind": "human-decision",
+      "actor": "pod",
+      "evidence": ["release-record"],
+      "decisions": { "released": "post-release-verification", "failed": "b1-build" }
+    },
+    "post-release-verification": {
+      "kind": "automatic",
+      "actor": "ai-test",
+      "activity": "post-release-verification",
+      "evidence": ["post-release-evidence"],
+      "onCompleted": "release-review"
+    },
+    "release-review": {
+      "kind": "automatic",
+      "actor": "ai-reviewer",
+      "activity": "release-review",
+      "evidence": ["release-review-record"],
+      "onCompleted": "release-continuation-decision"
+    },
+    "release-continuation-decision": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["release-review-record", "approval-record"],
+      "decisions": {
+        "next-release": "b0-spec-design",
+        "scope-complete": "p3-handover"
+      }
+    },
+    "p3-handover": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["handover-record", "approval-record"],
+      "decisions": { "approve": "p4-close", "rework": "release-review" }
+    },
+    "p4-close": {
+      "kind": "human-decision",
+      "actor": "orchestrator",
+      "evidence": ["project-closure-record", "approval-record"],
+      "decisions": { "close": "completed", "reopen": "p3-handover" }
+    },
+    "completed": { "kind": "final" },
+    "terminated": { "kind": "final" }
+  },
+  "sourceContracts": [
+    {
+      "sourceId": "software-development-sop",
+      "path": "docs/sop/software-development/sop.md",
+      "gitBlob": "686573398213f77686f4764977cdd60b32ae2fc7",
+      "assertions": [
+        {
+          "sourceContains": "### 4.1 P0 — Khởi tạo Project",
+          "processPath": "/initial",
+          "equals": "p0-initiation"
+        },
+        {
+          "sourceContains": "### 4.2 P1 — Chuẩn bị baseline sản phẩm và kế hoạch",
+          "processPath": "/states/p1-baseline/activity",
+          "equals": "product-baseline-preparation"
+        },
+        {
+          "sourceContains": "→ B0 Đặc tả và thiết kế → Cổng A kích hoạt Release",
+          "processPath": "/states/b0-spec-design/onCompleted",
+          "equals": "gate-a"
+        },
+        {
+          "sourceContains": "→ B1 Xây dựng → Cổng B",
+          "processPath": "/states/b1-build/onCompleted",
+          "equals": "gate-b"
+        },
+        {
+          "sourceContains": "→ B2 Kiểm thử → Cổng C",
+          "processPath": "/states/b2-test/onCompleted",
+          "equals": "gate-c"
+        },
+        {
+          "sourceContains": "→ B3 Nghiệm thu",
+          "processPath": "/states/gate-c/decisions/approve",
+          "equals": "b3-acceptance"
+        },
+        {
+          "sourceContains": "→ Go/no-go → Phát hành → Xác minh ngay sau phát hành → Review Release",
+          "processPath": "/states/go-no-go/decisions/go",
+          "equals": "release"
+        },
+        {
+          "sourceContains": "→ còn Release: bắt đầu vòng kế tiếp",
+          "processPath": "/states/release-review/onCompleted",
+          "equals": "release-continuation-decision"
+        },
+        {
+          "sourceContains": "→ còn Release: bắt đầu vòng kế tiếp",
+          "processPath": "/states/release-continuation-decision/decisions/next-release",
+          "equals": "b0-spec-design"
+        },
+        {
+          "sourceContains": "→ hết phạm vi cam kết: chuyển P3",
+          "processPath": "/states/release-continuation-decision/decisions/scope-complete",
+          "equals": "p3-handover"
+        },
+        {
+          "sourceContains": "### 4.5 P4 — Đóng Project",
+          "processPath": "/states/p3-handover/decisions/approve",
+          "equals": "p4-close"
+        }
+      ]
+    }
+  ]
+}
