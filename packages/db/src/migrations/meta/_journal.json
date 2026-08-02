@@ -1058,6 +1058,13 @@
       "when": 1785514500000,
       "tag": "0516_dopaios_kc04_trace_indexes",
       "breakpoints": true
+    },
+    {
+      "idx": 517,
+      "version": "7",
+      "when": 1785704400000,
+      "tag": "0517_dopaios_kc05_workspaces",
+      "breakpoints": true
     }
   ]
 }

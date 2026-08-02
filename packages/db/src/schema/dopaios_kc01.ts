@@ -423,3 +423,41 @@ export const dopaiosExecutionContracts = pgTable(
   },
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );
+
+// ===== KC-05: workspace song song theo Release =====
+
+// Workspace (0517): projection từ event trên stream dopaiosWorkspace-<id>.
+// Cấp phát (port/path/credential) nguyên tử trong transaction SERIALIZABLE
+// của lệnh provision; đĩa vật chất hóa SAU commit và ghi nhận lại qua lệnh
+// activate. Vòng đời PROVISIONED → ACTIVE → CLOSING → PURGED; nhánh lỗi
+// CLOSING → PURGE_BLOCKED giữ nguyên tài nguyên (FR-17 — đóng phạm vi chưa
+// hoàn tất khi purge chưa thành công; ADR-012 — lỗi purge ở trạng thái chặn).
+export const dopaiosWorkspaces = pgTable("dopaios_workspaces", {
+  id: text("id").primaryKey(),
+  releaseId: text("release_id").notNull(),
+  projectId: text("project_id"),
+  state: text("state").notNull(),
+  relPath: text("rel_path").notNull(),
+  cacheRelPath: text("cache_rel_path").notNull(),
+  port: integer("port").notNull(),
+  credentialRef: jsonb("credential_ref").$type<Record<string, unknown>>().notNull(),
+  baseRef: text("base_ref").notNull(),
+  materialized: jsonb("materialized").$type<Record<string, unknown>>(),
+  closeReason: text("close_reason"),
+  purgeReport: jsonb("purge_report").$type<Record<string, unknown>>(),
+  purgeFailure: jsonb("purge_failure").$type<Record<string, unknown>>(),
+});
+
+// Sổ cấp phát tài nguyên (0517): khóa (resource_type, value) — một giá trị
+// một hàng, tái cấp sau release là UPDATE; lịch sử đầy đủ nằm ở event log.
+export const dopaiosWorkspaceResources = pgTable(
+  "dopaios_workspace_resources",
+  {
+    resourceType: text("resource_type").notNull(),
+    value: text("value").notNull(),
+    workspaceId: text("workspace_id").notNull(),
+    releaseId: text("release_id").notNull(),
+    state: text("state").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.resourceType, table.value] }) }),
+);

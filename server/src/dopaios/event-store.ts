@@ -29,6 +29,8 @@ import {
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,
+  dopaiosWorkspaces,
+  dopaiosWorkspaceResources,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -851,6 +853,76 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           sql`${dopaiosRunSteps.runId} = ${d["runId"]} AND ${dopaiosRunSteps.stepId} = ${d["stepId"]}`,
         );
       break;
+    // ===== KC-05: workspace song song theo Release =====
+    case "WorkspaceProvisioned":
+      await tx.insert(dopaiosWorkspaces).values({
+        id: d["workspaceId"],
+        releaseId: d["releaseId"],
+        projectId: d["projectId"] ?? null,
+        state: "PROVISIONED",
+        relPath: d["relPath"],
+        cacheRelPath: d["cacheRelPath"],
+        port: d["port"],
+        credentialRef: d["credentialRef"],
+        baseRef: d["baseRef"],
+      });
+      break;
+    // Tài nguyên theo (loại, giá trị): tái cấp sau khi release là UPDATE cùng
+    // hàng — bất biến "một giá trị chỉ một chủ sống" do guard tầng lệnh đọc
+    // projection trong cùng transaction SERIALIZABLE giữ; lịch sử ở event log.
+    case "WorkspaceResourceReserved":
+      await tx
+        .insert(dopaiosWorkspaceResources)
+        .values({
+          resourceType: d["resourceType"],
+          value: d["value"],
+          workspaceId: d["workspaceId"],
+          releaseId: d["releaseId"],
+          state: "reserved",
+        })
+        .onConflictDoUpdate({
+          target: [dopaiosWorkspaceResources.resourceType, dopaiosWorkspaceResources.value],
+          set: {
+            workspaceId: d["workspaceId"] as string,
+            releaseId: d["releaseId"] as string,
+            state: "reserved",
+          },
+        });
+      break;
+    case "WorkspaceActivated":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ state: "ACTIVE", materialized: d["materialized"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      break;
+    case "WorkspaceCloseStarted":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ state: "CLOSING", closeReason: d["reason"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      break;
+    case "WorkspacePurged":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ state: "PURGED", purgeReport: d["report"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      break;
+    // Lỗi purge: trạng thái chặn, KHÔNG release tài nguyên (FR-17/ADR-012);
+    // hồ sơ thất bại mang hành động khắc phục owner–hạn–phạm vi còn sót.
+    case "WorkspacePurgeFailed":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ state: "PURGE_BLOCKED", purgeFailure: d["failure"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      break;
+    case "WorkspaceResourceReleased":
+      await tx
+        .update(dopaiosWorkspaceResources)
+        .set({ state: "released" })
+        .where(
+          sql`${dopaiosWorkspaceResources.resourceType} = ${d["resourceType"]} AND ${dopaiosWorkspaceResources.value} = ${d["value"]}`,
+        );
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
@@ -886,6 +958,8 @@ const PROJECTION_TABLES = [
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,
+  dopaiosWorkspaces,
+  dopaiosWorkspaceResources,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {
