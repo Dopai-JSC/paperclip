@@ -32,8 +32,8 @@ for (const g of catalog.groups) {
   if (exists) groups[g.id] = loadJson(g.file);
 }
 check(
-  'catalog: pin đủ 6 nguồn chuẩn tắc (FS-001/002/003, PRD, SOP, kế hoạch KC)',
-  catalog.source_pins.length === 6 && catalog.source_pins.every((p) => /^[0-9a-f]{40}$/.test(p.git_blob_sha1))
+  'catalog: pin đủ 7 nguồn chuẩn tắc (FS-001/002/003, PRD revision 1 và 3, SOP, kế hoạch KC)',
+  catalog.source_pins.length === 7 && catalog.source_pins.every((p) => /^[0-9a-f]{40}$/.test(p.git_blob_sha1))
 );
 
 // 2. Hash mọi thành phần của mọi nhóm
@@ -135,7 +135,10 @@ for (const [gid, g] of Object.entries(groups)) {
   check('FX-05: có rollback_condition và rollback_target', Boolean(plan.rollback_condition && plan.rollback_target));
   check('FX-05: approval fixture pin đúng hash plan', g.approval_fixture.target.sha256 === sha256(join(ROOT, 'content/cutover-plan.json')));
   const ids = g.cases.map((c) => c.case_id);
-  check('FX-05: 10 ca, gồm replay AC-V1-10 (C06) và ca âm từng tiền điều kiện (C01-C03)', ids.length === 10 && ['FX-05-C01', 'FX-05-C02', 'FX-05-C03', 'FX-05-C06'].every((x) => ids.includes(x)));
+  // 11 ca từ 02/08/2026 (QD-1 kế hoạch KC-17): PRD revision 3 tách FS-005
+  // thành FS-005+FS-006 nên thêm C11 — ca âm riêng cho fs006_ready.
+  check('FX-05: 11 ca, gồm replay AC-V1-10 (C06) và ca âm từng tiền điều kiện (C01-C03, C11)', ids.length === 11 && ['FX-05-C01', 'FX-05-C02', 'FX-05-C03', 'FX-05-C06', 'FX-05-C11'].every((x) => ids.includes(x)));
+  check('FX-05: đủ 4 cờ readiness theo PRD revision 3 (FS-005, FS-006, Baseline P1, ADP-3)', ['fs005_ready', 'fs006_ready', 'product_baseline_p1', 'adp3'].every((k) => g.readiness_flags[k] === true));
   const recon = loadJson('content/cutover-reconciliation-mapping.json');
   check('FX-05: reconciliation pin revision rolled-back, có residual owner–due–guard', recon.pins_cutover_record.state === 'rolled-back' && recon.residuals.every((r) => r.action_owner && r.due && r.guard));
 }
