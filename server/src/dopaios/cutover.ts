@@ -259,6 +259,27 @@ export async function appendCutoverRecord(
   if (!approval) {
     reject(`Cutover Record ${input.recordId} tham chiếu Approval Record không tồn tại: ${input.approvalRecordRef["recordId"]}`);
   }
+  if (input.reconciliationRef !== null) {
+    const reconRef = input.reconciliationRef as {
+      reconciliationId?: string;
+      revision?: number;
+      sha256?: string;
+    };
+    if (!reconRef.reconciliationId || !reconRef.revision || !reconRef.sha256) {
+      reject(`Cutover Record ${input.recordId} pin Reconciliation thiếu ID@revision@hash`);
+    }
+    const recon = await oneOf<{ sha256: string }>(
+      ctx,
+      sql`SELECT sha256 FROM dopaios_cutover_reconciliations
+          WHERE id = ${reconRef.reconciliationId} AND revision = ${reconRef.revision}`,
+    );
+    if (!recon) {
+      reject(`Cutover Record ${input.recordId} pin Reconciliation không tồn tại: ${reconRef.reconciliationId}@${reconRef.revision}`);
+    }
+    if (recon!.sha256 !== reconRef.sha256) {
+      reject(`Cutover Record ${input.recordId} pin sai hash Reconciliation ${reconRef.reconciliationId}@${reconRef.revision}`);
+    }
+  }
   const snapshot = await oneOf<{ id: string; sha256: string }>(
     ctx,
     sql`SELECT id, sha256 FROM dopaios_runtime_activation_snapshots
@@ -761,6 +782,522 @@ export async function executeCutover(
         },
         firstWorkItemRef,
         bootstrapDisabled: true,
+      };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
+// Nhánh rollback — chuỗi hash MỘT CHIỀU theo PRD d.320 (C09/C10):
+// Cutover Record `rolled-back` (reconciliation ref null) → Reconciliation
+// Record ánh xạ đúng-một-lần → AI-Reviewer pin mapping revision/hash trong
+// Review Evidence `ready` → closure chỉ pin mapping revision không mới hơn
+// cùng Review Evidence đó → Cutover Record revision kế tiếp pin đúng
+// Reconciliation ID@revision@hash; Reconciliation không pin ngược. Lịch sử
+// không bị xóa — mỗi bước là một revision/hàng mới.
+
+// Bước 1: rollback từ effective — revision kế tiếp state rolled-back với
+// reconciliation ref NULL; bootstrap được KHÔI PHỤC làm nguồn duy nhất
+// (rollback target của Plan). Record rolled-back không "kết thúc" bootstrap
+// (C08): lệnh này không bao giờ phát BootstrapWorkflowDisabled.
+export async function rollbackCutover(
+  db: Db,
+  commandId: string,
+  payload: { recordId: string; executionActor: string; reason: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, ["recordId", "executionActor", "reason"]);
+      await requireActor(ctx, p["executionActor"] as string, "system", "Execution actor");
+      const latest = await oneOf<{
+        revision: number;
+        feature_id: string;
+        state: string;
+        effective_at: string | null;
+        authority_actor: string;
+        approval_record_ref: Json;
+        first_runtime_work_item_ref: string;
+        runtime_activation_snapshot_ref: Json;
+      }>(
+        ctx,
+        sql`SELECT revision, feature_id, state, effective_at, authority_actor,
+                   approval_record_ref, first_runtime_work_item_ref, runtime_activation_snapshot_ref
+            FROM dopaios_cutover_records WHERE id = ${p["recordId"]}
+            ORDER BY revision DESC LIMIT 1`,
+      );
+      if (!latest) {
+        throw new CommandRejectedError("ERR-TARGET", `Cutover Record ${p["recordId"]} không tồn tại`);
+      }
+      if (latest.state !== "effective") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Cutover Record ${p["recordId"]} đang '${latest.state}' — chỉ rollback từ 'effective'`,
+        );
+      }
+      const record = await appendCutoverRecord(ctx, {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        featureId: latest.feature_id,
+        state: "rolled-back",
+        effectiveAt:
+          latest.effective_at === null ? null : new Date(latest.effective_at).toISOString(),
+        authorityActor: latest.authority_actor,
+        executionActor: p["executionActor"] as string,
+        approvalRecordRef: latest.approval_record_ref,
+        firstRuntimeWorkItemRef: latest.first_runtime_work_item_ref,
+        runtimeActivationSnapshotRef: latest.runtime_activation_snapshot_ref as {
+          snapshotId: string;
+          revision: number;
+          sha256: string;
+        },
+        reconciliationRef: null,
+      });
+      const workflow = await oneOf<{ id: string }>(
+        ctx,
+        sql`SELECT id FROM dopaios_bootstrap_workflows WHERE feature_id = ${latest.feature_id}`,
+      );
+      if (workflow) {
+        await ctx.emit({
+          streamName: `dopaiosBootstrapWorkflow-${workflow.id}`,
+          type: "BootstrapWorkflowReactivated",
+          data: { workflowId: workflow.id, reason: p["reason"] },
+        });
+      }
+      return {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        state: "rolled-back",
+        sha256: record.sha256,
+        bootstrapRestored: workflow !== null,
+      };
+    },
+  });
+}
+
+type ReconciliationMappingDoc = {
+  mapping_id?: string;
+  revision?: number;
+  pins_cutover_record?: { record_id?: string; revision?: number; state?: string };
+  mappings?: Array<{ event?: string; mapped_to?: string; target?: unknown }>;
+  residuals?: Array<{
+    residual_id?: string;
+    action_owner?: string;
+    due?: string;
+    guard?: string;
+    target?: unknown;
+    mapped_to?: unknown;
+  }>;
+};
+
+// Bước 2: Reconciliation Record — pin ĐÚNG revision rolled-back đang mang
+// reconciliation ref null; mọi event/state đúng-một-mapping; residual trỏ
+// action owner–due–guard, không target giả (PRD d.320).
+export async function createCutoverReconciliation(
+  db: Db,
+  commandId: string,
+  payload: {
+    reconciliationId: string;
+    featureId: string;
+    rolledBackRecordRef: { recordId: string; revision: number; sha256: string };
+    mappingArtifactRef: ArtifactRef;
+    mappingContentUtf8: string;
+    executionActor: string;
+  },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, [
+        "reconciliationId",
+        "featureId",
+        "rolledBackRecordRef",
+        "mappingArtifactRef",
+        "mappingContentUtf8",
+        "executionActor",
+      ]);
+      await requireActor(ctx, p["executionActor"] as string, "system", "Execution actor");
+      const chain = (detail: string): never => {
+        throw new CommandRejectedError("ERR-CUTOVER-CHAIN", detail);
+      };
+
+      // C10-i: chưa có record rolled-back thì không có Reconciliation.
+      const recordRef = p["rolledBackRecordRef"] as { recordId: string; revision: number; sha256: string };
+      const rolledBack = await oneOf<{ state: string; sha256: string; reconciliation_ref: Json | null }>(
+        ctx,
+        sql`SELECT state, sha256, reconciliation_ref FROM dopaios_cutover_records
+            WHERE id = ${recordRef.recordId} AND revision = ${recordRef.revision}`,
+      );
+      if (!rolledBack) {
+        chain(
+          `Chưa có Cutover Record ${recordRef.recordId}@${recordRef.revision} — Reconciliation phải tạo SAU record rolled-back`,
+        );
+      }
+      if (rolledBack!.state !== "rolled-back") {
+        chain(
+          `Cutover Record ${recordRef.recordId}@${recordRef.revision} đang '${rolledBack!.state}' — Reconciliation chỉ pin revision rolled-back`,
+        );
+      }
+      if (rolledBack!.sha256 !== recordRef.sha256) {
+        chain(`Reconciliation pin sai hash Cutover Record ${recordRef.recordId}@${recordRef.revision}`);
+      }
+      // C10-iii (chống vòng hash): revision rolled-back được pin phải đang
+      // mang reconciliation ref null — revision kế tiếp (đã pin một
+      // Reconciliation) không bao giờ được pin ngược.
+      if (rolledBack!.reconciliation_ref !== null) {
+        chain(
+          `Cutover Record ${recordRef.recordId}@${recordRef.revision} đã pin Reconciliation — không pin ngược để tạo vòng hash`,
+        );
+      }
+      // Đúng-một-lần: một revision rolled-back chỉ một Reconciliation.
+      const existing = await oneOf<{ id: string }>(
+        ctx,
+        sql`SELECT id FROM dopaios_cutover_reconciliations
+            WHERE rolled_back_record_ref->>'recordId' = ${recordRef.recordId}
+              AND (rolled_back_record_ref->>'revision')::int = ${recordRef.revision}`,
+      );
+      if (existing) {
+        chain(
+          `Revision rolled-back ${recordRef.recordId}@${recordRef.revision} đã có Reconciliation ${existing.id} — ánh xạ đúng-một-lần`,
+        );
+      }
+
+      // Mapping content-addressed như Plan: hash byte khớp tham chiếu + sổ cái.
+      const mappingRef = p["mappingArtifactRef"] as ArtifactRef;
+      const contentSha = sha256Utf8(p["mappingContentUtf8"] as string);
+      if (contentSha !== mappingRef.sha256) {
+        chain(`Nội dung mapping không khớp hash tham chiếu ${mappingRef.artifactId}@${mappingRef.revision}`);
+      }
+      const ledgerRow = await oneOf<{ sha256: string }>(
+        ctx,
+        sql`SELECT sha256 FROM dopaios_artifacts
+            WHERE id = ${mappingRef.artifactId} AND revision = ${mappingRef.revision}`,
+      );
+      if (!ledgerRow) {
+        chain(`Mapping ${mappingRef.artifactId}@${mappingRef.revision} chưa đăng ký sổ cái artifact`);
+      }
+      if (ledgerRow!.sha256 !== mappingRef.sha256) {
+        chain(`Mapping ${mappingRef.artifactId}@${mappingRef.revision} sai hash so với sổ cái`);
+      }
+      let mappingDoc: ReconciliationMappingDoc;
+      try {
+        mappingDoc = JSON.parse(p["mappingContentUtf8"] as string) as ReconciliationMappingDoc;
+      } catch {
+        chain("Nội dung mapping không phải JSON hợp lệ");
+        throw new Error("unreachable");
+      }
+      const pins = mappingDoc.pins_cutover_record;
+      if (
+        !pins ||
+        pins.record_id !== recordRef.recordId ||
+        pins.revision !== recordRef.revision ||
+        pins.state !== "rolled-back"
+      ) {
+        chain(
+          `Mapping phải pin đúng revision rolled-back ${recordRef.recordId}@${recordRef.revision} (state rolled-back)`,
+        );
+      }
+      const mappings = mappingDoc.mappings ?? [];
+      if (mappings.length === 0) chain("Mapping rỗng — mọi event/state phải có đúng một mapping hoặc residual");
+      const seenEvents = new Set<string>();
+      for (const mapping of mappings) {
+        if (!mapping.event || !mapping.mapped_to) {
+          chain("Mapping có mục thiếu event hoặc mapped_to");
+        }
+        if (seenEvents.has(mapping.event as string)) {
+          chain(`Event ${mapping.event} có nhiều hơn một mapping — ánh xạ phải đúng-một-lần`);
+        }
+        seenEvents.add(mapping.event as string);
+      }
+      for (const residual of mappingDoc.residuals ?? []) {
+        if (residual.target !== undefined || residual.mapped_to !== undefined) {
+          chain(`Residual ${String(residual.residual_id)} mang target giả — residual chỉ trỏ action owner–due–guard`);
+        }
+        if (!residual.action_owner || !residual.due || !residual.guard) {
+          chain(`Residual ${String(residual.residual_id)} thiếu action owner–due–guard`);
+        }
+      }
+
+      const latestRecon = await oneOf<{ revision: number }>(
+        ctx,
+        sql`SELECT revision FROM dopaios_cutover_reconciliations
+            WHERE id = ${p["reconciliationId"]} ORDER BY revision DESC LIMIT 1`,
+      );
+      const revision = (latestRecon?.revision ?? 0) + 1;
+      const body: Json = {
+        reconciliationId: p["reconciliationId"],
+        revision,
+        featureId: p["featureId"],
+        rolledBackRecordRef: recordRef as unknown as Json,
+        mappingArtifactRef: mappingRef as unknown as Json,
+        mappings: mappings as unknown as Json[],
+        residuals: (mappingDoc.residuals ?? []) as unknown as Json[],
+      };
+      const sha256 = payloadSha256(body);
+      await ctx.emit({
+        streamName: `dopaiosCutoverReconciliation-${p["reconciliationId"]}`,
+        type: "CutoverReconciliationCreated",
+        data: { ...body, sha256 },
+      });
+      return { reconciliationId: p["reconciliationId"] as string, revision, sha256 };
+    },
+  });
+}
+
+// Bước 3: AI-Reviewer pin đúng mapping revision/hash trong Review Evidence
+// `ready` (QD-4: tái dùng khuôn Review Evidence KC-14 — reviewer khác
+// executor, conclusion ready, pin target theo revision/hash; reviewer là
+// fixture/system actor giả lập, KHÔNG gọi model thật).
+export async function pinReconciliationReview(
+  db: Db,
+  commandId: string,
+  payload: {
+    reconciliationId: string;
+    revision: number;
+    reviewer: string;
+    reviewEvidence: {
+      ref: string;
+      conclusion: string;
+      targetMappingRevision: number;
+      targetMappingSha256: string;
+    };
+  },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, ["reconciliationId", "revision", "reviewer", "reviewEvidence"]);
+      const recon = await oneOf<{
+        revision: number;
+        mapping_artifact_ref: { sha256?: string };
+        review_evidence_ref: Json | null;
+      }>(
+        ctx,
+        sql`SELECT revision, mapping_artifact_ref, review_evidence_ref
+            FROM dopaios_cutover_reconciliations
+            WHERE id = ${p["reconciliationId"]} AND revision = ${p["revision"]}`,
+      );
+      if (!recon) {
+        throw new CommandRejectedError(
+          "ERR-TARGET",
+          `Reconciliation ${p["reconciliationId"]}@${p["revision"]} không tồn tại`,
+        );
+      }
+      if (recon.review_evidence_ref !== null) {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Reconciliation ${p["reconciliationId"]}@${p["revision"]} đã có Review Evidence`,
+        );
+      }
+      const reviewer = p["reviewer"] as string;
+      const reviewerRow = await oneOf<{ kind: string; active: boolean }>(
+        ctx,
+        sql`SELECT kind, active FROM dopaios_actors WHERE id = ${reviewer}`,
+      );
+      if (!reviewerRow || !reviewerRow.active) {
+        throw new CommandRejectedError("ERR-ACTOR", `AI-Reviewer ${reviewer} chưa đăng ký hoặc không active`);
+      }
+      const evidence = p["reviewEvidence"] as {
+        ref: string;
+        conclusion: string;
+        targetMappingRevision: number;
+        targetMappingSha256: string;
+      };
+      if (evidence.conclusion !== "ready") {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `Review Evidence phải ở kết luận 'ready', đang là '${evidence.conclusion}'`,
+        );
+      }
+      if (
+        evidence.targetMappingRevision !== recon.revision ||
+        evidence.targetMappingSha256 !== recon.mapping_artifact_ref?.sha256
+      ) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `Review Evidence phải pin đúng mapping revision/hash của Reconciliation ${p["reconciliationId"]}@${p["revision"]}`,
+        );
+      }
+      await ctx.emit({
+        streamName: `dopaiosCutoverReconciliation-${p["reconciliationId"]}`,
+        type: "ReconciliationReviewPinned",
+        data: {
+          reconciliationId: p["reconciliationId"],
+          revision: p["revision"],
+          reviewEvidenceRef: { ...evidence, reviewer },
+        },
+      });
+      return { reconciliationId: p["reconciliationId"] as string, revision: p["revision"] as number, pinned: true };
+    },
+  });
+}
+
+// Bước 4: closure — chỉ pin mapping revision KHÔNG MỚI HƠN revision mà
+// Review Evidence `ready` đã kiểm, cùng đúng Review Evidence đó (C10-ii).
+export async function closeReconciliation(
+  db: Db,
+  commandId: string,
+  payload: {
+    reconciliationId: string;
+    revision: number;
+    closureMappingRevision: number;
+    reviewEvidenceRef: string;
+    actor: string;
+  },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, ["reconciliationId", "revision", "closureMappingRevision", "reviewEvidenceRef", "actor"]);
+      const recon = await oneOf<{
+        review_evidence_ref: { ref?: string; conclusion?: string; targetMappingRevision?: number } | null;
+        closure: Json | null;
+      }>(
+        ctx,
+        sql`SELECT review_evidence_ref, closure FROM dopaios_cutover_reconciliations
+            WHERE id = ${p["reconciliationId"]} AND revision = ${p["revision"]}`,
+      );
+      if (!recon) {
+        throw new CommandRejectedError(
+          "ERR-TARGET",
+          `Reconciliation ${p["reconciliationId"]}@${p["revision"]} không tồn tại`,
+        );
+      }
+      if (recon.closure !== null) {
+        throw new CommandRejectedError("ERR-STATE", `Reconciliation ${p["reconciliationId"]}@${p["revision"]} đã closure`);
+      }
+      const evidence = recon.review_evidence_ref;
+      if (!evidence || evidence.conclusion !== "ready") {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          "Closure cần Review Evidence 'ready' đã pin trước đó",
+        );
+      }
+      if (evidence.ref !== p["reviewEvidenceRef"]) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          "Closure phải pin đúng Review Evidence đã kiểm mapping — không thay bằng evidence khác",
+        );
+      }
+      if ((p["closureMappingRevision"] as number) > (evidence.targetMappingRevision ?? 0)) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `Closure pin mapping revision ${String(p["closureMappingRevision"])} mới hơn revision ${String(evidence.targetMappingRevision)} mà Review Evidence đã kiểm`,
+        );
+      }
+      await ctx.emit({
+        streamName: `dopaiosCutoverReconciliation-${p["reconciliationId"]}`,
+        type: "ReconciliationClosed",
+        data: {
+          reconciliationId: p["reconciliationId"],
+          revision: p["revision"],
+          closure: {
+            mappingRevision: p["closureMappingRevision"],
+            reviewEvidenceRef: p["reviewEvidenceRef"],
+            closedBy: p["actor"],
+          },
+        },
+      });
+      return { reconciliationId: p["reconciliationId"] as string, closed: true };
+    },
+  });
+}
+
+// Bước 5: sau closure mới tạo Cutover Record revision kế tiếp pin đúng
+// Reconciliation ID@revision@hash (appendCutoverRecord đối chiếu hash với
+// projection — C10-iii bị chặn từ createCutoverReconciliation).
+export async function recordPostClosureCutoverRevision(
+  db: Db,
+  commandId: string,
+  payload: { recordId: string; reconciliationId: string; executionActor: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, ["recordId", "reconciliationId", "executionActor"]);
+      await requireActor(ctx, p["executionActor"] as string, "system", "Execution actor");
+      const latest = await oneOf<{
+        revision: number;
+        feature_id: string;
+        state: string;
+        effective_at: string | null;
+        authority_actor: string;
+        approval_record_ref: Json;
+        first_runtime_work_item_ref: string;
+        runtime_activation_snapshot_ref: Json;
+      }>(
+        ctx,
+        sql`SELECT revision, feature_id, state, effective_at, authority_actor,
+                   approval_record_ref, first_runtime_work_item_ref, runtime_activation_snapshot_ref
+            FROM dopaios_cutover_records WHERE id = ${p["recordId"]}
+            ORDER BY revision DESC LIMIT 1`,
+      );
+      if (!latest) {
+        throw new CommandRejectedError("ERR-TARGET", `Cutover Record ${p["recordId"]} không tồn tại`);
+      }
+      if (latest.state !== "rolled-back") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Cutover Record ${p["recordId"]} đang '${latest.state}' — revision hậu closure chỉ nối sau rolled-back`,
+        );
+      }
+      const recon = await oneOf<{ revision: number; sha256: string; closure: Json | null }>(
+        ctx,
+        sql`SELECT revision, sha256, closure FROM dopaios_cutover_reconciliations
+            WHERE id = ${p["reconciliationId"]}
+              AND rolled_back_record_ref->>'recordId' = ${p["recordId"]}
+              AND (rolled_back_record_ref->>'revision')::int = ${latest.revision}`,
+      );
+      if (!recon) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `Không có Reconciliation ${p["reconciliationId"]} pin revision rolled-back ${p["recordId"]}@${latest.revision}`,
+        );
+      }
+      // C09 bước 5: SAU closure mới tạo revision kế tiếp.
+      if (recon.closure === null) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `Reconciliation ${p["reconciliationId"]} chưa closure — chưa được tạo Cutover Record revision kế tiếp`,
+        );
+      }
+      const record = await appendCutoverRecord(ctx, {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        featureId: latest.feature_id,
+        state: "rolled-back",
+        effectiveAt:
+          latest.effective_at === null ? null : new Date(latest.effective_at).toISOString(),
+        authorityActor: latest.authority_actor,
+        executionActor: p["executionActor"] as string,
+        approvalRecordRef: latest.approval_record_ref,
+        firstRuntimeWorkItemRef: latest.first_runtime_work_item_ref,
+        runtimeActivationSnapshotRef: latest.runtime_activation_snapshot_ref as {
+          snapshotId: string;
+          revision: number;
+          sha256: string;
+        },
+        reconciliationRef: {
+          reconciliationId: p["reconciliationId"],
+          revision: recon.revision,
+          sha256: recon.sha256,
+        },
+      });
+      return {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        state: "rolled-back",
+        reconciliationRef: {
+          reconciliationId: p["reconciliationId"] as string,
+          revision: recon.revision,
+          sha256: recon.sha256,
+        },
+        sha256: record.sha256,
       };
     },
   });

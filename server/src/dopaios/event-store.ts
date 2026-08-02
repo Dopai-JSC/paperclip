@@ -1037,6 +1037,36 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         reconciliationRef: d["reconciliationRef"] ?? null,
       });
       break;
+    case "CutoverReconciliationCreated":
+      await tx.insert(dopaiosCutoverReconciliations).values({
+        id: d["reconciliationId"],
+        revision: d["revision"],
+        sha256: d["sha256"],
+        featureId: d["featureId"],
+        rolledBackRecordRef: d["rolledBackRecordRef"],
+        mappingArtifactRef: d["mappingArtifactRef"],
+        mappings: d["mappings"],
+        residuals: d["residuals"],
+        reviewEvidenceRef: null,
+        closure: null,
+      });
+      break;
+    case "ReconciliationReviewPinned":
+      await tx
+        .update(dopaiosCutoverReconciliations)
+        .set({ reviewEvidenceRef: d["reviewEvidenceRef"] })
+        .where(
+          sql`${dopaiosCutoverReconciliations.id} = ${d["reconciliationId"]} AND ${dopaiosCutoverReconciliations.revision} = ${d["revision"]}`,
+        );
+      break;
+    case "ReconciliationClosed":
+      await tx
+        .update(dopaiosCutoverReconciliations)
+        .set({ closure: d["closure"] })
+        .where(
+          sql`${dopaiosCutoverReconciliations.id} = ${d["reconciliationId"]} AND ${dopaiosCutoverReconciliations.revision} = ${d["revision"]}`,
+        );
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
