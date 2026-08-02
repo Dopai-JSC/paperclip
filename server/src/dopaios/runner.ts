@@ -98,12 +98,13 @@ export async function requeueExpiredActivations(
         },
         handler: async (ctx, p) => {
           const current = (await ctx.tx.execute(sql`
-            SELECT state, lease_epoch, claim_lease_until FROM dopaios_activations
+            SELECT state, lease_epoch, claim_lease_until, work_item_id FROM dopaios_activations
             WHERE id = ${p["activationId"]} FOR UPDATE
           `)) as unknown as Array<{
             state: string;
             lease_epoch: number;
             claim_lease_until: Date | string | null;
+            work_item_id: string;
           }>;
           const row = current[0];
           const leaseMs = row?.claim_lease_until ? new Date(row.claim_lease_until).getTime() : null;
@@ -119,6 +120,31 @@ export async function requeueExpiredActivations(
               `Activation ${p["activationId"]} is no longer an expired epoch-${p["fromEpoch"]} claim — refusing to requeue`,
             );
           }
+          // KC-05 B7 (blocker vòng review đối kháng — lens tương tranh):
+          // requeue phải interrupt phiên đang mở của claimer cũ TRONG CÙNG
+          // transaction. Trước đây requeue chỉ đổi trạng thái activation;
+          // watchdog im lặng có ngưỡng RIÊNG nên giữa requeue và watchdog,
+          // claimer mới mở phiên thứ hai trên cùng work-item trong khi phiên
+          // treo còn RUNNING — hai bên cùng ghi checkpoint "hợp lệ". Interrupt
+          // tại đây (cùng nghĩa gián đoạn của KC-02, reason lease-expired) làm
+          // ghi muộn của phiên cũ bị ERR-SESSION-STATE ngay, không phụ thuộc
+          // thứ tự watchdog; phiên mới đi qua guard ERR-SESSION-CONFLICT sạch.
+          const openSessions = (await ctx.tx.execute(sql`
+            SELECT id, last_signal_at FROM dopaios_ai_sessions
+            WHERE work_item_id = ${row.work_item_id} AND state = 'RUNNING'
+          `)) as unknown as Array<{ id: string; last_signal_at: Date | string | null }>;
+          for (const session of openSessions) {
+            const lastSignal = session.last_signal_at ? new Date(session.last_signal_at).getTime() : 0;
+            await ctx.emit({
+              streamName: `dopaiosAiSession-${session.id}`,
+              type: "AiSessionInterrupted",
+              data: {
+                sessionId: session.id,
+                reason: "lease-expired",
+                detectionLatencyMs: Math.max(0, Number(p["nowMs"]) - lastSignal),
+              },
+            });
+          }
           await ctx.emit({
             streamName: `dopaiosActivation-${p["activationId"]}`,
             type: "ActivationRequeued",
@@ -130,7 +156,11 @@ export async function requeueExpiredActivations(
             },
             metadata: { commandId, audit: true },
           });
-          return { activationId: p["activationId"] as string, state: "QUEUED" };
+          return {
+            activationId: p["activationId"] as string,
+            state: "QUEUED",
+            interruptedSessions: openSessions.map((s) => s.id),
+          };
         },
       }),
     );

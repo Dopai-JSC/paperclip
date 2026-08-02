@@ -129,4 +129,6 @@ export {
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,
+  dopaiosWorkspaces,
+  dopaiosWorkspaceResources,
 } from "./dopaios_kc01.js";
