@@ -1,3 +1,4 @@
+import { resolve, sep } from "node:path";
 import { sql } from "drizzle-orm";
 import {
   type Db,
@@ -61,6 +62,22 @@ async function loadWorkspace(ctx: CommandContext, workspaceId: string): Promise<
 // liệu tạm nằm dưới đúng một prefix, là căn cứ để kiểm "purge đúng phạm vi".
 export function releaseScopePrefix(releaseId: string): string {
   return `releases/${releaseId}/`;
+}
+
+// KC-05 B2: guard đường dẫn hình dạng production (ASM-001) — MỌI đường ghi/
+// đọc của tầng fs (workspace-fs, B3) phải đi qua đây. Đường tuyệt đối, `..`
+// hoặc bất kỳ tổ hợp nào phân giải ra ngoài gốc workspace đều bị chặn
+// (FR-17 giới hạn tài nguyên theo scope; NFR-4 quyền tối thiểu).
+export function resolveScopedPath(baseAbs: string, relPath: string): string {
+  const base = resolve(baseAbs);
+  const target = resolve(base, relPath);
+  if (target !== base && !target.startsWith(base + sep)) {
+    throw new CommandRejectedError(
+      "ERR-WS-PATH-ESCAPE",
+      `Đường dẫn ${relPath} phân giải ra ngoài scope workspace ${baseAbs} — chặn`,
+    );
+  }
+  return target;
 }
 
 export async function provisionWorkspace(
