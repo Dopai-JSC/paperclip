@@ -252,6 +252,36 @@ describeEmbeddedPostgres("dopaios KC-17 B4 — nhánh rollback chuỗi hash mộ
   });
 
   it("FX-05-C09 (bước 3): AI-Reviewer pin đúng mapping revision/hash trong Review Evidence ready", async () => {
+    // B6 (finding MAJOR cả hai lens): executor không tự review được mắt xích
+    // AI-Reviewer — kind system bị chặn; vai người cũng không thay được vai
+    // AI-Reviewer (QD-4).
+    await expect(
+      pinReconciliationReview(db, cmd("review-self"), {
+        reconciliationId: RECON_ID,
+        revision: 1,
+        reviewer: SYSTEM_ACTOR,
+        reviewEvidence: {
+          ref: EVIDENCE_REF,
+          conclusion: "ready",
+          targetMappingRevision: 1,
+          targetMappingSha256: RECON_SHA256,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "ERR-ACTOR", message: expect.stringContaining("kind 'ai'") });
+    await expect(
+      pinReconciliationReview(db, cmd("review-human"), {
+        reconciliationId: RECON_ID,
+        revision: 1,
+        reviewer: ORCHESTRATOR,
+        reviewEvidence: {
+          ref: EVIDENCE_REF,
+          conclusion: "ready",
+          targetMappingRevision: 1,
+          targetMappingSha256: RECON_SHA256,
+        },
+      }),
+    ).rejects.toMatchObject({ code: "ERR-ACTOR", message: expect.stringContaining("kind 'ai'") });
+
     await expect(
       pinReconciliationReview(db, cmd("review-draft"), {
         reconciliationId: RECON_ID,
@@ -311,6 +341,27 @@ describeEmbeddedPostgres("dopaios KC-17 B4 — nhánh rollback chuỗi hash mộ
   });
 
   it("FX-05-C10 (ii) + C09 (bước 4): closure không pin mapping mới hơn evidence; closure hợp lệ", async () => {
+    // B6 (finding lens 2): closure actor phải đăng ký (human); revision phải
+    // là số nguyên dương thật.
+    await expect(
+      closeReconciliation(db, cmd("closure-ghost"), {
+        reconciliationId: RECON_ID,
+        revision: 1,
+        closureMappingRevision: 1,
+        reviewEvidenceRef: EVIDENCE_REF,
+        actor: "GHOST-KC17",
+      }),
+    ).rejects.toMatchObject({ code: "ERR-ACTOR" });
+    await expect(
+      closeReconciliation(db, cmd("closure-rev0"), {
+        reconciliationId: RECON_ID,
+        revision: 1,
+        closureMappingRevision: 0,
+        reviewEvidenceRef: EVIDENCE_REF,
+        actor: ORCHESTRATOR,
+      }),
+    ).rejects.toMatchObject({ code: "ERR-002", message: expect.stringContaining("số nguyên dương") });
+
     await expect(
       closeReconciliation(db, cmd("closure-newer"), {
         reconciliationId: RECON_ID,
@@ -390,6 +441,35 @@ describeEmbeddedPostgres("dopaios KC-17 B4 — nhánh rollback chuỗi hash mộ
     ).rejects.toMatchObject({
       code: "ERR-CUTOVER-CHAIN",
       message: expect.stringContaining("không pin ngược"),
+    });
+  });
+
+  it("B6: kích hoạt lại sau rollback — approval cũ đã TIÊU THỤ và snapshot id cũ đều bị chặn", async () => {
+    // Ngữ nghĩa "tiêu thụ" (finding lens 1): mỗi Approval Record chỉ dùng
+    // cho một lần kích hoạt; lần mới sau rollback cần approval mới.
+    const keyReuse = "KC17-ACT-RE-1";
+    await expect(
+      executeCutover(
+        db,
+        keyReuse,
+        baseCutoverPayload(keyReuse, { snapshotId: "RAS-SIM-002", cutoverRecordId: "CUTOVER-REC-SIM-002" }),
+      ),
+    ).rejects.toMatchObject({
+      code: "ERR-CUTOVER-APPROVAL",
+      message: expect.stringContaining("đã được tiêu thụ"),
+    });
+    // Snapshot id tái dùng là xung đột tất định → rejection sạch (finding
+    // lens 2), không phải ERR-CONTENTION sau 5 lần retry.
+    const keySnap = "KC17-ACT-RE-2";
+    await expect(
+      executeCutover(
+        db,
+        keySnap,
+        baseCutoverPayload(keySnap, { cutoverRecordId: "CUTOVER-REC-SIM-002" }),
+      ),
+    ).rejects.toMatchObject({
+      code: "ERR-STATE",
+      message: expect.stringContaining("đã dùng cho lần kích hoạt trước"),
     });
   });
 

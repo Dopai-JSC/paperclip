@@ -1047,6 +1047,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         mappingArtifactRef: d["mappingArtifactRef"],
         mappings: d["mappings"],
         residuals: d["residuals"],
+        // 0520 (B6): event trước B6 không mang executionActor — giữ null,
+        // không suy ra giá trị.
+        executionActor: d["executionActor"] ?? null,
         reviewEvidenceRef: null,
         closure: null,
       });

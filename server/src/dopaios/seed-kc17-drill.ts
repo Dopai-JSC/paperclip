@@ -28,7 +28,7 @@ import {
   RECON_CONTENT_UTF8,
   RECON_SHA256,
   RECON_DOC,
-} from "../__tests__/helpers/dopaios-kc17.js";
+} from "./kc17-fixture-support.js";
 
 // KC-17 B5: diễn tập trên Postgres NGOÀI (container dopaios-spike-pg, DB
 // dopaios_kc17) — chạy trọn kịch bản FX-05 trên đúng hạ tầng dùng chung của

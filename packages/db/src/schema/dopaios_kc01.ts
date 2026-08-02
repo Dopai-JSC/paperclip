@@ -539,6 +539,9 @@ export const dopaiosCutoverReconciliations = pgTable(
     mappingArtifactRef: jsonb("mapping_artifact_ref").$type<Record<string, unknown>>().notNull(),
     mappings: jsonb("mappings").$type<Record<string, unknown>[]>().notNull(),
     residuals: jsonb("residuals").$type<Record<string, unknown>[]>().notNull(),
+    // 0520 (B6): executor ghi vào nguồn để guard reviewer≠executor đối chiếu;
+    // nullable vì event trước B6 không mang trường này.
+    executionActor: text("execution_actor"),
     reviewEvidenceRef: jsonb("review_evidence_ref").$type<Record<string, unknown>>(),
     closure: jsonb("closure").$type<Record<string, unknown>>(),
   },

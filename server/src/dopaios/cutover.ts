@@ -239,6 +239,11 @@ export async function appendCutoverRecord(
   }
   if (!input.authorityActor) reject(`Cutover Record ${input.recordId} thiếu authority actor`);
   if (!input.executionActor) reject(`Cutover Record ${input.recordId} thiếu execution actor`);
+  // B6 (finding lens 1 — C07 "sai actor"): actor của record đối chiếu sổ
+  // actor ngay tại tầng append — mọi caller in-process đều bị kiểm, không
+  // chỉ executeCutover.
+  await requireActor(ctx, input.authorityActor, "human", "Authority actor của Cutover Record");
+  await requireActor(ctx, input.executionActor, "system", "Execution actor của Cutover Record");
   if (!input.approvalRecordRef || !input.approvalRecordRef["recordId"]) {
     reject(`Cutover Record ${input.recordId} thiếu tham chiếu Approval Record`);
   }
@@ -302,6 +307,24 @@ export async function appendCutoverRecord(
     reject(
       `Cutover Record ${input.recordId} revision ${input.revision} không nối tiếp lịch sử (kỳ vọng ${expectedRevision})`,
     );
+  }
+  // B6 (finding 2 lens): bất biến "một effective sống mỗi feature" đặt tại
+  // tầng append — record id KHÁC đang effective (revision mới nhất) thì
+  // không nhận thêm record effective, dù caller là ai.
+  if (input.state === "effective") {
+    const otherEffective = await oneOf<{ id: string }>(
+      ctx,
+      sql`SELECT id FROM (
+            SELECT DISTINCT ON (id) id, state
+            FROM dopaios_cutover_records WHERE feature_id = ${input.featureId}
+            ORDER BY id, revision DESC
+          ) latest WHERE state = 'effective' AND id <> ${input.recordId} LIMIT 1`,
+    );
+    if (otherEffective) {
+      reject(
+        `Feature ${input.featureId} đã có Cutover Record effective ${otherEffective!.id} — một effective sống mỗi feature`,
+      );
+    }
   }
 
   const body: Json = {
@@ -432,6 +455,8 @@ const EXECUTE_CUTOVER_REQUIRED = [
 
 type PlanOpenState = {
   state_id?: string;
+  source?: string;
+  snapshot_ref?: string;
   disposition?: string;
   target?: string;
   evidence?: string;
@@ -473,8 +498,17 @@ function validatePlanDocument(planDoc: Json, featureId: string): {
   if (!Array.isArray(openStates) || openStates.length === 0) {
     reject("Cutover Plan thiếu danh sách trạng thái mở");
   }
+  const expectedSnapshotRef = `${String(snapshotPin?.["snapshot_id"])}@${String(snapshotPin?.["revision"])}`;
   for (const state of openStates as PlanOpenState[]) {
     if (!state.state_id) reject("Cutover Plan có trạng thái mở thiếu state_id");
+    // B6 (finding lens 1): PRD d.318 — "từng trạng thái mở CÙNG NGUỒN/
+    // snapshot/revision/hash và đúng một disposition".
+    if (!state.source) reject(`Trạng thái mở ${state.state_id} thiếu nguồn (source)`);
+    if (state.snapshot_ref !== expectedSnapshotRef) {
+      reject(
+        `Trạng thái mở ${state.state_id} phải pin snapshot ${expectedSnapshotRef}, đang là: ${String(state.snapshot_ref)}`,
+      );
+    }
     const disposition = state.disposition;
     if (disposition !== "imported" && disposition !== "closed" && disposition !== "deferred") {
       reject(
@@ -512,6 +546,15 @@ export async function executeCutover(
           "activationKey trong payload phải trùng activation event/idempotency key của lệnh (QD-5)",
         );
       }
+      // B6 (finding 2 lens): effectiveAt phải là mốc thời gian đọc được —
+      // fail-closed trước khi bất kỳ guard nào so sánh với nó.
+      const effectiveAtMs = Date.parse(p["effectiveAt"] as string);
+      if (Number.isNaN(effectiveAtMs)) {
+        throw new CommandRejectedError(
+          "ERR-002",
+          `effectiveAt không phải mốc thời gian hợp lệ: ${String(p["effectiveAt"])}`,
+        );
+      }
 
       // Authority là Orchestrator (người); executor là system actor —
       // UJ-11: "pin thẩm quyền Orchestrator nhưng ghi hệ thống là actor
@@ -540,17 +583,22 @@ export async function executeCutover(
         );
       }
 
-      // Chưa từng có cutover effective cho feature; activation key chưa từng
-      // dùng (guard chính; unique index 0518 là phòng thủ chiều sâu).
-      const latestRecord = await oneOf<{ id: string; revision: number; state: string }>(
+      // Chưa có record id nào của feature đang ở effective (B6, finding
+      // lens 2: đọc revision mới nhất của TỪNG record id, không lấy max
+      // xuyên id); activation key và snapshot id chưa từng dùng (guard
+      // chính; unique index 0518 là phòng thủ chiều sâu).
+      const effectiveRecord = await oneOf<{ id: string; revision: number }>(
         ctx,
-        sql`SELECT id, revision, state FROM dopaios_cutover_records
-            WHERE feature_id = ${p["featureId"]} ORDER BY revision DESC LIMIT 1`,
+        sql`SELECT id, revision FROM (
+              SELECT DISTINCT ON (id) id, revision, state
+              FROM dopaios_cutover_records WHERE feature_id = ${p["featureId"]}
+              ORDER BY id, revision DESC
+            ) latest WHERE state = 'effective' LIMIT 1`,
       );
-      if (latestRecord && latestRecord.state === "effective") {
+      if (effectiveRecord) {
         throw new CommandRejectedError(
           "ERR-STATE",
-          `Feature ${p["featureId"]} đã có Cutover Record effective (${latestRecord.id}@${latestRecord.revision}) — không tạo lần kích hoạt thứ hai`,
+          `Feature ${p["featureId"]} đã có Cutover Record effective (${effectiveRecord.id}@${effectiveRecord.revision}) — không tạo lần kích hoạt thứ hai`,
         );
       }
       const keyUsed = await oneOf<{ id: string }>(
@@ -561,6 +609,18 @@ export async function executeCutover(
         throw new CommandRejectedError(
           "ERR-STATE",
           `Activation key ${activationKey} đã dùng cho snapshot ${keyUsed.id} — không tạo lần kích hoạt thứ hai`,
+        );
+      }
+      // B6 (finding lens 2): snapshot id tái dùng là xung đột tất định —
+      // rejection sạch thay vì vỡ PK rồi cạn retry thành ERR-CONTENTION.
+      const snapshotUsed = await oneOf<{ id: string }>(
+        ctx,
+        sql`SELECT id FROM dopaios_runtime_activation_snapshots WHERE id = ${p["snapshotId"]}`,
+      );
+      if (snapshotUsed) {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Snapshot id ${String(p["snapshotId"])} đã dùng cho lần kích hoạt trước — chọn snapshot id mới`,
         );
       }
 
@@ -618,6 +678,17 @@ export async function executeCutover(
         throw new CommandRejectedError("ERR-CUTOVER-PLAN", "Nội dung Cutover Plan không phải JSON hợp lệ");
       }
       const { firstWorkItemRef, openStates } = validatePlanDocument(planDoc, p["featureId"] as string);
+      // B6 (finding 2 lens — chống backdate): effective_at không phải trường
+      // caller tự do — trên fixture nó phải đúng planned_effective_at đã pin
+      // trong Plan content-addressed (QD-6). Nhờ đó guard expiry so sánh với
+      // một mốc đã được phê duyệt, không phải mốc caller tự khai.
+      const plannedMs = Date.parse(String(planDoc["planned_effective_at"]));
+      if (Number.isNaN(plannedMs) || effectiveAtMs !== plannedMs) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-PLAN",
+          `effective_at (${String(p["effectiveAt"])}) phải đúng planned_effective_at đã pin trong Plan (${String(planDoc["planned_effective_at"])}) — QD-6`,
+        );
+      }
 
       // Approval PILOT-CUTOVER: tiêu thụ đúng approval hợp lệ (C04) — ngữ
       // nghĩa phê duyệt thuộc KC-03, ở đây chỉ đối chiếu.
@@ -642,6 +713,22 @@ export async function executeCutover(
           `Approval Record ${p["approvalRecordId"]} không tồn tại — cutover thiếu phê duyệt PILOT-CUTOVER`,
         );
       }
+      // B6 (finding lens 1 — ngữ nghĩa "tiêu thụ"): mỗi Approval Record chỉ
+      // dùng cho MỘT lần kích hoạt; sau rollback, lần kích hoạt mới cần
+      // approval mới. Mọi revision của Cutover Record đều kế thừa approval
+      // ref của lần kích hoạt nên chỉ cần một hàng khớp là đã tiêu thụ.
+      const approvalConsumed = await oneOf<{ id: string; revision: number }>(
+        ctx,
+        sql`SELECT id, revision FROM dopaios_cutover_records
+            WHERE approval_record_ref->>'recordId' = ${p["approvalRecordId"]}
+            ORDER BY revision ASC LIMIT 1`,
+      );
+      if (approvalConsumed) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-APPROVAL",
+          `Approval Record ${approval.id} đã được tiêu thụ bởi Cutover Record ${approvalConsumed.id}@${approvalConsumed.revision} — lần kích hoạt mới cần approval mới`,
+        );
+      }
       if (approval.invalidated_at !== null) {
         throw new CommandRejectedError(
           "ERR-CUTOVER-APPROVAL",
@@ -654,12 +741,24 @@ export async function executeCutover(
           `Approval Record ${approval.id} có outcome '${approval.outcome}' — cutover cần 'approve' trọn revision`,
         );
       }
-      const expiresAt = approval.expiry?.["expires_at"];
-      if (typeof expiresAt === "string" && expiresAt < (p["effectiveAt"] as string)) {
-        throw new CommandRejectedError(
-          "ERR-CUTOVER-APPROVAL",
-          `Approval Record ${approval.id} hết hiệu lực từ ${expiresAt}, trước effective_at ${String(p["effectiveAt"])}`,
-        );
+      // B6 (finding 2 lens — MAJOR): expiry so theo EPOCH, không so chuỗi
+      // (hai chuỗi ISO khác offset so lexicographic cho kết quả sai);
+      // expires_at có mặt mà không đọc được là fail-closed.
+      const expiresAtRaw = approval.expiry?.["expires_at"];
+      if (expiresAtRaw !== undefined && expiresAtRaw !== null) {
+        const expiresMs = typeof expiresAtRaw === "string" ? Date.parse(expiresAtRaw) : Number.NaN;
+        if (Number.isNaN(expiresMs)) {
+          throw new CommandRejectedError(
+            "ERR-CUTOVER-APPROVAL",
+            `Approval Record ${approval.id} có expiry không đọc được (${String(expiresAtRaw)}) — fail-closed`,
+          );
+        }
+        if (expiresMs < effectiveAtMs) {
+          throw new CommandRejectedError(
+            "ERR-CUTOVER-APPROVAL",
+            `Approval Record ${approval.id} hết hiệu lực từ ${String(expiresAtRaw)}, trước effective_at ${String(p["effectiveAt"])}`,
+          );
+        }
       }
       if (
         approval.target_id !== plan.artifactId ||
@@ -1034,6 +1133,9 @@ export async function createCutoverReconciliation(
         mappingArtifactRef: mappingRef as unknown as Json,
         mappings: mappings as unknown as Json[],
         residuals: (mappingDoc.residuals ?? []) as unknown as Json[],
+        // B6 (finding 2 lens — MAJOR): executor ghi vào NGUỒN để guard
+        // reviewer≠executor của bước review đối chiếu được (bài học KC-14 B7).
+        executionActor: p["executionActor"],
       };
       const sha256 = payloadSha256(body);
       await ctx.emit({
@@ -1074,9 +1176,10 @@ export async function pinReconciliationReview(
         revision: number;
         mapping_artifact_ref: { sha256?: string };
         review_evidence_ref: Json | null;
+        execution_actor: string | null;
       }>(
         ctx,
-        sql`SELECT revision, mapping_artifact_ref, review_evidence_ref
+        sql`SELECT revision, mapping_artifact_ref, review_evidence_ref, execution_actor
             FROM dopaios_cutover_reconciliations
             WHERE id = ${p["reconciliationId"]} AND revision = ${p["revision"]}`,
       );
@@ -1099,6 +1202,21 @@ export async function pinReconciliationReview(
       );
       if (!reviewerRow || !reviewerRow.active) {
         throw new CommandRejectedError("ERR-ACTOR", `AI-Reviewer ${reviewer} chưa đăng ký hoặc không active`);
+      }
+      // B6 (finding MAJOR cả hai lens — độc lập của mắt xích review):
+      // AI-Reviewer phải là actor AI (QD-4) và khác executor ĐÃ GHI của
+      // Reconciliation. Kind system≠ai đã tách hai vai; equality là backstop.
+      if (reviewerRow.kind !== "ai") {
+        throw new CommandRejectedError(
+          "ERR-ACTOR",
+          `AI-Reviewer ${reviewer} phải là actor kind 'ai' (QD-4), đang là '${reviewerRow.kind}'`,
+        );
+      }
+      if (recon.execution_actor !== null && reviewer === recon.execution_actor) {
+        throw new CommandRejectedError(
+          "ERR-CUTOVER-CHAIN",
+          `AI-Reviewer phải khác executor đã ghi của Reconciliation (${recon.execution_actor}) — không tự review`,
+        );
       }
       const evidence = p["reviewEvidence"] as {
         ref: string;
@@ -1153,6 +1271,17 @@ export async function closeReconciliation(
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       requireFields(p, ["reconciliationId", "revision", "closureMappingRevision", "reviewEvidenceRef", "actor"]);
+      // B6 (finding 2 lens): closure là bước chốt của người — actor phải
+      // đăng ký, active, kind human; revision phải là số nguyên dương thật
+      // (chuỗi "1" hay 0 đều fail-closed).
+      await requireActor(ctx, p["actor"] as string, "human", "Closure actor");
+      const closureRevision = p["closureMappingRevision"];
+      if (!Number.isInteger(closureRevision) || (closureRevision as number) < 1) {
+        throw new CommandRejectedError(
+          "ERR-002",
+          `closureMappingRevision phải là số nguyên dương, đang là: ${String(closureRevision)}`,
+        );
+      }
       const recon = await oneOf<{
         review_evidence_ref: { ref?: string; conclusion?: string; targetMappingRevision?: number } | null;
         closure: Json | null;

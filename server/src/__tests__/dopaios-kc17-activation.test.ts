@@ -6,13 +6,13 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import {
-  executeCommand,
   countAllEvents,
   readStream,
   snapshotProjections,
   replayProjections,
   CommandPayloadMismatchError,
 } from "../dopaios/event-store.js";
+import { executeAuditedCommand } from "../dopaios/approval.js";
 import {
   executeCutover,
   completeCutover,
@@ -187,11 +187,13 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
 
   it("kích hoạt lần thứ hai bằng key khác bị guard trạng thái chặn", async () => {
     const key = "KC17-ACT-SECOND";
-    // Guard bootstrap-đã-DISABLED đứng trước guard record-effective — cả hai
-    // cùng chặn lần kích hoạt thứ hai; assert cụm chung của hai thông điệp.
+    // Guard bootstrap-đã-DISABLED ("không kích hoạt lần thứ hai") đứng trước
+    // guard record-effective ("không tạo lần kích hoạt thứ hai") — regex
+    // nhận cả hai thông điệp, cùng họ chặn lần kích hoạt thứ hai (B6, sửa
+    // finding NOTE lens 1: comment cũ nói sai về "cụm chung").
     await expect(executeCutover(db, key, baseCutoverPayload(key))).rejects.toMatchObject({
       code: "ERR-STATE",
-      message: expect.stringContaining("kích hoạt lần thứ hai"),
+      message: expect.stringMatching(/không (tạo lần )?kích hoạt lần thứ hai|không tạo lần kích hoạt thứ hai/),
     });
   });
 
@@ -209,7 +211,12 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
       runtimeActivationSnapshotRef: { snapshotId: "RAS-SIM-001", revision: 1, sha256: snapshotSha },
       reconciliationRef: null,
     };
-    const variants: Array<{ label: string; patch: Partial<CutoverRecordInput>; fragment: string }> = [
+    const variants: Array<{
+      label: string;
+      patch: Partial<CutoverRecordInput>;
+      fragment: string;
+      code?: string;
+    }> = [
       { label: "thieu-effective-at", patch: { effectiveAt: null }, fragment: "thiếu effective_at" },
       { label: "thieu-authority", patch: { authorityActor: "" }, fragment: "thiếu authority actor" },
       { label: "thieu-executor", patch: { executionActor: "" }, fragment: "thiếu execution actor" },
@@ -221,7 +228,7 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
       {
         label: "approval-ref-khong-ton-tai",
         patch: { approvalRecordRef: { recordId: "APR-MA" } },
-        fragment: "không tồn tại",
+        fragment: "Approval Record không tồn tại",
       },
       {
         label: "thieu-first-ref",
@@ -236,7 +243,7 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
       {
         label: "snapshot-sai-revision",
         patch: { runtimeActivationSnapshotRef: { snapshotId: "RAS-SIM-001", revision: 9, sha256: snapshotSha } },
-        fragment: "không tồn tại",
+        fragment: "snapshot không tồn tại",
       },
       {
         label: "snapshot-sai-hash",
@@ -245,10 +252,33 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
       },
       { label: "state-khong-hop-le", patch: { state: "activated" as CutoverRecordInput["state"] }, fragment: "state không hợp lệ" },
       { label: "revision-khong-noi-tiep", patch: { revision: 5 }, fragment: "không nối tiếp" },
+      // B6 (finding lens 1 — "sai actor"): actor không đăng ký bị chặn ngay
+      // tại tầng append, mã ERR-ACTOR.
+      {
+        label: "actor-khong-dang-ky",
+        patch: { executionActor: "GHOST-KC17" },
+        fragment: "chưa đăng ký",
+        code: "ERR-ACTOR",
+      },
+      {
+        label: "authority-sai-kind",
+        patch: { authorityActor: SYSTEM_ACTOR },
+        fragment: "kind 'human'",
+        code: "ERR-ACTOR",
+      },
+      // B6 (finding lens 2): record effective THỨ HAI (id khác) cho cùng
+      // feature bị chặn tại tầng append — một effective sống mỗi feature.
+      {
+        label: "effective-thu-hai",
+        patch: { recordId: "CUTOVER-REC-C07B" },
+        fragment: "một effective sống mỗi feature",
+      },
     ];
     for (const variant of variants) {
+      // B6 (nếp SQR-001): đường chặn qua executeAuditedCommand để lại vệt
+      // audit CommandRejected như mọi lệnh production.
       await expect(
-        executeCommand(db, {
+        executeAuditedCommand(db, {
           commandId: cmd(`c07-${variant.label}`),
           payload: { variant: variant.label },
           handler: async (ctx) => {
@@ -257,13 +287,13 @@ describeEmbeddedPostgres("dopaios KC-17 B3 — kích hoạt đúng-một-lần",
           },
         }),
       ).rejects.toMatchObject({
-        code: "ERR-CUTOVER-RECORD",
+        code: variant.code ?? "ERR-CUTOVER-RECORD",
         message: expect.stringContaining(variant.fragment),
       });
     }
     const strayRecords = await rowsOf(
       db,
-      sql`SELECT id FROM dopaios_cutover_records WHERE id = ${"CUTOVER-REC-C07"}`,
+      sql`SELECT id FROM dopaios_cutover_records WHERE id IN ('CUTOVER-REC-C07', 'CUTOVER-REC-C07B')`,
     );
     expect(strayRecords).toHaveLength(0);
   });

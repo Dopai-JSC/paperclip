@@ -1079,6 +1079,13 @@
       "when": 1785790900000,
       "tag": "0519_dopaios_kc17_readiness",
       "breakpoints": true
+    },
+    {
+      "idx": 520,
+      "version": "7",
+      "when": 1785791000000,
+      "tag": "0520_dopaios_kc17_hardening",
+      "breakpoints": true
     }
   ]
 }

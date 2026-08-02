@@ -6,16 +6,25 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { executeCommand } from "../dopaios/event-store.js";
-import { executeCutover, setCutoverReadiness, CUTOVER_READINESS_FLAGS } from "../dopaios/cutover.js";
+import { executeCutover, setCutoverReadiness, sha256Utf8, CUTOVER_READINESS_FLAGS } from "../dopaios/cutover.js";
+import {
+  registerDraftArtifact,
+  submitArtifactForReview,
+  assembleDecisionPackage,
+  recordApprovalDecision,
+} from "../dopaios/approval.js";
 import {
   setupCutoverBase,
   stagePlanWithApproval,
   baseCutoverPayload,
+  approvalPayload,
   FX05,
   FEATURE_ID,
   ORCHESTRATOR,
   SYSTEM_ACTOR,
   AI_LEAD,
+  PLAN_CONTENT_UTF8,
+  PLAN_SHA256,
 } from "./helpers/dopaios-kc17.js";
 
 // KC-17 B2 — guard kích hoạt cutover (FX-05 C01–C04, C11 + guard phụ).
@@ -258,6 +267,172 @@ describeEmbeddedPostgres("dopaios KC-17 B2 — guard kích hoạt cutover", () =
         cutoverRecordId: undefined as unknown as string,
       }),
     ).rejects.toMatchObject({ code: "ERR-002", message: expect.stringContaining("cutoverRecordId") });
+  });
+
+  it("B6/C04e: approval pin sai Plan revision (revision cũ sau khi có revision mới) bị từ chối", async () => {
+    // Chuỗi thật tạo mismatch: approval APR-V-REV pin PLAN-V-REV@1; sau đó
+    // PLAN-V-REV@2 được duyệt (APR-V-REV-2). Tiêu thụ approval CŨ cho plan
+    // ref @2 phải chết ở nhánh đối chiếu target_revision.
+    await stagePlanWithApproval(db, cmd, {
+      artifactId: "PLAN-V-REV",
+      approvalRecordId: "APR-V-REV",
+    });
+    await registerDraftArtifact(db, cmd("reg-rev2"), {
+      artifactId: "PLAN-V-REV",
+      revision: 2,
+      sha256: PLAN_SHA256,
+      createdBy: AI_LEAD,
+      artifactType: "cutover-plan",
+      hasRegionSchema: false,
+      storageRef: "dopaios/fixtures/content/cutover-plan.json",
+    });
+    await submitArtifactForReview(db, cmd("sub-rev2"), { artifactId: "PLAN-V-REV", revision: 2 });
+    await assembleDecisionPackage(db, cmd("pkg-rev2"), {
+      packageId: "PKG-PLAN-V-REV-2",
+      revision: 1,
+      target: { artifactId: "PLAN-V-REV", revision: 2, sha256: PLAN_SHA256 },
+      refs: { evidence: "ev-PLAN-V-REV-2" },
+      fields: { pointId: "PILOT-CUTOVER", decisionAsk: "Duyệt PLAN-V-REV@2?" },
+    });
+    await recordApprovalDecision(
+      db,
+      cmd("apr-rev2"),
+      approvalPayload({
+        recordId: "APR-V-REV-2",
+        packageId: "PKG-PLAN-V-REV-2",
+        target: { artifactId: "PLAN-V-REV", revision: 2, sha256: PLAN_SHA256 },
+        actor: ORCHESTRATOR,
+        pinnedRefs: { evidence: "ev-PLAN-V-REV-2" },
+      }),
+    );
+    const key = "KC17-ACT-C04E";
+    await expect(
+      executeCutover(
+        db,
+        key,
+        baseCutoverPayload(key, {
+          plan: { artifactId: "PLAN-V-REV", revision: 2, sha256: PLAN_SHA256 },
+          approvalRecordId: "APR-V-REV",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "ERR-CUTOVER-APPROVAL",
+      message: expect.stringContaining("không duyệt đúng Plan revision/hash"),
+    });
+  });
+
+  it("B6: Plan thiếu từng trường bắt buộc theo PRD d.318 bị từ chối đích danh", async () => {
+    const variants: Array<{ artifactId: string; mutate: (doc: Record<string, unknown>) => void; fragment: string }> = [
+      {
+        artifactId: "PLAN-V-NO-FIRSTREF",
+        mutate: (doc) => {
+          delete doc["first_runtime_work_item_ref"];
+        },
+        fragment: "thiếu first_runtime_work_item_ref",
+      },
+      {
+        artifactId: "PLAN-V-NO-SNAPREF",
+        mutate: (doc) => {
+          delete (doc["open_states"] as Array<Record<string, unknown>>)[0]["snapshot_ref"];
+        },
+        fragment: "phải pin snapshot",
+      },
+      {
+        artifactId: "PLAN-V-NO-ROLLBACK",
+        mutate: (doc) => {
+          delete doc["rollback_condition"];
+        },
+        fragment: "thiếu rollback_condition",
+      },
+    ];
+    for (const variant of variants) {
+      const doc = JSON.parse(PLAN_CONTENT_UTF8) as Record<string, unknown>;
+      variant.mutate(doc);
+      const content = JSON.stringify(doc, null, 2);
+      await stagePlanWithApproval(db, cmd, {
+        artifactId: variant.artifactId,
+        approvalRecordId: `APR-${variant.artifactId}`,
+        contentUtf8: content,
+      });
+      const key = `KC17-ACT-${variant.artifactId}`;
+      await expect(
+        executeCutover(
+          db,
+          key,
+          baseCutoverPayload(key, {
+            plan: { artifactId: variant.artifactId, revision: 1, sha256: sha256Utf8(content) },
+            planContentUtf8: content,
+            approvalRecordId: `APR-${variant.artifactId}`,
+          }),
+        ),
+      ).rejects.toMatchObject({
+        code: "ERR-CUTOVER-PLAN",
+        message: expect.stringContaining(variant.fragment),
+      });
+    }
+  });
+
+  it("B6: effective_at backdate (khác planned_effective_at đã pin) bị từ chối — QD-6", async () => {
+    const key = "KC17-ACT-BACKDATE";
+    await expect(
+      executeCutover(db, key, baseCutoverPayload(key, { effectiveAt: "2026-07-30T09:00:00+07:00" })),
+    ).rejects.toMatchObject({
+      code: "ERR-CUTOVER-PLAN",
+      message: expect.stringContaining("planned_effective_at"),
+    });
+    const keyBad = "KC17-ACT-BADDATE";
+    await expect(
+      executeCutover(db, keyBad, baseCutoverPayload(keyBad, { effectiveAt: "khong-phai-ngay" })),
+    ).rejects.toMatchObject({
+      code: "ERR-002",
+      message: expect.stringContaining("mốc thời gian"),
+    });
+  });
+
+  it("B6: expiry so theo epoch — lệch múi giờ không lọt; expiry không đọc được là fail-closed", async () => {
+    // expires_at 08:59+07:00 = 01:59Z ĐÃ QUA trước effective 02:00Z
+    // (= 09:00+07:00, cùng epoch planned_effective_at); so chuỗi
+    // lexicographic sẽ cho qua sai — so epoch phải chặn.
+    await stagePlanWithApproval(db, cmd, {
+      artifactId: "PLAN-V-EXPOFF",
+      approvalRecordId: "APR-SIM-EXPOFF",
+      expiry: { expires_at: "2026-07-31T08:59:00+07:00" },
+    });
+    const key = "KC17-ACT-EXPOFF";
+    await expect(
+      executeCutover(
+        db,
+        key,
+        baseCutoverPayload(key, {
+          plan: { artifactId: "PLAN-V-EXPOFF", revision: 1, sha256: PLAN_SHA256 },
+          approvalRecordId: "APR-SIM-EXPOFF",
+          effectiveAt: "2026-07-31T02:00:00Z",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "ERR-CUTOVER-APPROVAL",
+      message: expect.stringContaining("hết hiệu lực"),
+    });
+
+    await stagePlanWithApproval(db, cmd, {
+      artifactId: "PLAN-V-EXPBAD",
+      approvalRecordId: "APR-SIM-EXPBAD",
+      expiry: { expires_at: 12345 },
+    });
+    const keyBad = "KC17-ACT-EXPBAD";
+    await expect(
+      executeCutover(
+        db,
+        keyBad,
+        baseCutoverPayload(keyBad, {
+          plan: { artifactId: "PLAN-V-EXPBAD", revision: 1, sha256: PLAN_SHA256 },
+          approvalRecordId: "APR-SIM-EXPBAD",
+        }),
+      ),
+    ).rejects.toMatchObject({
+      code: "ERR-CUTOVER-APPROVAL",
+      message: expect.stringContaining("không đọc được"),
+    });
   });
 
   it("độ phủ fixture: bốn cờ readiness và danh sách ca khớp fx-05 đã cập nhật (QD-1)", () => {
