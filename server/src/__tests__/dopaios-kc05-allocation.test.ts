@@ -14,6 +14,7 @@ import {
   accessWorkspaceCredential,
   resolveScopedPath,
 } from "../dopaios/workspace.ts";
+import { requestActivation, claimActivation } from "../dopaios/activation.ts";
 
 // KC-05 B2: cấp phát nguyên tử dưới tương tranh THẬT + ca âm cho từng guard
 // hình dạng production (ASM-001). Hai Release song song không nhận trùng
@@ -169,7 +170,11 @@ describeEmbeddedPostgres("dopaios KC-05 B2 — cấp phát nguyên tử + guard"
       report: {
         actor: "dopaios-runner",
         purgedScope: ["releases/RUN-REL-C/ws", "releases/RUN-REL-C/cache"],
-        checksums: {},
+        // B7: evidence ràng với phạm vi — mỗi mục khai xóa một checksum.
+        checksums: {
+          "releases/RUN-REL-C/ws": "1".repeat(64),
+          "releases/RUN-REL-C/cache": "2".repeat(64),
+        },
         residue: [],
       },
     });
@@ -320,7 +325,7 @@ describeEmbeddedPostgres("dopaios KC-05 B2 — cấp phát nguyên tử + guard"
           report: {
             actor: "dopaios-runner",
             purgedScope: ["releases/RUN-REL-D/ws"],
-            checksums: {},
+            checksums: { "releases/RUN-REL-D/ws": "3".repeat(64) },
             residue: ["releases/RUN-REL-D/cache/left.tmp"],
           },
         }),
@@ -343,13 +348,47 @@ describeEmbeddedPostgres("dopaios KC-05 B2 — cấp phát nguyên tử + guard"
     ).toBe("ERR-WS-PURGE-FAILURE");
   });
 
-  it("credential: đúng scope đọc được; chéo Release và sau thu hồi bị chặn cả đọc kèm audit", async () => {
+  it("credential: đúng scope + đúng claimer đọc được; chéo Release, actor không giữ claim và sau thu hồi bị chặn cả đọc kèm audit", async () => {
     const portE = (await db.execute(
       sql`SELECT port FROM dopaios_workspaces WHERE id = 'WS-REL-E'`,
     )) as unknown as Array<{ port: number }>;
     await activateWorkspace(db, "KC05-B2-ACT-E", {
       workspaceId: "WS-REL-E",
       materialized: { worktreeHead: "e".repeat(40), boundPort: portE[0].port },
+    });
+    // B7: actor phải là claimer đang giữ Release — dựng work-item + claim thật.
+    await executeCommand(db, {
+      commandId: "KC05-B2-SEED-WI-E",
+      payload: { workItemId: "WI-RUN-REL-E" },
+      handler: async (ctx) => {
+        await ctx.emit({
+          streamName: "dopaiosWorkItem-WI-RUN-REL-E",
+          type: "WorkItemCreated",
+          data: { workItemId: "WI-RUN-REL-E", runId: "RUN-REL-E", state: "ACCEPTED" },
+          expectedVersion: -1,
+        });
+        return { seeded: true };
+      },
+    });
+    await requestActivation(db, "KC05-B2-REQ-E", {
+      activationId: "ACT-RUN-REL-E",
+      workItemId: "WI-RUN-REL-E",
+      agentId: "AI-STAFF-BUILD-E",
+      engine: "fake-acp-shape",
+    });
+    // Chưa claim → actor khai đúng tên mình vẫn bị chặn (không giữ claim).
+    expect(
+      await rejectionCode(
+        accessWorkspaceCredential(db, "KC05-B2-CRED-NOCLAIM", {
+          workspaceId: "WS-REL-E",
+          forReleaseId: "RUN-REL-E",
+          actor: "AI-STAFF-BUILD-E",
+        }),
+      ),
+    ).toBe("ERR-WS-CRED-ACTOR");
+    await claimActivation(db, "KC05-B2-CLAIM-E", {
+      activationId: "ACT-RUN-REL-E",
+      claimedBy: "AI-STAFF-BUILD-E",
     });
     const ok = await accessWorkspaceCredential(db, "KC05-B2-CRED-E", {
       workspaceId: "WS-REL-E",

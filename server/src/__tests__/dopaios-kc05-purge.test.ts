@@ -34,6 +34,7 @@ import {
   type MaterializedWorkspace,
 } from "../dopaios/workspace-fs.ts";
 import { FakeEngine, runWorkItemSession } from "../dopaios/engine.ts";
+import { requestActivation, claimActivation, completeActivation } from "../dopaios/activation.ts";
 
 // KC-05 B5: "sau khi đóng, dữ liệu tạm được purge đúng phạm vi" theo thứ tự
 // ADR-012 — chặn task mới → đóng → xóa đúng prefix Release → post-check
@@ -165,12 +166,14 @@ describeEmbeddedPostgres("dopaios KC-05 B5 — đóng và purge đúng phạm vi
     }
     expect(taskCode).toBe("ERR-WS-NO-ACTIVE");
 
-    // Bước 2: đóng phiên/tài nguyên đang giữ (worker dừng, port nhả).
-    q1.server.close();
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    // Bước 2: đóng phiên/tài nguyên đang giữ (worker dừng, port nhả) — B7:
+    // await callback close thay cho sleep cố định, tránh flake trên máy chậm.
+    await new Promise<void>((resolvePromise) => q1.server.close(() => resolvePromise()));
 
-    // Bước 3+4: xóa đúng scope + post-check; bước 5: event kết quả qua lệnh.
+    // Bước 3+4: xóa đúng scope + post-check (kèm probe port); bước 5: event
+    // kết quả qua lệnh. B7: hàm đọc sổ — chỉ chạy khi CLOSING/PURGE_BLOCKED.
     const { report, error } = await purgeReleaseScopeOnDisk({
+      db,
       rootAbs,
       repoPath,
       releaseId: "RUN-REL-Q1",
@@ -195,15 +198,31 @@ describeEmbeddedPostgres("dopaios KC-05 B5 — đóng và purge đúng phạm vi
     const worktrees = await runGit("git", ["-C", repoPath, "worktree", "list", "--porcelain"]);
     expect(worktrees.stdout.includes("RUN-REL-Q1")).toBe(false);
 
-    // Q2 nguyên vẹn từng byte; port Q2 vẫn độc quyền; credential Q2 vẫn đọc được.
+    // Q2 nguyên vẹn từng byte; port Q2 vẫn độc quyền; credential Q2 vẫn cấp
+    // được cho claimer thật (B7: actor phải giữ claim RUNNING trên Release).
     expect(await hashTree(q2ScopeAbs)).toEqual(q2TreeBefore);
     await expect(bindPort(q2.port)).rejects.toMatchObject({ code: "EADDRINUSE" });
+    await requestActivation(db, "KC05-B5-REQ-Q2", {
+      activationId: "ACT-RUN-REL-Q2",
+      workItemId: "WI-RUN-REL-Q2",
+      agentId: "AI-STAFF-RUN-REL-Q2",
+      engine: "fake",
+    });
+    await claimActivation(db, "KC05-B5-CLAIM-Q2", {
+      activationId: "ACT-RUN-REL-Q2",
+      claimedBy: "AI-STAFF-RUN-REL-Q2",
+    });
     const cred = await accessWorkspaceCredential(db, "KC05-B5-CRED-Q2", {
       workspaceId: "WS-RUN-REL-Q2",
       forReleaseId: "RUN-REL-Q2",
       actor: "AI-STAFF-RUN-REL-Q2",
     });
     expect((cred["credentialRef"] as { id: string }).id).toBe("CRED-RUN-REL-Q2");
+    // Đóng claim ngay để ca purge Q2 phía sau không bị ERR-WS-SESSIONS-OPEN.
+    await completeActivation(db, "KC05-B5-DONE-Q2", {
+      activationId: "ACT-RUN-REL-Q2",
+      outcome: "succeeded",
+    });
 
     // Dữ liệu ĐÃ XÁC NHẬN không bị đụng: số artifact phiên giữ nguyên; event
     // log chỉ THÊM (purge events), không mất.
@@ -233,12 +252,12 @@ describeEmbeddedPostgres("dopaios KC-05 B5 — đóng và purge đúng phạm vi
   it("purge fail → PURGE_BLOCKED giữ tài nguyên, đóng không hoàn tất; retry đưa về PURGED", async () => {
     const q2 = materialized["RUN-REL-Q2"];
     await beginWorkspaceClose(db, "KC05-B5-CLOSE-Q2", { workspaceId: "WS-RUN-REL-Q2", reason: "release-done" });
-    q2.server.close();
-    await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+    await new Promise<void>((resolvePromise) => q2.server.close(() => resolvePromise()));
 
     // Giả lập lỗi hạ tầng xóa: adapter fs ném lỗi — cơ chế GHI NHẬN thất bại
     // là production-shaped (guard + hồ sơ FR-17), điểm tiêm lỗi là test-only.
     const { report: failedReport, error } = await purgeReleaseScopeOnDisk({
+      db,
       rootAbs,
       repoPath,
       releaseId: "RUN-REL-Q2",
@@ -262,6 +281,7 @@ describeEmbeddedPostgres("dopaios KC-05 B5 — đóng và purge đúng phạm vi
           owner: "dopaios-operator",
           dueMs: 3_600_000,
           scope: failedReport.residue,
+          state: "open",
         },
       },
     });
@@ -294,6 +314,7 @@ describeEmbeddedPostgres("dopaios KC-05 B5 — đóng và purge đúng phạm vi
 
     // Retry có giới hạn (FR-17): purge thật thành công → PURGED, scope sạch.
     const { report, error: retryError } = await purgeReleaseScopeOnDisk({
+      db,
       rootAbs,
       repoPath,
       releaseId: "RUN-REL-Q2",

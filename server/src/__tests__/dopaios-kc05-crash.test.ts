@@ -23,16 +23,16 @@ import {
   listTree,
   type MaterializedWorkspace,
 } from "../dopaios/workspace-fs.ts";
-import { requestActivation, claimActivation, completeActivation } from "../dopaios/activation.ts";
-import { FakeEngine, runWorkItemSession, latestConfirmedCheckpoint } from "../dopaios/engine.ts";
+import { requestActivation, completeActivation } from "../dopaios/activation.ts";
 import { recordSessionArtifact, detectStalledSessions } from "../dopaios/sessions.ts";
 import { requeueExpiredActivations } from "../dopaios/runner.ts";
 
 // KC-05 B4: dừng ĐỘT NGỘT một worker thật (tiến trình con bị SIGKILL khi đang
-// giữ claim và vừa ghi checkpoint đầu) rồi khởi động lại — tiêu chí: không
-// mất claim, không hai tác nhân cùng ghi một work-item. Tái dùng nguyên khối
-// watchdog KC-02 (detectStalledSessions), requeue theo epoch + fence
-// ERR-LEASE-EPOCH của KC-13, phiên kế nhiệm resume từ checkpoint đã xác nhận.
+// giữ claim và vừa ghi checkpoint đầu) rồi KHỞI ĐỘNG LẠI BẰNG CHÍNH worker —
+// tiêu chí: không mất claim, không hai tác nhân cùng ghi một work-item.
+// B7 (finding review lens 1): trình tự phục hồi (kế nhiệm + resume) nằm trong
+// worker, test chỉ quan sát marker; tái dùng nguyên khối watchdog KC-02,
+// requeue theo epoch + fence ERR-LEASE-EPOCH của KC-13.
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -49,33 +49,56 @@ const ACTIVATION_ID = `ACT-${RELEASE_ID}`;
 const SESSION_E0 = `SES-${RELEASE_ID}-e0`;
 const SESSION_E1 = `SES-${RELEASE_ID}-e1`;
 const LEASE_MS = 3_000;
-const STEPS = ["plan", "build", "test"];
 const serverDir = fileURLToPath(new URL("../..", import.meta.url));
 
-function waitForMarker(child: ChildProcess, marker: string, timeoutMs = 90_000): Promise<string> {
-  return new Promise((resolvePromise, rejectPromise) => {
-    let buffer = "";
-    const timer = setTimeout(
-      () => rejectPromise(new Error(`Chờ marker ${marker} quá ${timeoutMs}ms; stdout:\n${buffer}`)),
-      timeoutMs,
-    );
-    child.stdout?.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
-      if (buffer.includes(marker)) {
-        clearTimeout(timer);
-        resolvePromise(buffer);
-      }
-    });
-    child.stderr?.on("data", (chunk: Buffer) => {
-      buffer += chunk.toString("utf8");
-    });
-    child.once("exit", (code) => {
-      clearTimeout(timer);
-      if (!buffer.includes(marker)) {
-        rejectPromise(new Error(`Worker thoát (code ${code}) trước khi có marker ${marker}; output:\n${buffer}`));
-      }
-    });
+type WorkerHandle = {
+  child: ChildProcess;
+  buffer: () => string;
+  waitFor: (marker: string, timeoutMs?: number) => Promise<string>;
+  exited: Promise<number | null>;
+};
+
+// Bộ thu output DUY NHẤT gắn từ lúc spawn — mọi marker đều nằm trong một
+// buffer, chờ marker sau không lỡ marker in ra giữa hai lần chờ.
+function spawnWorker(extraEnv: Record<string, string>): WorkerHandle {
+  const child = spawn("pnpm", ["exec", "tsx", "src/dopaios/kc05-worker.ts"], {
+    cwd: serverDir,
+    env: { ...process.env, NODE_ENV: "test", ...extraEnv },
+    stdio: ["ignore", "pipe", "pipe"],
   });
+  let buffer = "";
+  child.stdout?.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf8");
+  });
+  child.stderr?.on("data", (chunk: Buffer) => {
+    buffer += chunk.toString("utf8");
+  });
+  const exited = new Promise<number | null>((resolvePromise) =>
+    child.once("exit", (code) => resolvePromise(code)),
+  );
+  return {
+    child,
+    buffer: () => buffer,
+    waitFor: (marker, timeoutMs = 90_000) =>
+      new Promise((resolvePromise, rejectPromise) => {
+        const started = Date.now();
+        const poll = setInterval(() => {
+          if (buffer.includes(marker)) {
+            clearInterval(poll);
+            resolvePromise(buffer);
+          } else if (Date.now() - started > timeoutMs) {
+            clearInterval(poll);
+            rejectPromise(new Error(`Chờ marker ${marker} quá ${timeoutMs}ms; output:\n${buffer}`));
+          } else if (child.exitCode !== null && !buffer.includes(marker)) {
+            clearInterval(poll);
+            rejectPromise(
+              new Error(`Worker thoát (code ${child.exitCode}) trước khi có marker ${marker}; output:\n${buffer}`),
+            );
+          }
+        }, 25);
+      }),
+    exited,
+  };
 }
 
 describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng rồi khởi động lại", () => {
@@ -83,6 +106,21 @@ describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng r�
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let rootAbs!: string;
   let ws!: MaterializedWorkspace;
+
+  function workerEnv(sessionId: string, epoch: number, slowMs: number): Record<string, string> {
+    return {
+      KC05_DATABASE_URL: tempDb!.connectionString,
+      KC05_ACTIVATION_ID: ACTIVATION_ID,
+      KC05_WORK_ITEM_ID: WORK_ITEM_ID,
+      KC05_RELEASE_ID: RELEASE_ID,
+      KC05_AGENT_ID: "AI-STAFF-K",
+      KC05_SESSION_ID: sessionId,
+      KC05_ROOT_ABS: rootAbs,
+      KC05_LEASE_MS: String(LEASE_MS),
+      KC05_SLOW_MS: String(slowMs),
+      KC05_EPOCH: String(epoch),
+    };
+  }
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("dopaios-kc05-b4-");
@@ -153,29 +191,12 @@ describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng r�
   });
 
   it("SIGKILL worker đang giữ claim: claim không mất, phiên và checkpoint còn nguyên", async () => {
-    const child = spawn("pnpm", ["exec", "tsx", "src/dopaios/kc05-worker.ts"], {
-      cwd: serverDir,
-      env: {
-        ...process.env,
-        NODE_ENV: "test",
-        KC05_DATABASE_URL: tempDb!.connectionString,
-        KC05_ACTIVATION_ID: ACTIVATION_ID,
-        KC05_WORK_ITEM_ID: WORK_ITEM_ID,
-        KC05_RELEASE_ID: RELEASE_ID,
-        KC05_AGENT_ID: "AI-STAFF-K",
-        KC05_SESSION_ID: SESSION_E0,
-        KC05_ROOT_ABS: rootAbs,
-        KC05_LEASE_MS: String(LEASE_MS),
-        KC05_SLOW_MS: "30000",
-        KC05_EPOCH: "0",
-      },
-      stdio: ["ignore", "pipe", "pipe"],
-    });
+    const worker = spawnWorker(workerEnv(SESSION_E0, 0, 30_000));
     // Chờ worker claim xong VÀ ghi checkpoint bước đầu, rồi giết cứng giữa
     // cửa sổ sleep — không cleanup, không thoát êm.
-    await waitForMarker(child, "KC05-CKPT step=plan");
-    child.kill("SIGKILL");
-    await new Promise<void>((resolvePromise) => child.once("exit", () => resolvePromise()));
+    await worker.waitFor("KC05-CKPT step=plan");
+    worker.child.kill("SIGKILL");
+    await worker.exited;
 
     const activation = (await db.execute(
       sql`SELECT state, claimed_by, lease_epoch, (claim_lease_until IS NOT NULL) AS leased
@@ -216,34 +237,13 @@ describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng r�
     expect(activation).toEqual([{ state: "QUEUED", claimed_by: null, lease_epoch: 1 }]);
   });
 
-  it("khởi động lại: worker mới claim epoch 1, phiên kế nhiệm resume từ checkpoint; writer cũ bị fence — không hai tác nhân cùng ghi", async () => {
-    await claimActivation(db, `KC05-B4-CLAIM-${ACTIVATION_ID}-e1`, {
-      activationId: ACTIVATION_ID,
-      claimedBy: "AI-STAFF-K",
-      lease: { untilMs: Date.now() + 60_000 },
-    });
+  it("khởi động lại bằng CHÍNH worker: claim epoch 1, kế nhiệm + resume trong worker; writer cũ bị fence — không hai tác nhân cùng ghi", async () => {
+    const worker = spawnWorker(workerEnv(SESSION_E1, 1, 1_500));
+    await worker.waitFor("KC05-CLAIMED");
 
-    const resume = await latestConfirmedCheckpoint(db, SESSION_E0);
-    expect(resume?.nextStepIndex).toBe(1);
-
-    const { workspaceBoundEngine } = await import("../dopaios/workspace-fs.ts");
-    const outcome = await runWorkItemSession(db, {
-      sessionId: SESSION_E1,
-      agentId: "AI-STAFF-K",
-      adapter: workspaceBoundEngine(new FakeEngine(), { wsAbs: ws.wsAbs, cacheAbs: ws.cacheAbs }),
-      contract: {
-        workItemId: WORK_ITEM_ID,
-        contractRevision: 1,
-        sopRef: { id: "SOPDEF-KC05", revision: 1 },
-        steps: STEPS,
-      },
-      predecessor: { id: SESSION_E0, relation: "retry" },
-      resume: { nextStepIndex: resume!.nextStepIndex },
-    });
-    expect(outcome.kind).toBe("succeeded");
-
-    // Writer cũ (epoch 0) ghi muộn: bị fence ERR-LEASE-EPOCH — đường "hai tác
-    // nhân cùng ghi một work-item" không tồn tại ở trạng thái xác nhận.
+    // Writer cũ (epoch 0) ghi muộn TRONG lúc lượt epoch 1 đang chạy: bị fence
+    // ERR-LEASE-EPOCH — "hai tác nhân cùng ghi một work-item" không tồn tại
+    // ở trạng thái xác nhận.
     let staleCode = "NO-REJECTION";
     try {
       await completeActivation(db, `KC05-B4-STALE-DONE-${ACTIVATION_ID}`, {
@@ -256,6 +256,12 @@ describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng r�
       else throw error;
     }
     expect(staleCode).toBe("ERR-LEASE-EPOCH");
+
+    // Worker tự nhận diện phiên INTERRUPTED, mở kế nhiệm retry và resume từ
+    // checkpoint đã xác nhận — không cần test đạo diễn (B7).
+    const output = await worker.waitFor("KC05-DONE kind=succeeded");
+    expect(output).toContain(`KC05-RESUME from=${SESSION_E0} nextStepIndex=1`);
+    await worker.exited;
 
     // Phiên cũ đã INTERRUPTED — checkpoint ghi muộn vào phiên cũ cũng bị chặn.
     let staleSessionCode = "NO-REJECTION";
@@ -273,14 +279,6 @@ describeEmbeddedPostgres("dopaios KC-05 B4 — worker SIGKILL giữa chừng r�
       else throw error;
     }
     expect(staleSessionCode).toBe("ERR-SESSION-STATE");
-
-    // Claimer mới (epoch 1) hoàn tất — đúng MỘT kết quả thắng.
-    const done = await completeActivation(db, `KC05-B4-DONE-${ACTIVATION_ID}-e1`, {
-      activationId: ACTIVATION_ID,
-      outcome: "succeeded",
-      leaseEpoch: 1,
-    });
-    expect(done["state"]).toBe("DONE");
 
     // Chuỗi phiên nối predecessor; artifact tạm gồm plan của e0 + build/test
     // của e1 — đầu ra hợp lệ được giữ, chỉ phần dở dang làm lại (NFR-3).

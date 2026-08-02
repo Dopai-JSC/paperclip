@@ -41,7 +41,12 @@ if (!DATABASE_URL) {
   throw new Error("Cần DATABASE_URL trỏ vào dopaios_kc05 trên container spike");
 }
 
-const RELEASES = ["RUN-DRILL-1", "RUN-DRILL-2"] as const;
+// B7 (minor review lens 2): nonce theo lần chạy — command id KC05-DRILL-*
+// cố định làm lần chạy 2 trên DB bền thành 100% idempotent replay (không
+// kiểm chứng gì sống); nonce làm mỗi lần chạy là một cặp Release mới, và
+// cuối drill dọn TRỌN cả hai Release nên tài nguyên không bị chiếm vĩnh viễn.
+const NONCE = process.env.KC05_DRILL_NONCE ?? Date.now().toString(36);
+const RELEASES = [`RUN-DRILL-${NONCE}-1`, `RUN-DRILL-${NONCE}-2`] as const;
 const PORT_POOL = [15921, 15922];
 const STEPS = ["plan", "build", "test"];
 
@@ -129,7 +134,11 @@ async function main(): Promise<void> {
       const outcome = await runWorkItemSession(db, {
         sessionId: `SES-${releaseId}`,
         agentId: `AI-STAFF-${releaseId}`,
-        adapter: workspaceBoundEngine(new FakeEngine(), { wsAbs: ws.wsAbs, cacheAbs: ws.cacheAbs }),
+        adapter: workspaceBoundEngine(
+          new FakeEngine(),
+          { wsAbs: ws.wsAbs, cacheAbs: ws.cacheAbs },
+          { db, workspaceId: `WS-${releaseId}` },
+        ),
         contract: {
           workItemId: `WI-${releaseId}`,
           contractRevision: 1,
@@ -177,9 +186,9 @@ async function main(): Promise<void> {
     workspaceId: `WS-${RELEASES[0]}`,
     reason: "drill-release-done",
   });
-  materialized[RELEASES[0]].server.close();
-  await new Promise((resolvePromise) => setTimeout(resolvePromise, 50));
+  await new Promise<void>((resolvePromise) => materialized[RELEASES[0]].server.close(() => resolvePromise()));
   const { report, error } = await purgeReleaseScopeOnDisk({
+    db,
     rootAbs,
     repoPath: repo.repoPath,
     releaseId: RELEASES[0],
@@ -206,18 +215,40 @@ async function main(): Promise<void> {
   const after = await snapshotProjections(db);
   assert(JSON.stringify(after) === JSON.stringify(before), "replay projection byte-identical (SQR-003)");
 
+  // B7: dọn TRỌN Release còn lại trước khi thoát — DB bền không giữ workspace
+  // ACTIVE và tài nguyên reserved vĩnh viễn sau drill.
+  await beginWorkspaceClose(db, `KC05-DRILL-CLOSE-${RELEASES[1]}`, {
+    workspaceId: `WS-${RELEASES[1]}`,
+    reason: "drill-cleanup",
+  });
+  await new Promise<void>((resolvePromise) => keep.server.close(() => resolvePromise()));
+  const cleanup = await purgeReleaseScopeOnDisk({
+    db,
+    rootAbs,
+    repoPath: repo.repoPath,
+    releaseId: RELEASES[1],
+    actor: "dopaios-runner",
+  });
+  assert(cleanup.error === undefined && cleanup.report.residue.length === 0, "dọn Release còn lại sạch");
+  await recordWorkspacePurge(db, `KC05-DRILL-PURGE-${RELEASES[1]}`, {
+    workspaceId: `WS-${RELEASES[1]}`,
+    outcome: "purged",
+    report: cleanup.report,
+  });
+
   const events = await countAllEvents(db);
   const workspaces = (await db.execute(
-    sql`SELECT id, state FROM dopaios_workspaces ORDER BY id`,
+    sql`SELECT id, state FROM dopaios_workspaces WHERE release_id LIKE ${"RUN-DRILL-" + NONCE + "%"} ORDER BY id`,
   )) as unknown as Array<{ id: string; state: string }>;
   const resources = (await db.execute(
-    sql`SELECT state, count(*)::int AS n FROM dopaios_workspace_resources GROUP BY state ORDER BY state`,
+    sql`SELECT state, count(*)::int AS n FROM dopaios_workspace_resources
+        WHERE release_id LIKE ${"RUN-DRILL-" + NONCE + "%"} GROUP BY state ORDER BY state`,
   )) as unknown as Array<{ state: string; n: number }>;
+  console.log(`nonce: ${NONCE}`);
   console.log(`events: ${events}`);
   console.log(`workspaces: ${workspaces.map((w) => `${w.id}=${w.state}`).join(", ")}`);
   console.log(`resources: ${resources.map((r) => `${r.state}=${r.n}`).join(", ")}`);
 
-  keep.server.close();
   await rm(rootAbs, { recursive: true, force: true });
   console.log("KC05 DRILL PASS");
   process.exit(0);

@@ -26,8 +26,11 @@ import { executeAuditedCommand } from "./approval.js";
 //    purge → PURGE_BLOCKED, giữ nguyên tài nguyên, mang hành động khắc phục
 //    owner–hạn–phạm vi còn sót (FR-17) — việc đóng KHÔNG được coi là hoàn tất.
 //  - Guard hình dạng production theo ASM-001: mọi đường chặn là hành vi của
-//    lệnh, không phải assertion riêng của test; chặn nào cũng có vệt audit
-//    (executeAuditedCommand — SQR-001).
+//    lệnh, không phải assertion riêng của test. Lệnh đi qua
+//    executeAuditedCommand để lại vệt audit khi bị chặn (SQR-001); riêng hai
+//    guard ĐỌC ngoài đường lệnh — requireActiveWorkspace (fail-closed của
+//    worker) và resolveScopedPath (tầng fs) — chặn KHÔNG có vệt event, giới
+//    hạn này ghi tại hồ sơ Mục 8 (B7, finding lens 1).
 
 type Json = Record<string, unknown>;
 
@@ -158,6 +161,10 @@ export async function provisionWorkspace(
         id: `CRED-${releaseId}`,
         sha256: payloadSha256({ fixtureCredential: releaseId, workspaceId }),
       };
+      // Invariant-check phòng thủ chiều sâu (B7, finding lens 1): path và
+      // credential suy tất định từ releaseId nên ở slice này mọi xung đột đều
+      // bị ERR-WS-DUP-RELEASE chặn trước — nhánh dưới chỉ chạm được khi luật
+      // đặt tên đổi mà guard theo Release chưa đổi theo; giữ để lộ lệch sớm.
       for (const [resourceType, value] of [
         ["path", relPath],
         ["credential", credentialRef.id],
@@ -241,6 +248,16 @@ export async function activateWorkspace(
           `Bind port ${materialized.boundPort} khác port cấp phát ${workspace.port}`,
         );
       }
+      // B7 (minor review lens 1): baseRef dạng commit sha thì worktreeHead
+      // phải khớp ĐÚNG — bằng chứng vật chất hóa đối chiếu được với pin trong
+      // sổ; baseRef dạng ref tượng trưng (fixture B1/B2) không đối chiếu được
+      // ở tầng lệnh, ghi giới hạn trust-the-caller tại hồ sơ.
+      if (/^[0-9a-f]{40}$/.test(workspace.base_ref) && materialized.worktreeHead !== workspace.base_ref) {
+        throw new CommandRejectedError(
+          "ERR-WS-HEAD-MISMATCH",
+          `worktreeHead ${materialized.worktreeHead} khác baseRef đã pin ${workspace.base_ref}`,
+        );
+      }
       await ctx.emit({
         streamName: workspaceStream(workspace.id),
         type: "WorkspaceActivated",
@@ -296,7 +313,10 @@ export type WorkspacePurgeReport = {
 export type WorkspacePurgeFailure = {
   reason: string;
   leftoverScope: string[];
-  correctiveAction: { owner: string; dueMs: number; scope: string[] };
+  // FR-17 nguyên văn: hành động khắc phục có owner, hạn, TRẠNG THÁI, phạm vi
+  // còn sót. state khởi tạo 'open'; purge retry thành công đóng nó qua event
+  // (correctiveActionState=closed trên projection) — B7, finding lens 1.
+  correctiveAction: { owner: string; dueMs: number; scope: string[]; state: "open" };
 };
 
 // Bước cuối của thứ tự đóng ADR-012, hai nhánh:
@@ -325,6 +345,32 @@ export async function recordWorkspacePurge(
           `Workspace ${workspace.id} ở ${workspace.state} — purge chỉ chạy sau khi bắt đầu đóng`,
         );
       }
+      // B7 (blocker vòng review đối kháng, cả hai lens): bước 2 của thứ tự
+      // ADR-012 — "đóng phiên" — phải là GUARD của lệnh, không phải kỷ luật
+      // caller. Còn phiên RUNNING hoặc claim sống trên work-item của Release
+      // thì writer có thể ghi tiếp và tái tạo cây scope NGAY SAU khi đĩa vừa
+      // xóa (mkdir đệ quy của checkpoint) — sổ ghi "purged sạch" thành nói
+      // dối. Đọc projection trong cùng transaction SERIALIZABLE.
+      const openWriters = (await ctx.tx.execute(sql`
+        SELECT s.id AS session_id, NULL AS activation_id
+        FROM dopaios_ai_sessions s
+        JOIN dopaios_work_items w ON w.id = s.work_item_id
+        WHERE w.run_id = ${workspace.release_id} AND s.state = 'RUNNING'
+        UNION ALL
+        SELECT NULL AS session_id, a.id AS activation_id
+        FROM dopaios_activations a
+        JOIN dopaios_work_items w ON w.id = a.work_item_id
+        WHERE w.run_id = ${workspace.release_id} AND a.state = 'RUNNING'
+      `)) as unknown as Array<{ session_id: string | null; activation_id: string | null }>;
+      if (openWriters.length > 0) {
+        const detail = openWriters
+          .map((w) => w.session_id ?? w.activation_id)
+          .join(", ");
+        throw new CommandRejectedError(
+          "ERR-WS-SESSIONS-OPEN",
+          `Release ${workspace.release_id} còn phiên/claim sống (${detail}) — đóng phiên trước khi purge (ADR-012 bước 2)`,
+        );
+      }
       if (p["outcome"] === "purged") {
         const report = p["report"] as WorkspacePurgeReport | undefined;
         if (!report?.actor || !Array.isArray(report.purgedScope) || !report.checksums || !Array.isArray(report.residue)) {
@@ -341,6 +387,15 @@ export async function recordWorkspacePurge(
             `Purge chạm ngoài phạm vi Release ${workspace.release_id}: ${outOfScope.join(", ")}`,
           );
         }
+        // B7 (minor review lens 1): evidence ràng với phạm vi — mỗi mục khai
+        // xóa phải có checksum nội dung trước khi xóa (ADR-012).
+        const missingChecksum = report.purgedScope.filter((entry) => !report.checksums[entry]);
+        if (missingChecksum.length > 0) {
+          throw new CommandRejectedError(
+            "ERR-WS-PURGE-REPORT",
+            `Thiếu checksum cho ${missingChecksum.length} mục đã khai xóa (${missingChecksum[0]}…) — ADR-012`,
+          );
+        }
         if (report.residue.length > 0) {
           throw new CommandRejectedError(
             "ERR-WS-RESIDUE",
@@ -350,7 +405,13 @@ export async function recordWorkspacePurge(
         await ctx.emit({
           streamName: workspaceStream(workspace.id),
           type: "WorkspacePurged",
-          data: { workspaceId: workspace.id, report: report as unknown as Json },
+          data: {
+            workspaceId: workspace.id,
+            report: report as unknown as Json,
+            // Purge retry thành công sau PURGE_BLOCKED đóng hành động khắc
+            // phục của hồ sơ thất bại (FR-17 vòng đời corrective action).
+            resolvesCorrectiveAction: workspace.state === "PURGE_BLOCKED",
+          },
         });
         for (const [resourceType, value] of [
           ["port", String(workspace.port)],
@@ -365,17 +426,44 @@ export async function recordWorkspacePurge(
         }
         return { workspaceId: workspace.id, state: "PURGED" };
       }
+      // B7 (major review lens 1): từng trường của FR-17 được guard RIÊNG —
+      // hạn phải dương, phạm vi còn sót và phạm vi khắc phục không rỗng và
+      // nằm trọn prefix Release (nhánh failed trước đây không có guard phạm vi).
       const failure = p["failure"] as WorkspacePurgeFailure | undefined;
+      if (!failure?.reason || !Array.isArray(failure.leftoverScope) || !failure.correctiveAction) {
+        throw new CommandRejectedError(
+          "ERR-WS-PURGE-FAILURE",
+          "Hồ sơ thất bại purge thiếu reason/leftoverScope/correctiveAction — FR-17",
+        );
+      }
+      const action = failure.correctiveAction;
+      if (!action.owner) {
+        throw new CommandRejectedError("ERR-WS-PURGE-FAILURE", "Hành động khắc phục thiếu owner — FR-17");
+      }
+      if (typeof action.dueMs !== "number" || action.dueMs <= 0) {
+        throw new CommandRejectedError("ERR-WS-PURGE-FAILURE", "Hành động khắc phục thiếu hạn dương (dueMs) — FR-17");
+      }
+      if (action.state !== "open") {
+        throw new CommandRejectedError("ERR-WS-PURGE-FAILURE", "Hành động khắc phục phải khởi tạo state 'open' — FR-17");
+      }
+      const failPrefix = releaseScopePrefix(workspace.release_id);
       if (
-        !failure?.reason ||
-        !Array.isArray(failure.leftoverScope) ||
-        !failure.correctiveAction?.owner ||
-        typeof failure.correctiveAction.dueMs !== "number" ||
-        !Array.isArray(failure.correctiveAction.scope)
+        failure.leftoverScope.length === 0 ||
+        failure.leftoverScope.some((entry) => !entry.startsWith(failPrefix))
       ) {
         throw new CommandRejectedError(
           "ERR-WS-PURGE-FAILURE",
-          "Hồ sơ thất bại purge thiếu trường bắt buộc (reason, leftoverScope, correctiveAction owner/dueMs/scope) — FR-17",
+          `Phạm vi còn sót phải không rỗng và nằm trọn prefix ${failPrefix} — FR-17`,
+        );
+      }
+      if (
+        !Array.isArray(action.scope) ||
+        action.scope.length === 0 ||
+        action.scope.some((entry) => !entry.startsWith(failPrefix))
+      ) {
+        throw new CommandRejectedError(
+          "ERR-WS-PURGE-FAILURE",
+          `Phạm vi hành động khắc phục phải không rỗng và nằm trọn prefix ${failPrefix} — FR-17`,
         );
       }
       await ctx.emit({
@@ -421,9 +509,12 @@ export async function requireActiveWorkspace(
   };
 }
 
-// Đọc credential theo scope (KC-09 chuẩn "chặn cả đọc" — NFR-4 AC-4.1/4.2):
-// truy cập chéo Release hoặc sau khi thu hồi (workspace rời ACTIVE) bị chặn
-// kèm vệt audit. Trả về ref để tầng fs đọc file fixture trong scope.
+// Cấp quyền đọc credential theo scope (NFR-4 quyền tối thiểu, chiều "chặn cả
+// đọc" của KC-09 cho ĐƯỜNG CẤP QUA SỔ): chéo Release, Release đã terminal,
+// workspace rời ACTIVE, hoặc actor không phải claimer đang giữ Release — đều
+// bị chặn kèm vệt audit. GIỚI HẠN slice (B7, finding lens 1): lệnh này chỉ
+// gác đường cấp MỚI; actor đã cầm ref từ trước vẫn đọc được file fixture cho
+// tới khi purge xóa file — thu hồi vật lý là bước purge, ghi tại hồ sơ Mục 8.
 export async function accessWorkspaceCredential(
   db: Db,
   commandId: string,
@@ -446,7 +537,33 @@ export async function accessWorkspaceCredential(
       if (workspace.state !== "ACTIVE") {
         throw new CommandRejectedError(
           "ERR-WS-CRED-REVOKED",
-          `Workspace ${workspace.id} ở ${workspace.state} — credential đã thu hồi từ khi rời ACTIVE (AC-NFR-4.2)`,
+          `Workspace ${workspace.id} ở ${workspace.state} — không cấp credential khi đã rời ACTIVE (AC-NFR-4.2)`,
+        );
+      }
+      // B7 (major review lens 1): Release kết thúc thì không cấp mới nữa —
+      // phạm vi đã đóng theo FR-17, chờ chuỗi đóng workspace chạy.
+      const release = (await ctx.tx.execute(sql`
+        SELECT state FROM dopaios_sop_runs WHERE id = ${workspace.release_id}
+      `)) as unknown as Array<{ state: string }>;
+      if (release.length === 0 || release[0].state === "COMPLETED" || release[0].state === "CANCELLED") {
+        throw new CommandRejectedError(
+          "ERR-WS-RELEASE-TERMINAL",
+          `Release ${workspace.release_id} đã kết thúc (${release[0]?.state ?? "unknown"}) — không cấp credential mới`,
+        );
+      }
+      // B7 (major review lens 1): actor không tự khai — phải là claimer của
+      // một activation ĐANG RUNNING trên work-item thuộc Release này, đọc
+      // trong cùng transaction (permission binding theo AC-FR-47.1).
+      const holding = (await ctx.tx.execute(sql`
+        SELECT a.id FROM dopaios_activations a
+        JOIN dopaios_work_items w ON w.id = a.work_item_id
+        WHERE w.run_id = ${workspace.release_id} AND a.state = 'RUNNING'
+          AND a.claimed_by = ${p["actor"]}
+      `)) as unknown as Array<{ id: string }>;
+      if (holding.length === 0) {
+        throw new CommandRejectedError(
+          "ERR-WS-CRED-ACTOR",
+          `Actor ${p["actor"]} không giữ claim RUNNING nào trên Release ${workspace.release_id} — không cấp credential (NFR-4)`,
         );
       }
       await ctx.emit({
@@ -457,4 +574,77 @@ export async function accessWorkspaceCredential(
       return { workspaceId: workspace.id, credentialRef: workspace.credential_ref as unknown as Json };
     },
   });
+}
+
+// B7 (major review lens 2 — ngõ cụt PROVISIONED): hủy cấp phát khi vật chất
+// hóa thất bại hoặc không diễn ra (crash giữa provision-commit và
+// materialize). Chỉ từ PROVISIONED — chưa có gì trên đĩa thuộc sổ nên trả
+// tài nguyên ngay; workspace sang PURGED (report ghi aborted) để Release cấp
+// lại được. Dọn đĩa mồ côi (worktree/branch dở dang) là việc của
+// materializeWorkspace idempotent ở lần cấp sau.
+export async function abortWorkspace(
+  db: Db,
+  commandId: string,
+  payload: { workspaceId: string; reason: string; actor: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const workspace = await loadWorkspace(ctx, p["workspaceId"] as string);
+      if (!workspace) {
+        throw new CommandRejectedError("ERR-WS-NOT-FOUND", `Workspace ${p["workspaceId"]} không tồn tại`);
+      }
+      if (workspace.state !== "PROVISIONED") {
+        throw new CommandRejectedError(
+          "ERR-WS-STATE",
+          `Workspace ${workspace.id} ở ${workspace.state} — abort chỉ dành cho PROVISIONED chưa vật chất hóa`,
+        );
+      }
+      await ctx.emit({
+        streamName: workspaceStream(workspace.id),
+        type: "WorkspaceAborted",
+        data: {
+          workspaceId: workspace.id,
+          report: { aborted: true, actor: p["actor"], reason: p["reason"] },
+        },
+      });
+      for (const [resourceType, value] of [
+        ["port", String(workspace.port)],
+        ["path", workspace.rel_path],
+        ["credential", workspace.credential_ref.id],
+      ] as const) {
+        await ctx.emit({
+          streamName: workspaceStream(workspace.id),
+          type: "WorkspaceResourceReleased",
+          data: { workspaceId: workspace.id, resourceType, value },
+        });
+      }
+      return { workspaceId: workspace.id, state: "PURGED", aborted: true };
+    },
+  });
+}
+
+// B7 (major review lens 1 — nối vòng đời Release ↔ workspace): rule dạng tick
+// theo nếp runner KC-13 — run terminal mà workspace còn ACTIVE thì tự bắt đầu
+// chuỗi đóng ADR-012, command id tất định theo workspace nên tick lặp là
+// idempotent. Chiều ngược (chặn đóng Release khi workspace PURGE_BLOCKED)
+// đụng lệnh completeSopRun của nền đã Đạt — ghi giới hạn tại hồ sơ, thuộc FS.
+export async function closeWorkspacesForTerminalReleases(db: Db): Promise<Array<Record<string, unknown>>> {
+  const stale = (await db.execute(sql`
+    SELECT ws.id FROM dopaios_workspaces ws
+    JOIN dopaios_sop_runs r ON r.id = ws.release_id
+    WHERE ws.state = 'ACTIVE' AND r.state IN ('COMPLETED', 'CANCELLED')
+    ORDER BY ws.id
+  `)) as unknown as Array<{ id: string }>;
+  const results: Array<Record<string, unknown>> = [];
+  for (const ws of stale) {
+    results.push(
+      await beginWorkspaceClose(db, `AUTO-WSCLOSE-${ws.id}`, {
+        workspaceId: ws.id,
+        reason: "release-terminal",
+      }),
+    );
+  }
+  return results;
 }

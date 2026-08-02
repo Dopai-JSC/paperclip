@@ -86,6 +86,9 @@ describeEmbeddedPostgres("dopaios KC-05 B3 — hai Release song song trên workt
   let repoPath!: string;
   let baseSha!: string;
   const materialized: Record<string, MaterializedWorkspace> = {};
+  // B7: credential được cấp TRONG lúc actor giữ claim RUNNING (guard
+  // ERR-WS-CRED-ACTOR) — lưu ref lại cho các ca kiểm sau khi claim đã DONE.
+  const grantedRefs: Record<string, { id: string; sha256: string }> = {};
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("dopaios-kc05-b3-");
@@ -175,11 +178,22 @@ describeEmbeddedPostgres("dopaios KC-05 B3 — hai Release song song trên workt
           claimedBy: `AI-STAFF-${releaseId}`,
           lease: { untilMs: Date.now() + 60_000 },
         });
+        // Cấp credential khi đang giữ claim — đường hợp lệ duy nhất (B7).
+        const granted = await accessWorkspaceCredential(db, `KC05-B3-CRED-${releaseId}`, {
+          workspaceId: `WS-${releaseId}`,
+          forReleaseId: releaseId,
+          actor: `AI-STAFF-${releaseId}`,
+        });
+        grantedRefs[releaseId] = granted["credentialRef"] as { id: string; sha256: string };
         const ws = materialized[releaseId];
         const outcome = await runWorkItemSession(db, {
           sessionId: `SES-${releaseId}`,
           agentId: `AI-STAFF-${releaseId}`,
-          adapter: workspaceBoundEngine(new FakeEngine(), { wsAbs: ws.wsAbs, cacheAbs: ws.cacheAbs }),
+          adapter: workspaceBoundEngine(
+            new FakeEngine(),
+            { wsAbs: ws.wsAbs, cacheAbs: ws.cacheAbs },
+            { db, workspaceId: `WS-${releaseId}` },
+          ),
           contract: {
             workItemId: `WI-${releaseId}`,
             contractRevision: 1,
@@ -248,30 +262,32 @@ describeEmbeddedPostgres("dopaios KC-05 B3 — hai Release song song trên workt
     }
   });
 
-  it("credential mỗi bên đọc đúng của mình qua sổ + file; nội dung bị tráo là bị phát hiện", async () => {
+  it("credential mỗi bên đọc đúng của mình qua sổ + file; claim đã DONE thì không cấp mới; nội dung bị tráo là bị phát hiện", async () => {
     for (const releaseId of RELEASES) {
       const ws = materialized[releaseId];
-      const granted = await accessWorkspaceCredential(db, `KC05-B3-CRED-${releaseId}`, {
-        workspaceId: `WS-${releaseId}`,
-        forReleaseId: releaseId,
-        actor: `AI-STAFF-${releaseId}`,
-      });
-      const ref = granted["credentialRef"] as { id: string; sha256: string };
-      const body = await readCredentialFile(ws.credentialAbs, ref);
+      const body = await readCredentialFile(ws.credentialAbs, grantedRefs[releaseId]);
       expect(body["fixtureCredential"]).toBe(releaseId);
     }
+
+    // B7: activation đã DONE — actor không còn giữ claim RUNNING nên đường
+    // cấp MỚI bị chặn (ERR-WS-CRED-ACTOR), dù workspace vẫn ACTIVE.
+    let code = "NO-REJECTION";
+    try {
+      await accessWorkspaceCredential(db, "KC05-B3-CRED-AFTER-DONE", {
+        workspaceId: "WS-RUN-REL-P2",
+        forReleaseId: "RUN-REL-P2",
+        actor: "AI-STAFF-RUN-REL-P2",
+      });
+    } catch (error) {
+      if (error instanceof CommandRejectedError) code = error.code;
+      else throw error;
+    }
+    expect(code).toBe("ERR-WS-CRED-ACTOR");
 
     const p2 = materialized["RUN-REL-P2"];
     const original = await readFile(p2.credentialAbs, "utf8");
     await writeFile(p2.credentialAbs, `{"fixtureCredential":"RUN-REL-P1-GIẢ"}`, "utf8");
-    const grantedAgain = await accessWorkspaceCredential(db, `KC05-B3-CRED-TAMPER`, {
-      workspaceId: "WS-RUN-REL-P2",
-      forReleaseId: "RUN-REL-P2",
-      actor: "AI-STAFF-RUN-REL-P2",
-    });
-    await expect(
-      readCredentialFile(p2.credentialAbs, grantedAgain["credentialRef"] as { id: string; sha256: string }),
-    ).rejects.toThrow(/bị tráo/);
+    await expect(readCredentialFile(p2.credentialAbs, grantedRefs["RUN-REL-P2"])).rejects.toThrow(/bị tráo/);
     await writeFile(p2.credentialAbs, original, "utf8");
   });
 

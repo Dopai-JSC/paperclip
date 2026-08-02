@@ -40,6 +40,27 @@ function sessionStream(sessionId: string): string {
   return `dopaiosAiSession-${sessionId}`;
 }
 
+// KC-05 B7 (blocker vòng review đối kháng — lens tương tranh): một work-item
+// chỉ có MỘT phiên RUNNING tại một thời điểm. Trước đây cấm "hai tác nhân
+// cùng ghi" chỉ đứng ở tầng activation (epoch fence lúc HOÀN TẤT); requeue
+// chạy trước watchdog thì claimer mới mở được phiên thứ hai song song với
+// phiên treo của claimer cũ và cả hai cùng ghi checkpoint hợp lệ. Guard này
+// đóng lỗ ở tầng phiên: phiên cũ phải rời RUNNING (watchdog interrupt hoặc
+// terminal) trước khi phiên mới của cùng work-item được mở — đọc projection
+// trong cùng transaction SERIALIZABLE nên hai lệnh start đua nhau cũng chỉ
+// một bên thắng (PRD Mục 3, AC-FR-12.2 tinh thần "một kết quả thắng").
+async function requireNoRunningSession(ctx: CommandContext, workItemId: string): Promise<void> {
+  const running = (await ctx.tx.execute(sql`
+    SELECT id FROM dopaios_ai_sessions WHERE work_item_id = ${workItemId} AND state = 'RUNNING'
+  `)) as unknown as Array<{ id: string }>;
+  if (running.length > 0) {
+    throw new CommandRejectedError(
+      "ERR-SESSION-CONFLICT",
+      `Work item ${workItemId} đang có phiên RUNNING ${running[0].id} — interrupt/kết thúc phiên đó trước`,
+    );
+  }
+}
+
 export async function startAiSession(
   db: Db,
   commandId: string,
@@ -55,6 +76,7 @@ export async function startAiSession(
       if (workItem.length === 0) {
         throw new CommandRejectedError("ERR-WORKITEM", `Work item ${p["workItemId"]} not found`);
       }
+      await requireNoRunningSession(ctx, p["workItemId"] as string);
       await ctx.emit({
         streamName: sessionStream(p["sessionId"] as string),
         type: "AiSessionStarted",
@@ -238,6 +260,9 @@ export async function createSuccessorSession(
       if (p["relation"] === "reassign" && p["agentId"] === predecessor.agent_id) {
         throw new CommandRejectedError("ERR-REASSIGN-SAME-AGENT", "Reassign must change the agent");
       }
+      // KC-05 B7: kế nhiệm cũng không được mở khi work-item còn phiên RUNNING
+      // khác (cùng bất biến một-work-item-một-phiên-RUNNING).
+      await requireNoRunningSession(ctx, predecessor.work_item_id);
       await ctx.emit({
         streamName: sessionStream(p["sessionId"] as string),
         type: "AiSessionStarted",

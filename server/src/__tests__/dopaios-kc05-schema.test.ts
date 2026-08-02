@@ -174,7 +174,10 @@ describeEmbeddedPostgres("dopaios KC-05 B1 — schema 0517 + vòng đời worksp
       report: {
         actor: "dopaios-runner",
         purgedScope: ["releases/RUN-REL-A/ws", "releases/RUN-REL-A/cache"],
-        checksums: { "releases/RUN-REL-A/ws": "b".repeat(64) },
+        checksums: {
+          "releases/RUN-REL-A/ws": "b".repeat(64),
+          "releases/RUN-REL-A/cache": "c".repeat(64),
+        },
         residue: [],
       },
     });

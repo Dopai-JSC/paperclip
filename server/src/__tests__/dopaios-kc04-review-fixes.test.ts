@@ -26,7 +26,7 @@ import {
   recordApprovalDecision,
 } from "../dopaios/approval.ts";
 import { createArtifactRevision } from "../dopaios/lifecycle.ts";
-import { startAiSession, recordSessionArtifact } from "../dopaios/sessions.ts";
+import { startAiSession, recordSessionArtifact, completeSession } from "../dopaios/sessions.ts";
 import {
   traceCriticalOutput,
   outputsPinningSourceRevision,
@@ -324,6 +324,16 @@ describeEmbeddedPostgres("dopaios KC-04 B6 — xử finding review đối kháng
         sha256: SHA_DUP,
         confirmed,
       });
+      // KC-05 B7: guard mới một-work-item-một-phiên-RUNNING (ERR-SESSION-
+      // CONFLICT) — kết thúc phiên REAL trước khi mở phiên chưa-confirmed
+      // trên cùng work-item; provenance chỉ đọc bản ghi confirmed nên hành
+      // vi được kiểm của KC-04 không đổi.
+      if (sessionId === "SES-B6-REAL") {
+        await completeSession(db, cmd("ses-real-done"), {
+          sessionId: "SES-B6-REAL",
+          outcome: "succeeded",
+        });
+      }
     }
     await submitOutput({
       workItemId: "WI-B6-REAL",

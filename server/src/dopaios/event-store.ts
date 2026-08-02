@@ -272,8 +272,24 @@ export async function executeCommand(
       // trong đua song song cũng retry — lần chạy lại đọc snapshot mới và
       // guard tương ứng trả rejection sạch (an toàn vì idempotency theo
       // command_id và handler thuần đọc-tx + emit).
-      if ((code === "40001" || code === "40P01" || code === "23505") && attempt < SERIALIZATION_RETRIES) {
-        continue;
+      if (code === "40001" || code === "40P01" || code === "23505") {
+        if (attempt < SERIALIZATION_RETRIES) {
+          // KC-05 B7 (finding hậu regression): retry tức thời làm hai chuỗi
+          // lệnh song song nhịp nhau thua lặp (livelock) tới cạn lượt —
+          // backoff ngắn tăng dần kèm jitter phá nhịp; idempotency theo
+          // command_id giữ an toàn cho mọi lần chạy lại.
+          await new Promise((resolveRetry) =>
+            setTimeout(resolveRetry, attempt * 15 + Math.floor(Math.random() * 20)),
+          );
+          continue;
+        }
+        // KC-05 B7 (minor review lens 2): cạn retry thì trả rejection có mã
+        // thay vì lỗi PG thô — caller qua executeAuditedCommand để lại vệt
+        // audit như mọi đường chặn khác (SQR-001).
+        throw new CommandRejectedError(
+          "ERR-CONTENTION",
+          `Command ${input.commandId} thua tranh chấp serialize ${SERIALIZATION_RETRIES} lần liên tiếp (mã PG ${code})`,
+        );
       }
       throw error;
     }
@@ -877,25 +893,25 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
     // Tài nguyên theo (loại, giá trị): tái cấp sau khi release là UPDATE cùng
     // hàng — bất biến "một giá trị chỉ một chủ sống" do guard tầng lệnh đọc
     // projection trong cùng transaction SERIALIZABLE giữ; lịch sử ở event log.
-    case "WorkspaceResourceReserved":
-      await tx
-        .insert(dopaiosWorkspaceResources)
-        .values({
-          resourceType: d["resourceType"],
-          value: d["value"],
-          workspaceId: d["workspaceId"],
-          releaseId: d["releaseId"],
-          state: "reserved",
-        })
-        .onConflictDoUpdate({
-          target: [dopaiosWorkspaceResources.resourceType, dopaiosWorkspaceResources.value],
-          set: {
-            workspaceId: d["workspaceId"] as string,
-            releaseId: d["releaseId"] as string,
-            state: "reserved",
-          },
-        });
+    // KC-05 B7 (minor review lens 2): upsert CÓ ĐIỀU KIỆN — chỉ đè hàng đã
+    // 'released'; event Reserved đè chủ đang 'reserved' (log bị bơm ngoài
+    // đường lệnh) làm projector NỔ để lộ lệch, cả sống lẫn replay.
+    case "WorkspaceResourceReserved": {
+      const upserted = (await tx.execute(sql`
+        INSERT INTO dopaios_workspace_resources (resource_type, value, workspace_id, release_id, state)
+        VALUES (${d["resourceType"]}, ${d["value"]}, ${d["workspaceId"]}, ${d["releaseId"]}, 'reserved')
+        ON CONFLICT (resource_type, value) DO UPDATE
+          SET workspace_id = EXCLUDED.workspace_id, release_id = EXCLUDED.release_id, state = 'reserved'
+          WHERE dopaios_workspace_resources.state = 'released'
+        RETURNING value
+      `)) as unknown as unknown[];
+      if (upserted.length === 0) {
+        throw new Error(
+          `WorkspaceResourceReserved đè chủ đang 'reserved' của ${d["resourceType"]}=${d["value"]} — event log lệch bất biến`,
+        );
+      }
       break;
+    }
     case "WorkspaceActivated":
       await tx
         .update(dopaiosWorkspaces)
@@ -909,6 +925,24 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
       break;
     case "WorkspacePurged":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ state: "PURGED", purgeReport: d["report"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      // KC-05 B7: purge thành công sau PURGE_BLOCKED đóng hành động khắc phục
+      // của hồ sơ thất bại (FR-17 — trạng thái của corrective action).
+      if (d["resolvesCorrectiveAction"]) {
+        await tx.execute(sql`
+          UPDATE dopaios_workspaces
+          SET purge_failure = coalesce(purge_failure, '{}'::jsonb) || '{"correctiveActionState":"closed"}'::jsonb
+          WHERE id = ${d["workspaceId"]}
+        `);
+      }
+      break;
+    // KC-05 B7 (major review lens 2 — ngõ cụt PROVISIONED): hủy cấp phát khi
+    // vật chất hóa thất bại/không diễn ra; dùng chung nhãn PURGED (không có
+    // gì trên đĩa để purge) với purge_report ghi aborted.
+    case "WorkspaceAborted":
       await tx
         .update(dopaiosWorkspaces)
         .set({ state: "PURGED", purgeReport: d["report"] })

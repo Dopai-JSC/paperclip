@@ -1,11 +1,12 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile, readFile, readdir, rm } from "node:fs/promises";
+import { mkdir, writeFile, readFile, readdir, readlink, realpath, rm } from "node:fs/promises";
 import { existsSync } from "node:fs";
 import { createServer, type Server } from "node:net";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { join, dirname, relative } from "node:path";
-import { canonicalJsonString, payloadSha256 } from "./event-store.js";
+import { join, dirname, relative, sep } from "node:path";
+import { sql } from "drizzle-orm";
+import { canonicalJsonString, payloadSha256, type Db, CommandRejectedError } from "./event-store.js";
 import {
   releaseScopePrefix,
   resolveScopedPath,
@@ -84,6 +85,17 @@ export async function materializeWorkspace(input: {
   const wsAbs = resolveScopedPath(input.rootAbs, input.relPath);
   const cacheAbs = resolveScopedPath(input.rootAbs, input.cacheRelPath);
   await mkdir(dirname(wsAbs), { recursive: true });
+  // B7 (major review lens 2 — ngõ cụt hai pha DB–đĩa): materialize idempotent.
+  // Lần vật chất hóa trước chết giữa chừng để lại thư mục worktree dở, entry
+  // sổ worktree hoặc branch ws/<releaseId> mồ côi — dọn trước khi add để
+  // retry (sau abortWorkspace + provision mới) không nổ vì rác của lần trước.
+  await rm(wsAbs, { recursive: true, force: true });
+  await run("git", ["-C", input.repoPath, "worktree", "prune"]);
+  try {
+    await run("git", ["-C", input.repoPath, "branch", "-q", "-D", `ws/${input.releaseId}`]);
+  } catch {
+    // Branch chưa tồn tại — lần vật chất hóa đầu.
+  }
   await run("git", [
     "-C",
     input.repoPath,
@@ -125,17 +137,34 @@ export function sha256Hex(content: string | Buffer): string {
   return createHash("sha256").update(content).digest("hex");
 }
 
-// Ghi trong scope: mọi đường tương đối đi qua resolveScopedPath — thoát scope
-// là ERR-WS-PATH-ESCAPE ngay tại tầng fs, không phụ thuộc caller tự giác.
+// B7 (major review cả hai lens — symlink): resolveScopedPath chỉ chuẩn hóa
+// TỪ VỰNG; nội dung repo nền chứa symlink thì đường "trong scope" theo chữ
+// vẫn ghi ra ngoài theo thật. Sau khi phân giải từ vựng, đối chiếu realpath
+// của thư mục cha với realpath của gốc — cha nằm ngoài gốc thật là chặn.
+async function requireRealParentInScope(baseAbs: string, target: string): Promise<void> {
+  const baseReal = await realpath(baseAbs);
+  const parentReal = await realpath(dirname(target));
+  if (parentReal !== baseReal && !parentReal.startsWith(baseReal + sep)) {
+    throw new CommandRejectedError(
+      "ERR-WS-PATH-ESCAPE",
+      `Đường dẫn ${target} có cha thật ${parentReal} nằm ngoài scope ${baseReal} (symlink) — chặn`,
+    );
+  }
+}
+
+// Ghi trong scope: mọi đường tương đối đi qua resolveScopedPath (từ vựng) +
+// kiểm realpath cha (symlink) ngay tại tầng fs.
 export async function writeScoped(baseAbs: string, relPath: string, content: string): Promise<string> {
   const target = resolveScopedPath(baseAbs, relPath);
   await mkdir(dirname(target), { recursive: true });
+  await requireRealParentInScope(baseAbs, target);
   await writeFile(target, content, "utf8");
   return sha256Hex(content);
 }
 
 export async function readScoped(baseAbs: string, relPath: string): Promise<string> {
   const target = resolveScopedPath(baseAbs, relPath);
+  await requireRealParentInScope(baseAbs, target);
   return readFile(target, "utf8");
 }
 
@@ -153,19 +182,38 @@ export async function readCredentialFile(
   return JSON.parse(body) as Record<string, unknown>;
 }
 
-// Cây hash của một thư mục (đệ quy, bỏ .git): bằng chứng cô lập và purge —
-// so sánh trước/sau theo từng byte nội dung.
-export async function hashTree(dirAbs: string): Promise<Record<string, string>> {
+// Cây hash của một thư mục: bằng chứng cô lập và purge — so sánh trước/sau
+// theo từng byte nội dung. B7 (major review cả hai lens): symlink được liệt
+// kê theo TARGET của nó (không đi theo), nên inventory residue/checksum
+// không mù symlink; includeGit=true để đường purge thấy cả metadata `.git`
+// (file gitdir-pointer của worktree) — so sánh nội dung workspace thường thì
+// bỏ `.git` như cũ. File biến mất giữa walk (đua với writer/purge khác) coi
+// như đã mất, không nổ lỗi thô.
+export async function hashTree(
+  dirAbs: string,
+  options?: { includeGit?: boolean },
+): Promise<Record<string, string>> {
   const out: Record<string, string> = {};
   async function walk(current: string): Promise<void> {
-    const entries = await readdir(current, { withFileTypes: true });
+    let entries;
+    try {
+      entries = await readdir(current, { withFileTypes: true });
+    } catch {
+      return;
+    }
     for (const entry of entries) {
-      if (entry.name === ".git") continue;
+      if (entry.name === ".git" && !options?.includeGit) continue;
       const abs = join(current, entry.name);
-      if (entry.isDirectory()) {
-        await walk(abs);
-      } else if (entry.isFile()) {
-        out[relative(dirAbs, abs)] = sha256Hex(await readFile(abs));
+      try {
+        if (entry.isSymbolicLink()) {
+          out[relative(dirAbs, abs)] = `symlink:${sha256Hex(await readlink(abs))}`;
+        } else if (entry.isDirectory()) {
+          await walk(abs);
+        } else if (entry.isFile()) {
+          out[relative(dirAbs, abs)] = sha256Hex(await readFile(abs));
+        }
+      } catch {
+        // Biến mất giữa chừng — bỏ qua như "đã mất".
       }
     }
   }
@@ -175,8 +223,8 @@ export async function hashTree(dirAbs: string): Promise<Record<string, string>> 
   return out;
 }
 
-export async function listTree(dirAbs: string): Promise<string[]> {
-  return Object.keys(await hashTree(dirAbs)).sort();
+export async function listTree(dirAbs: string, options?: { includeGit?: boolean }): Promise<string[]> {
+  return Object.keys(await hashTree(dirAbs, options)).sort();
 }
 
 export type PurgeFsAdapter = {
@@ -188,20 +236,37 @@ export const realPurgeFs: PurgeFsAdapter = {
 };
 
 // Thực thi purge trên đĩa cho MỘT Release (B5): tính checksum + inventory
-// trước khi xóa, xóa đúng thư mục scope, prune sổ worktree của repo nền,
-// post-check residue. KHÔNG tự ghi sổ — caller đưa report vào lệnh
-// recordWorkspacePurge để guard phạm vi/residue quyết định purged hay failed.
+// trước khi xóa (KỂ CẢ `.git` và symlink — B7), xóa đúng thư mục scope, xóa
+// branch ws/<releaseId> của repo nền, prune sổ worktree, post-check residue
+// gồm cả entry worktree/branch còn sót và port còn bận. KHÔNG tự ghi sổ —
+// caller đưa report vào lệnh recordWorkspacePurge để guard quyết định.
+// B7 (major review lens 2 — fail-closed tại tầng đĩa): hàm đọc sổ và TỪ CHỐI
+// khi workspace của Release không ở CLOSING/PURGE_BLOCKED — gọi nhầm
+// releaseId đang ACTIVE không còn hủy diệt được đĩa trước rồi mới bị sổ chặn.
 export async function purgeReleaseScopeOnDisk(input: {
+  db: Db;
   rootAbs: string;
   repoPath: string;
   releaseId: string;
   actor: string;
+  port?: number;
   fs?: PurgeFsAdapter;
 }): Promise<{ report: WorkspacePurgeReport; error?: string }> {
+  const workspaceRows = (await input.db.execute(sql`
+    SELECT id, state, port FROM dopaios_workspaces
+    WHERE release_id = ${input.releaseId} AND state <> 'PURGED'
+  `)) as unknown as Array<{ id: string; state: string; port: number }>;
+  if (workspaceRows.length === 0 || (workspaceRows[0].state !== "CLOSING" && workspaceRows[0].state !== "PURGE_BLOCKED")) {
+    throw new CommandRejectedError(
+      "ERR-WS-STATE",
+      `Release ${input.releaseId} không có workspace ở CLOSING/PURGE_BLOCKED — không đụng đĩa (fail-closed)`,
+    );
+  }
+  const port = input.port ?? Number(workspaceRows[0].port);
   const fs = input.fs ?? realPurgeFs;
   const prefix = releaseScopePrefix(input.releaseId);
   const scopeAbs = resolveScopedPath(input.rootAbs, prefix.slice(0, -1));
-  const before = await hashTree(scopeAbs);
+  const before = await hashTree(scopeAbs, { includeGit: true });
   const checksums: Record<string, string> = {};
   for (const [rel, sha] of Object.entries(before)) {
     checksums[`${prefix}${rel}`] = sha;
@@ -212,12 +277,34 @@ export async function purgeReleaseScopeOnDisk(input: {
   } catch (cause) {
     error = cause instanceof Error ? cause.message : String(cause);
   }
-  // Sổ worktree của repo nền không được giữ entry trỏ vào scope đã xóa.
+  // Repo nền dùng chung không được giữ residue mang tên Release: entry
+  // worktree và branch ws/<releaseId> (B7 — thiếu branch làm tái vật chất
+  // hóa sau purge nổ "branch already exists").
   await run("git", ["-C", input.repoPath, "worktree", "prune"]);
+  try {
+    await run("git", ["-C", input.repoPath, "branch", "-q", "-D", `ws/${input.releaseId}`]);
+  } catch {
+    // Branch không tồn tại — đã sạch.
+  }
   const worktrees = await git(input.repoPath, "worktree", "list", "--porcelain");
-  const residue = (await listTree(scopeAbs)).map((rel) => `${prefix}${rel}`);
+  const branches = await git(input.repoPath, "branch", "--list", `ws/${input.releaseId}`);
+  const residue = (await listTree(scopeAbs, { includeGit: true })).map((rel) => `${prefix}${rel}`);
   if (worktrees.includes(scopeAbs)) {
     residue.push(`${prefix}#worktree-entry`);
+  }
+  if (branches.trim().length > 0) {
+    residue.push(`${prefix}#branch-ws`);
+  }
+  // B7 (major review lens 2 — vòng đời port): bằng chứng "port đã nhả" bằng
+  // probe bind thật; còn bận thì residue giữ purge ở nhánh failed thay vì
+  // released một port mà OS còn phục vụ.
+  if (Number.isFinite(port)) {
+    try {
+      const probe = await bindPort(port);
+      await new Promise<void>((resolvePromise) => probe.close(() => resolvePromise()));
+    } catch {
+      residue.push(`${prefix}#port-still-bound`);
+    }
   }
   return {
     report: {
@@ -233,9 +320,16 @@ export async function purgeReleaseScopeOnDisk(input: {
 // Adapter engine gắn workspace: mỗi checkpoint của phiên được ghi thành
 // artifact tạm TRONG scope workspace + một entry cache — dữ liệu tạm thật
 // trên đĩa cho bằng chứng cô lập (B3) và purge (B5).
+// B7 (blocker vòng review đối kháng): fence trạng thái TRƯỚC MỖI lần ghi —
+// workspace rời ACTIVE (CLOSING/PURGE_BLOCKED/PURGED) thì checkpoint kế tiếp
+// bị chặn ở tầng fs, writer sống sót không tái tạo được cây scope sau purge.
+// Còn cửa sổ TOCTOU giữa lần đọc trạng thái và writeFile của TIẾN TRÌNH
+// zombie — ghi giới hạn tại hồ sơ; tầng sổ đã kín nhờ guard
+// ERR-WS-SESSIONS-OPEN của recordWorkspacePurge.
 export function workspaceBoundEngine(
   inner: import("./engine.js").EngineAdapter,
   ws: { wsAbs: string; cacheAbs: string },
+  fence?: { db: Db; workspaceId: string },
 ): import("./engine.js").EngineAdapter {
   return {
     name: `${inner.name}+workspace`,
@@ -243,6 +337,17 @@ export function workspaceBoundEngine(
       return inner.execute({
         ...input,
         onCheckpoint: async (payload) => {
+          if (fence) {
+            const rows = (await fence.db.execute(sql`
+              SELECT state FROM dopaios_workspaces WHERE id = ${fence.workspaceId}
+            `)) as unknown as Array<{ state: string }>;
+            if (rows[0]?.state !== "ACTIVE") {
+              throw new CommandRejectedError(
+                "ERR-WS-FENCED",
+                `Workspace ${fence.workspaceId} ở ${rows[0]?.state ?? "unknown"} — checkpoint bị fence, không ghi đĩa`,
+              );
+            }
+          }
           const body = canonicalJsonString({
             sessionId: input.sessionId,
             step: payload.step,
