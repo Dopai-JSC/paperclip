@@ -306,6 +306,77 @@ export async function appendCutoverRecord(
 }
 
 // ---------------------------------------------------------------------------
+// complete-cutover: revision kế tiếp state `completed` khi runtime đã xong.
+// KHÔNG chạm bootstrap workflow — chỉ Cutover Record `effective` hợp lệ mới
+// kết thúc bootstrap (PRD d.318, ca C08): lệnh này không bao giờ phát
+// BootstrapWorkflowDisabled; refs kế thừa nguyên từ revision trước.
+
+export async function completeCutover(
+  db: Db,
+  commandId: string,
+  payload: { recordId: string; executionActor: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      requireFields(p, ["recordId", "executionActor"]);
+      await requireActor(ctx, p["executionActor"] as string, "system", "Execution actor");
+      const latest = await oneOf<{
+        revision: number;
+        feature_id: string;
+        state: string;
+        effective_at: string | null;
+        authority_actor: string;
+        approval_record_ref: Json;
+        first_runtime_work_item_ref: string;
+        runtime_activation_snapshot_ref: Json;
+      }>(
+        ctx,
+        sql`SELECT revision, feature_id, state, effective_at, authority_actor,
+                   approval_record_ref, first_runtime_work_item_ref, runtime_activation_snapshot_ref
+            FROM dopaios_cutover_records WHERE id = ${p["recordId"]}
+            ORDER BY revision DESC LIMIT 1`,
+      );
+      if (!latest) {
+        throw new CommandRejectedError("ERR-TARGET", `Cutover Record ${p["recordId"]} không tồn tại`);
+      }
+      if (latest.state !== "effective") {
+        throw new CommandRejectedError(
+          "ERR-STATE",
+          `Cutover Record ${p["recordId"]} đang '${latest.state}' — chỉ hoàn tất từ 'effective'`,
+        );
+      }
+      const snapshotRef = latest.runtime_activation_snapshot_ref as {
+        snapshotId: string;
+        revision: number;
+        sha256: string;
+      };
+      const record = await appendCutoverRecord(ctx, {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        featureId: latest.feature_id,
+        state: "completed",
+        effectiveAt:
+          latest.effective_at === null ? null : new Date(latest.effective_at).toISOString(),
+        authorityActor: latest.authority_actor,
+        executionActor: p["executionActor"] as string,
+        approvalRecordRef: latest.approval_record_ref,
+        firstRuntimeWorkItemRef: latest.first_runtime_work_item_ref,
+        runtimeActivationSnapshotRef: snapshotRef,
+        reconciliationRef: null,
+      });
+      return {
+        recordId: p["recordId"] as string,
+        revision: latest.revision + 1,
+        state: "completed",
+        sha256: record.sha256,
+      };
+    },
+  });
+}
+
+// ---------------------------------------------------------------------------
 // execute-cutover: guard + thực thi đúng-một-lần (C01–C08)
 
 export type ExecuteCutoverPayload = {
