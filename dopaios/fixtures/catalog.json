@@ -9,7 +9,8 @@
     { "artifact_id": "FS-003", "revision": 7, "git_blob_sha1": "18b7dd35cd2e236277b8350edde1d24386cfe635", "approved": "2026-07-30" },
     { "artifact_id": "PRD-DOPAIOS-001", "revision": 1, "git_blob_sha1": "f9de9554c63dfc7ee8b280acf8863e52203f27c4", "approved": "2026-07-28" },
     { "artifact_id": "SOP Phát triển phần mềm (sop.md, thuộc ART-SDD-PACKAGE-001 revision 1, manifest 6c913c6e57e564d138172de9dc00642665d05619)", "revision": 1, "git_blob_sha1": "686573398213f77686f4764977cdd60b32ae2fc7", "approved": "2026-07-28" },
-    { "artifact_id": "ARCH-VERIFICATION-PLAN-DOPAIOS-001", "revision": 4, "git_blob_sha1": "16d44166590ee5cec46b60ea01d52f5626c5a44c", "approved": "2026-07-30 (Approval Record record-revision 2)" }
+    { "artifact_id": "ARCH-VERIFICATION-PLAN-DOPAIOS-001", "revision": 4, "git_blob_sha1": "16d44166590ee5cec46b60ea01d52f5626c5a44c", "approved": "2026-07-30 (Approval Record record-revision 2)" },
+    { "artifact_id": "PRD-DOPAIOS-001", "revision": 3, "git_blob_sha1": "555954d286d2c2b6619a23a3e8ad623d82946a3a", "approved": "2026-08-01 (PR #24, squash f46cd4b; bổ sung vào danh mục 02/08 theo QD-1 kế hoạch KC-17 — FS-005 tách thành FS-005+FS-006)" }
   ],
   "groups": [
     { "id": "FX-01", "file": "fx-01-none-preparing.json", "title": "Transition NONE → PREPARING và bất biến PREPARING (FS-001)", "serves": ["KC-01", "KC-13"] },

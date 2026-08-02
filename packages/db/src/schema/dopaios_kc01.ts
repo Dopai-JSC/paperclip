@@ -461,3 +461,89 @@ export const dopaiosWorkspaceResources = pgTable(
   },
   (table) => ({ pk: primaryKey({ columns: [table.resourceType, table.value] }) }),
 );
+
+// KC-17 (0518): cutover bootstrap→runtime theo PRD Mục 6.1 — bốn hồ sơ là
+// projection từ event; Cutover Plan nằm trong sổ cái artifact (dopaios_artifacts),
+// không có bảng riêng. Bootstrap workflow là biểu diễn giả lập của fixture
+// FX-05 (QD-3): ACTIVE | DISABLED; chỉ Cutover Record `effective` hợp lệ mới
+// được phép chuyển nó sang DISABLED.
+export const dopaiosBootstrapWorkflows = pgTable("dopaios_bootstrap_workflows", {
+  id: text("id").primaryKey(),
+  featureId: text("feature_id").notNull(),
+  state: text("state").notNull(),
+  disabledByRef: jsonb("disabled_by_ref").$type<Record<string, unknown>>(),
+});
+
+export const dopaiosRuntimeActivationSnapshots = pgTable(
+  "dopaios_runtime_activation_snapshots",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    sha256: text("sha256").notNull(),
+    featureId: text("feature_id").notNull(),
+    planRef: jsonb("plan_ref").$type<Record<string, unknown>>().notNull(),
+    approvalRef: jsonb("approval_ref").$type<Record<string, unknown>>().notNull(),
+    authorityActor: text("authority_actor").notNull(),
+    systemActor: text("system_actor").notNull(),
+    activationKey: text("activation_key").notNull(),
+    bootstrapWorkflowRef: text("bootstrap_workflow_ref").notNull(),
+    bootstrapDisabled: boolean("bootstrap_disabled").notNull(),
+    sourceStateResults: jsonb("source_state_results").$type<Record<string, unknown>[]>().notNull(),
+    runtimeWorkflowRef: text("runtime_workflow_ref").notNull(),
+    firstWorkItemRef: text("first_work_item_ref").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+export const dopaiosCutoverRecords = pgTable(
+  "dopaios_cutover_records",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    sha256: text("sha256").notNull(),
+    featureId: text("feature_id").notNull(),
+    state: text("state").notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }),
+    authorityActor: text("authority_actor").notNull(),
+    executionActor: text("execution_actor").notNull(),
+    approvalRecordRef: jsonb("approval_record_ref").$type<Record<string, unknown>>().notNull(),
+    firstRuntimeWorkItemRef: text("first_runtime_work_item_ref").notNull(),
+    runtimeActivationSnapshotRef: jsonb("runtime_activation_snapshot_ref")
+      .$type<Record<string, unknown>>()
+      .notNull(),
+    reconciliationRef: jsonb("reconciliation_ref").$type<Record<string, unknown>>(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
+
+// KC-17 (0519): cờ readiness tiền điều kiện DS-1 giả lập (QD-1) — bốn cờ
+// theo PRD revision 3 d.402; thiếu hàng là chưa đạt (fail-closed).
+export const dopaiosCutoverReadiness = pgTable(
+  "dopaios_cutover_readiness",
+  {
+    featureId: text("feature_id").notNull(),
+    flag: text("flag").notNull(),
+    ready: boolean("ready").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.featureId, table.flag] }) }),
+);
+
+export const dopaiosCutoverReconciliations = pgTable(
+  "dopaios_cutover_reconciliations",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    sha256: text("sha256").notNull(),
+    featureId: text("feature_id").notNull(),
+    rolledBackRecordRef: jsonb("rolled_back_record_ref").$type<Record<string, unknown>>().notNull(),
+    mappingArtifactRef: jsonb("mapping_artifact_ref").$type<Record<string, unknown>>().notNull(),
+    mappings: jsonb("mappings").$type<Record<string, unknown>[]>().notNull(),
+    residuals: jsonb("residuals").$type<Record<string, unknown>[]>().notNull(),
+    // 0520 (B6): executor ghi vào nguồn để guard reviewer≠executor đối chiếu;
+    // nullable vì event trước B6 không mang trường này.
+    executionActor: text("execution_actor"),
+    reviewEvidenceRef: jsonb("review_evidence_ref").$type<Record<string, unknown>>(),
+    closure: jsonb("closure").$type<Record<string, unknown>>(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+);
