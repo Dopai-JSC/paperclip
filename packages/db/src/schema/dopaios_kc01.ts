@@ -516,6 +516,18 @@ export const dopaiosCutoverRecords = pgTable(
   (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
 );
 
+// KC-17 (0519): cờ readiness tiền điều kiện DS-1 giả lập (QD-1) — bốn cờ
+// theo PRD revision 3 d.402; thiếu hàng là chưa đạt (fail-closed).
+export const dopaiosCutoverReadiness = pgTable(
+  "dopaios_cutover_readiness",
+  {
+    featureId: text("feature_id").notNull(),
+    flag: text("flag").notNull(),
+    ready: boolean("ready").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.featureId, table.flag] }) }),
+);
+
 export const dopaiosCutoverReconciliations = pgTable(
   "dopaios_cutover_reconciliations",
   {

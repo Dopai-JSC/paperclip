@@ -31,6 +31,11 @@ import {
   dopaiosWorkItemDependencies,
   dopaiosWorkspaces,
   dopaiosWorkspaceResources,
+  dopaiosBootstrapWorkflows,
+  dopaiosCutoverReadiness,
+  dopaiosRuntimeActivationSnapshots,
+  dopaiosCutoverRecords,
+  dopaiosCutoverReconciliations,
 } from "@paperclipai/db";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
@@ -964,6 +969,74 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
           sql`${dopaiosWorkspaceResources.resourceType} = ${d["resourceType"]} AND ${dopaiosWorkspaceResources.value} = ${d["value"]}`,
         );
       break;
+    // ===== KC-17 (0518/0519): cutover bootstrap→runtime (PRD Mục 6.1) =====
+    // BootstrapStateWritten là event audit-only (đường ghi bootstrap hợp lệ
+    // trước cutover) — đi qua default như các event audit khác.
+    case "BootstrapWorkflowRegistered":
+      await tx.insert(dopaiosBootstrapWorkflows).values({
+        id: d["workflowId"],
+        featureId: d["featureId"],
+        state: "ACTIVE",
+        disabledByRef: null,
+      });
+      break;
+    // Chỉ executeCutover (Cutover Record `effective` hợp lệ) phát event này —
+    // PRD d.318; record rolled-back/completed không bao giờ phát nó (C08).
+    case "BootstrapWorkflowDisabled":
+      await tx
+        .update(dopaiosBootstrapWorkflows)
+        .set({ state: "DISABLED", disabledByRef: d["byRecordRef"] })
+        .where(eq(dopaiosBootstrapWorkflows.id, d["workflowId"]));
+      break;
+    // Rollback target của Plan: khôi phục bootstrap làm nguồn duy nhất —
+    // chỉ nhánh rollback (Cutover Record `rolled-back`) phát event này.
+    case "BootstrapWorkflowReactivated":
+      await tx
+        .update(dopaiosBootstrapWorkflows)
+        .set({ state: "ACTIVE", disabledByRef: null })
+        .where(eq(dopaiosBootstrapWorkflows.id, d["workflowId"]));
+      break;
+    case "CutoverReadinessSet":
+      await tx.execute(sql`
+        INSERT INTO dopaios_cutover_readiness (feature_id, flag, ready)
+        VALUES (${d["featureId"]}, ${d["flag"]}, ${d["ready"]})
+        ON CONFLICT (feature_id, flag) DO UPDATE SET ready = EXCLUDED.ready
+      `);
+      break;
+    case "RuntimeActivationSnapshotCreated":
+      await tx.insert(dopaiosRuntimeActivationSnapshots).values({
+        id: d["snapshotId"],
+        revision: d["revision"],
+        sha256: d["sha256"],
+        featureId: d["featureId"],
+        planRef: d["planRef"],
+        approvalRef: d["approvalRef"],
+        authorityActor: d["authorityActor"],
+        systemActor: d["systemActor"],
+        activationKey: d["activationKey"],
+        bootstrapWorkflowRef: d["bootstrapWorkflowRef"],
+        bootstrapDisabled: d["bootstrapDisabled"],
+        sourceStateResults: d["sourceStateResults"],
+        runtimeWorkflowRef: d["runtimeWorkflowRef"],
+        firstWorkItemRef: d["firstWorkItemRef"],
+      });
+      break;
+    case "CutoverRecordAppended":
+      await tx.insert(dopaiosCutoverRecords).values({
+        id: d["recordId"],
+        revision: d["revision"],
+        sha256: d["sha256"],
+        featureId: d["featureId"],
+        state: d["state"],
+        effectiveAt: d["effectiveAt"] ? new Date(d["effectiveAt"] as string) : null,
+        authorityActor: d["authorityActor"],
+        executionActor: d["executionActor"],
+        approvalRecordRef: d["approvalRecordRef"],
+        firstRuntimeWorkItemRef: d["firstRuntimeWorkItemRef"],
+        runtimeActivationSnapshotRef: d["runtimeActivationSnapshotRef"],
+        reconciliationRef: d["reconciliationRef"] ?? null,
+      });
+      break;
     default:
       // Unknown event types are tolerated: audit-only events have no
       // projection, and replay of a newer log through an older projector is a
@@ -1001,6 +1074,11 @@ const PROJECTION_TABLES = [
   dopaiosWorkItemDependencies,
   dopaiosWorkspaces,
   dopaiosWorkspaceResources,
+  dopaiosBootstrapWorkflows,
+  dopaiosCutoverReadiness,
+  dopaiosRuntimeActivationSnapshots,
+  dopaiosCutoverRecords,
+  dopaiosCutoverReconciliations,
 ] as const;
 
 export async function snapshotProjections(db: Db): Promise<Record<string, unknown[]>> {

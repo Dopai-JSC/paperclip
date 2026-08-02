@@ -131,4 +131,9 @@ export {
   dopaiosWorkItemDependencies,
   dopaiosWorkspaces,
   dopaiosWorkspaceResources,
+  dopaiosBootstrapWorkflows,
+  dopaiosCutoverReadiness,
+  dopaiosRuntimeActivationSnapshots,
+  dopaiosCutoverRecords,
+  dopaiosCutoverReconciliations,
 } from "./dopaios_kc01.js";

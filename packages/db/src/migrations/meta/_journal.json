@@ -1072,6 +1072,13 @@
       "when": 1785790800000,
       "tag": "0518_dopaios_kc17_cutover",
       "breakpoints": true
+    },
+    {
+      "idx": 519,
+      "version": "7",
+      "when": 1785790900000,
+      "tag": "0519_dopaios_kc17_readiness",
+      "breakpoints": true
     }
   ]
 }
