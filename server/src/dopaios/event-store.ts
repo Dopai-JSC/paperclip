@@ -26,6 +26,14 @@ import {
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosContextPackages,
+  dopaiosContextPackageSources,
+  dopaiosArtifactProjectScopes,
+  dopaiosConnectorPolicies,
+  dopaiosConnectorAuditEvents,
+  dopaiosDkpChunks,
+  dopaiosRetrievalQueries,
+  dopaiosRetrievalHits,
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,
@@ -37,6 +45,10 @@ import {
   dopaiosCutoverRecords,
   dopaiosCutoverReconciliations,
 } from "@paperclipai/db";
+import {
+  KC08_STRUCTURED_MARKDOWN_INDEX_VERSION,
+  structuredMarkdownChunks,
+} from "./dkp-chunking.js";
 
 // KC-01 spike: event-store adapter over the message-db blueprint schema
 // (migration 0501) with the Dopaios command contract:
@@ -302,6 +314,300 @@ export async function executeCommand(
 }
 
 // Single projector shared by live execution and replay (SQR-003).
+async function requirePinnedPgvectorProjection(tx: Db | Tx): Promise<void> {
+  const capabilities = (await tx.execute(sql`
+    SELECT available, version
+    FROM dopaios_kc08_capabilities
+    WHERE name = 'pgvector'
+  `)) as unknown as Array<{ available: boolean; version: string | null }>;
+  if (!capabilities[0]?.available || capabilities[0].version !== "0.8.6") {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-PGVECTOR",
+      "KC-08 cannot project vector index events without the pinned pgvector 0.8.6 capability",
+    );
+  }
+}
+
+function assertContextPackageProjection(data: Record<string, unknown>): void {
+  const sources = data["sources"];
+  const maxBytes = data["maxBytes"];
+  const maxTokens = data["maxTokens"];
+  const totalBytes = data["totalBytes"];
+  const totalTokens = data["totalTokens"];
+  if (
+    !Array.isArray(sources) ||
+    !Number.isInteger(maxBytes) || (maxBytes as number) < 0 ||
+    !Number.isInteger(maxTokens) || (maxTokens as number) < 0 ||
+    !Number.isInteger(totalBytes) || (totalBytes as number) < 0 ||
+    !Number.isInteger(totalTokens) || (totalTokens as number) < 0
+  ) {
+    throw new CommandRejectedError(
+      "ERR-CONTEXT-PROJECTION",
+      "Context Package event carries malformed caps, totals, or sources",
+    );
+  }
+
+  let mountedBytes = 0;
+  let mountedTokens = 0;
+  for (const rawSource of sources) {
+    const source = rawSource as Record<string, unknown>;
+    const mountState = source["mountState"];
+    const content = source["content"];
+    const contentBytes = source["contentBytes"];
+    const tokenCount = source["tokenCount"];
+    const sourceSha256 = source["sha256"];
+    const required = source["required"];
+    const omissionReason = source["omissionReason"];
+    const validCounts =
+      Number.isInteger(contentBytes) && (contentBytes as number) >= 0 &&
+      Number.isInteger(tokenCount) && (tokenCount as number) >= 0;
+    const mounted =
+      mountState === "mounted" &&
+      typeof content === "string" &&
+      omissionReason === null &&
+      validCounts &&
+      Buffer.byteLength(content, "utf8") === contentBytes &&
+      typeof sourceSha256 === "string" &&
+      createHash("sha256").update(content, "utf8").digest("hex") === sourceSha256;
+    const omitted =
+      mountState === "omitted" &&
+      content === null &&
+      typeof omissionReason === "string" && omissionReason.length > 0 &&
+      required === false &&
+      validCounts;
+    if (!mounted && !omitted) {
+      throw new CommandRejectedError(
+        "ERR-CONTEXT-PROJECTION",
+        "Context Package source bytes, hash, mount state, or omission are incoherent",
+      );
+    }
+    if (mounted) {
+      mountedBytes += contentBytes as number;
+      mountedTokens += tokenCount as number;
+    }
+  }
+  if (
+    mountedBytes !== totalBytes ||
+    mountedTokens !== totalTokens ||
+    mountedBytes > (maxBytes as number) ||
+    mountedTokens > (maxTokens as number)
+  ) {
+    throw new CommandRejectedError(
+      "ERR-CONTEXT-PROJECTION",
+      "Context Package declared totals do not equal its mounted source totals and caps",
+    );
+  }
+}
+
+async function assertRetrievalQueryProvenance(
+  tx: Db | Tx,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const matches = (await tx.execute(sql`
+    SELECT 1 AS matched
+    FROM dopaios_ai_sessions s
+    JOIN dopaios_work_items w ON w.id = s.work_item_id
+    WHERE s.id = ${data["sessionId"]}
+      AND s.state = 'RUNNING'
+      AND w.project_id = ${data["projectId"]}
+      AND s.context_package_id = ${data["contextPackageId"]}
+      AND s.context_package_revision = ${data["contextPackageRevision"]}
+      AND s.context_package_sha256 = ${data["contextPackageSha256"]}
+  `)) as unknown as unknown[];
+  if (matches.length !== 1) {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-SESSION",
+      "Retrieval query event does not match a RUNNING session's exact Project and Context Package pin",
+    );
+  }
+}
+
+async function assertDkpChunkProvenance(
+  tx: Db | Tx,
+  data: Record<string, unknown>,
+): Promise<void> {
+  const projectId = data["projectId"];
+  const contextPackageId = data["contextPackageId"];
+  const contextPackageRevision = data["contextPackageRevision"];
+  const sourceId = data["sourceId"];
+  const sourceRevision = data["sourceRevision"];
+  const chunkId = data["chunkId"];
+  const ordinal = data["ordinal"];
+  const charStart = data["charStart"];
+  const charEnd = data["charEnd"];
+  const content = data["content"];
+  const embedding = data["embedding"];
+  const embeddingModelRef = data["embeddingModelRef"] as Record<string, unknown> | null;
+  const indexVersion = data["indexVersion"];
+  const validShape =
+    typeof projectId === "string" && projectId.length > 0 &&
+    typeof contextPackageId === "string" && contextPackageId.length > 0 &&
+    Number.isInteger(contextPackageRevision) &&
+    typeof sourceId === "string" && sourceId.length > 0 &&
+    Number.isInteger(sourceRevision) &&
+    typeof chunkId === "string" && chunkId.length > 0 &&
+    Number.isInteger(ordinal) && (ordinal as number) >= 0 &&
+    Number.isInteger(charStart) && (charStart as number) >= 0 &&
+    Number.isInteger(charEnd) && (charEnd as number) > (charStart as number) &&
+    data["rangeUnit"] === "utf16-code-unit" &&
+    typeof content === "string" && content.length > 0 &&
+    Array.isArray(embedding) && embedding.length === 4 &&
+    embedding.every((component) => typeof component === "number" && Number.isFinite(component)) &&
+    embedding.some((component) => component !== 0) &&
+    embeddingModelRef !== null &&
+    typeof embeddingModelRef === "object" &&
+    typeof embeddingModelRef["id"] === "string" &&
+    Number.isInteger(embeddingModelRef["revision"]) &&
+    typeof embeddingModelRef["sha256"] === "string" &&
+    /^[0-9a-f]{64}$/u.test(embeddingModelRef["sha256"] as string) &&
+    indexVersion === KC08_STRUCTURED_MARKDOWN_INDEX_VERSION;
+  if (!validShape) {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-CHUNK",
+      "DKP chunk event carries malformed or incomplete provenance",
+    );
+  }
+
+  const sources = (await tx.execute(sql`
+    SELECT p.sha256 AS package_sha256, p.state AS package_state,
+           s.source_sha256, s.source_type, s.mount_state, s.content
+    FROM dopaios_context_packages p
+    JOIN dopaios_context_package_sources s
+      ON s.project_id = p.project_id
+     AND s.context_package_id = p.id
+     AND s.context_package_revision = p.revision
+    WHERE p.project_id = ${projectId}
+      AND p.id = ${contextPackageId}
+      AND p.revision = ${contextPackageRevision}
+      AND s.source_id = ${sourceId}
+      AND s.source_revision = ${sourceRevision}
+  `)) as unknown as Array<{
+    package_sha256: string;
+    package_state: string;
+    source_sha256: string;
+    source_type: string;
+    mount_state: string;
+    content: string | null;
+  }>;
+  const source = sources[0];
+  const sourceContentSha256 = source?.content === null || source?.content === undefined
+    ? null
+    : createHash("sha256").update(source.content, "utf8").digest("hex");
+  const expectedChunkId = source
+    ? `CHUNK-${payloadSha256({
+        packageRef: {
+          id: contextPackageId,
+          revision: contextPackageRevision,
+          sha256: source.package_sha256,
+        },
+        sourceRef: { id: sourceId, revision: sourceRevision, sha256: source.source_sha256 },
+        ordinal,
+        content,
+      }).slice(0, 24)}`
+    : null;
+  const canonicalChunk = source?.content === null || source?.content === undefined
+    ? undefined
+    : structuredMarkdownChunks(source.content)[ordinal as number];
+  if (
+    !source ||
+    source.package_state !== "approved" ||
+    source.source_type !== "dkp" ||
+    source.mount_state !== "mounted" ||
+    source.content === null ||
+    sourceContentSha256 !== source.source_sha256 ||
+    (charEnd as number) > source.content.length ||
+    source.content.slice(charStart as number, charEnd as number) !== content ||
+    canonicalChunk?.charStart !== charStart ||
+    canonicalChunk?.charEnd !== charEnd ||
+    canonicalChunk?.content !== content ||
+    expectedChunkId !== chunkId
+  ) {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-CHUNK",
+      "DKP chunk does not match its approved package, mounted source bytes, UTF-16 range, and deterministic ID",
+    );
+  }
+}
+
+async function assertRetrievalHitProvenance(
+  tx: Db | Tx,
+  data: Record<string, unknown>,
+  contextPackage: { id: string; revision: number; sha256: string },
+  source: { id: string; revision: number; sha256: string },
+  chunk: { id: string; charStart: number; charEnd: number; rangeUnit: string },
+): Promise<void> {
+  const embeddingModelRef = data["embeddingModelRef"];
+  const validShape =
+    typeof data["sessionId"] === "string" &&
+    typeof contextPackage?.id === "string" &&
+    Number.isInteger(contextPackage?.revision) &&
+    typeof contextPackage?.sha256 === "string" &&
+    typeof source?.id === "string" &&
+    Number.isInteger(source?.revision) &&
+    typeof source?.sha256 === "string" &&
+    typeof chunk?.id === "string" &&
+    Number.isInteger(chunk?.charStart) &&
+    Number.isInteger(chunk?.charEnd) &&
+    chunk?.rangeUnit === "utf16-code-unit" &&
+    Number.isInteger(data["rank"]) &&
+    (data["rank"] as number) > 0 &&
+    typeof data["score"] === "number" &&
+    Number.isFinite(data["score"]) &&
+    data["policyDecision"] === "allow" &&
+    embeddingModelRef !== null &&
+    typeof embeddingModelRef === "object";
+  if (!validShape) {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-PROVENANCE",
+      "Retrieval hit event carries malformed or incomplete provenance",
+    );
+  }
+  const matches = (await tx.execute(sql`
+    SELECT 1 AS matched
+    FROM dopaios_retrieval_queries q
+    JOIN dopaios_context_packages p
+      ON p.id = q.context_package_id
+     AND p.revision = q.context_package_revision
+     AND p.sha256 = q.context_package_sha256
+    JOIN dopaios_context_package_sources s
+      ON s.project_id = q.project_id
+     AND s.context_package_id = q.context_package_id
+     AND s.context_package_revision = q.context_package_revision
+     AND s.source_id = ${source.id}
+     AND s.source_revision = ${source.revision}
+     AND s.source_sha256 = ${source.sha256}
+    JOIN dopaios_dkp_chunks c
+      ON c.project_id = s.project_id
+     AND c.context_package_id = s.context_package_id
+     AND c.context_package_revision = s.context_package_revision
+     AND c.source_id = s.source_id
+     AND c.source_revision = s.source_revision
+     AND c.chunk_id = ${chunk.id}
+     AND c.index_version = ${data["indexVersion"]}
+    WHERE q.id = ${data["queryId"]}
+      AND q.session_id = ${data["sessionId"]}
+      AND q.project_id = ${data["projectId"]}
+      AND q.context_package_id = ${contextPackage.id}
+      AND q.context_package_revision = ${contextPackage.revision}
+      AND q.context_package_sha256 = ${contextPackage.sha256}
+      AND q.method = ${data["method"]}
+      AND q.index_version = ${data["indexVersion"]}
+      AND q.embedding_model_ref = ${JSON.stringify(embeddingModelRef)}::jsonb
+      AND q.policy_decision = 'allow'
+      AND c.char_start = ${chunk.charStart}
+      AND c.char_end = ${chunk.charEnd}
+      AND c.range_unit = ${chunk.rangeUnit}
+      AND c.content = ${data["excerpt"]}
+      AND c.embedding_model_ref = ${JSON.stringify(embeddingModelRef)}::jsonb
+  `)) as unknown as unknown[];
+  if (matches.length !== 1) {
+    throw new CommandRejectedError(
+      "ERR-RETRIEVAL-PROVENANCE",
+      "Retrieval hit does not match its exact query, Context Package, source, and indexed chunk",
+    );
+  }
+}
+
 export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<void> {
   const d = event.data as Record<string, never>;
   switch (event.type) {
@@ -359,6 +665,219 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ impactStatus: d["impactStatus"] })
         .where(sql`${dopaiosArtifacts.id} = ${d["artifactId"]} AND ${dopaiosArtifacts.revision} = ${d["revision"]}`);
       break;
+    case "ArtifactProjectScopeBound":
+      await tx.insert(dopaiosArtifactProjectScopes).values({
+        artifactId: d["artifactId"],
+        artifactRevision: d["artifactRevision"],
+        projectId: d["projectId"],
+        scopeState: d["scopeState"],
+        boundBy: d["boundBy"],
+      });
+      break;
+    case "ContextPackageBuilt":
+      assertContextPackageProjection(d);
+      await tx.insert(dopaiosContextPackages).values({
+        id: d["packageId"],
+        revision: d["revision"],
+        projectId: d["projectId"],
+        workItemId: d["workItemId"],
+        state: d["state"],
+        sha256: d["sha256"],
+        manifest: d["manifest"],
+        maxBytes: d["maxBytes"],
+        maxTokens: d["maxTokens"],
+        totalBytes: d["totalBytes"],
+        totalTokens: d["totalTokens"],
+        approvedBy: "pending",
+        approvalRef: {},
+        createdBy: d["createdBy"],
+        createdAt: event.time,
+      });
+      for (const source of d["sources"] as Array<Record<string, never>>) {
+        await tx.insert(dopaiosContextPackageSources).values({
+          contextPackageId: d["packageId"],
+          contextPackageRevision: d["revision"],
+          projectId: d["projectId"],
+          sourceId: source["id"],
+          sourceRevision: source["revision"],
+          sourceSha256: source["sha256"],
+          sourceType: source["type"],
+          required: source["required"],
+          priority: source["priority"],
+          mountState: source["mountState"],
+          omissionReason: source["omissionReason"],
+          contentBytes: source["contentBytes"],
+          tokenCount: source["tokenCount"],
+          content: source["content"],
+        });
+      }
+      break;
+    case "ContextPackageApproved":
+      await tx.execute(sql`
+        UPDATE dopaios_context_packages
+        SET state = 'approved',
+            approved_by = ${d["approvedBy"]},
+            approval_ref = ${JSON.stringify(d["approvalRef"])}::jsonb,
+            manifest = jsonb_set(
+              manifest,
+              '{approval}',
+              ${JSON.stringify({ ...(d["approvalRef"] as Record<string, unknown>), approvedBy: d["approvedBy"] })}::jsonb,
+              true
+            )
+        WHERE id = ${d["packageId"]} AND revision = ${d["revision"]}
+      `);
+      break;
+    case "ConnectorPolicyMaterialized": {
+      const connector = d["connector"] as { id: string; version: string };
+      const auth = d["auth"] as { type: string; credentialRef: Record<string, unknown> };
+      await tx.insert(dopaiosConnectorPolicies).values({
+        policyId: d["policyId"],
+        policyRevision: d["policyRevision"],
+        configuration: d["configuration"] as Record<string, unknown>,
+        scopeLevel: d["scopeLevel"],
+        precedence: d["precedence"] as string[],
+        approverCapability: d["approverCapability"],
+        effectiveAt: new Date(d["effectiveAt"] as string),
+        invalidation: d["invalidation"] as Record<string, unknown>,
+        connectorId: connector.id,
+        connectorVersion: connector.version,
+        projectId: d["projectId"],
+        purpose: d["purpose"],
+        action: d["action"],
+        direction: d["direction"],
+        authType: auth.type,
+        credentialRef: auth.credentialRef,
+        runtime: d["runtime"],
+        environment: d["environment"],
+        dataClasses: d["dataClasses"] as Array<{
+          name: string;
+          policyRef: Record<string, unknown>;
+        }>,
+        lifecyclePolicyRef: d["lifecyclePolicyRef"] as Record<string, unknown>,
+        retentionPolicyRef: d["retentionPolicyRef"] as Record<string, unknown>,
+        scopes: d["scopes"] as string[],
+        rateLimit: d["rateLimit"] as Record<string, unknown>,
+        timeoutMs: d["timeoutMs"],
+        interruption: d["interruption"] as Record<string, unknown>,
+        retry: d["retry"] as Record<string, unknown>,
+        backoff: d["backoff"] as Record<string, unknown>,
+        circuitBreaker: d["circuitBreaker"] as Record<string, unknown>,
+        idempotency: d["idempotency"] as Record<string, unknown>,
+        reconciliation: d["reconciliation"] as Record<string, unknown>,
+        fallback: d["fallback"] as Record<string, unknown>,
+        audit: d["audit"] as Record<string, unknown>,
+        redaction: d["redaction"] as Record<string, unknown>,
+        approvalRef: d["approvalRef"] as Record<string, unknown>,
+        state: d["state"],
+        sha256: d["sha256"],
+        createdBy: d["createdBy"],
+        createdAt: event.time,
+      });
+      break;
+    }
+    case "ConnectorAuditRecorded":
+      await tx.insert(dopaiosConnectorAuditEvents).values({
+        id: d["auditId"],
+        projectId: d["projectId"],
+        actorId: d["actorId"],
+        sessionId: d["sessionId"],
+        connectorId: d["connectorId"],
+        connectorVersion: d["connectorVersion"],
+        purpose: d["purpose"],
+        action: d["action"],
+        direction: d["direction"],
+        policyId: (d["policyId"] as string | null) ?? null,
+        policyRevision: (d["policyRevision"] as number | null) ?? null,
+        policySha256: (d["policySha256"] as string | null) ?? null,
+        runtime: (d["runtime"] as string | null) ?? null,
+        environment: (d["environment"] as string | null) ?? null,
+        approvalRef: (d["approvalRef"] as Record<string, unknown> | null) ?? null,
+        fallbackContextRef: (d["fallbackContextRef"] as Record<string, unknown> | null) ?? null,
+        decision: d["decision"],
+        reasonCode: d["reasonCode"],
+        requestId: d["requestId"],
+        requestSummary: d["requestSummary"] as Record<string, unknown>,
+        responseSummary: (d["responseSummary"] as Record<string, unknown> | null) ?? null,
+        retryClass: d["retryClass"],
+        attempt: d["attempt"],
+        createdAt: new Date(d["createdAt"] as string),
+      });
+      break;
+    case "DkpChunkIndexed":
+      await requirePinnedPgvectorProjection(tx);
+      await assertDkpChunkProvenance(tx, d);
+      await tx.insert(dopaiosDkpChunks).values({
+        sourceId: d["sourceId"],
+        sourceRevision: d["sourceRevision"],
+        chunkId: d["chunkId"],
+        projectId: d["projectId"],
+        contextPackageId: d["contextPackageId"],
+        contextPackageRevision: d["contextPackageRevision"],
+        ordinal: d["ordinal"],
+        charStart: d["charStart"],
+        charEnd: d["charEnd"],
+        rangeUnit: d["rangeUnit"],
+        content: d["content"],
+        embedding: d["embedding"],
+        embeddingModelRef: d["embeddingModelRef"] as Record<string, unknown>,
+        indexVersion: d["indexVersion"],
+      });
+      break;
+    case "RetrievalQueryRecorded":
+      await assertRetrievalQueryProvenance(tx, d);
+      await tx.insert(dopaiosRetrievalQueries).values({
+        id: d["queryId"],
+        sessionId: d["sessionId"],
+        projectId: d["projectId"],
+        contextPackageId: d["contextPackageId"],
+        contextPackageRevision: d["contextPackageRevision"],
+        contextPackageSha256: d["contextPackageSha256"],
+        querySha256: d["querySha256"],
+        queryRedacted: d["queryRedacted"],
+        method: d["method"],
+        indexVersion: d["indexVersion"],
+        embeddingModelRef: d["embeddingModelRef"] as Record<string, unknown>,
+        policyDecision: d["policyDecision"],
+        createdAt: new Date(d["createdAt"] as string),
+      });
+      break;
+    case "RetrievalHitRecorded": {
+      const contextPackage = d["contextPackage"] as {
+        id: string;
+        revision: number;
+        sha256: string;
+      };
+      const source = d["source"] as { id: string; revision: number; sha256: string };
+      const chunk = d["chunk"] as {
+        id: string;
+        charStart: number;
+        charEnd: number;
+        rangeUnit: string;
+      };
+      await assertRetrievalHitProvenance(tx, d, contextPackage, source, chunk);
+      await tx.insert(dopaiosRetrievalHits).values({
+        queryId: d["queryId"],
+        rank: d["rank"],
+        projectId: d["projectId"],
+        contextPackageId: contextPackage.id,
+        contextPackageRevision: contextPackage.revision,
+        contextPackageSha256: contextPackage.sha256,
+        sourceId: source.id,
+        sourceRevision: source.revision,
+        sourceSha256: source.sha256,
+        chunkId: chunk.id,
+        charStart: chunk.charStart,
+        charEnd: chunk.charEnd,
+        rangeUnit: chunk.rangeUnit,
+        excerpt: d["excerpt"],
+        method: d["method"],
+        indexVersion: d["indexVersion"],
+        embeddingModelRef: d["embeddingModelRef"] as Record<string, unknown>,
+        score: d["score"],
+        policyDecision: d["policyDecision"],
+      });
+      break;
+    }
     case "AiSessionStarted":
       await tx.insert(dopaiosAiSessions).values({
         id: d["sessionId"],
@@ -369,6 +888,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         predecessorId: d["predecessorId"] ?? null,
         relation: d["relation"] ?? null,
         lastSignalAt: event.time,
+        contextPackageId: d["contextPackageId"] ?? null,
+        contextPackageRevision: d["contextPackageRevision"] ?? null,
+        contextPackageSha256: d["contextPackageSha256"] ?? null,
       });
       break;
     case "AiSessionSignal":
@@ -408,6 +930,9 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         state: "QUEUED",
         contractId: d["contractId"] ?? null,
         contractRevision: d["contractRevision"] ?? null,
+        contextPackageId: d["contextPackageId"] ?? null,
+        contextPackageRevision: d["contextPackageRevision"] ?? null,
+        contextPackageSha256: d["contextPackageSha256"] ?? null,
       });
       break;
     case "ActivationClaimed":
@@ -794,6 +1319,11 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         state: "active",
         sha256: d["sha256"],
         compiledBy: d["compiledBy"],
+        contextPackageId: (d["contextPackageRef"] as { id?: string } | null)?.id ?? null,
+        contextPackageRevision:
+          (d["contextPackageRef"] as { revision?: number } | null)?.revision ?? null,
+        contextPackageSha256:
+          (d["contextPackageRef"] as { sha256?: string } | null)?.sha256 ?? null,
       });
       break;
     case "ExecutionContractRevisionStateChanged":
@@ -1090,6 +1620,8 @@ const PROJECTION_TABLES = [
   dopaiosDecisionPackages,
   dopaiosApprovalRecords,
   dopaiosProductBaselines,
+  dopaiosRetrievalHits,
+  dopaiosRetrievalQueries,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
   dopaiosActivations,
@@ -1102,6 +1634,12 @@ const PROJECTION_TABLES = [
   dopaiosStartupPools,
   dopaiosTeamManifests,
   dopaiosExecutionContracts,
+  dopaiosConnectorAuditEvents,
+  dopaiosDkpChunks,
+  dopaiosContextPackageSources,
+  dopaiosContextPackages,
+  dopaiosArtifactProjectScopes,
+  dopaiosConnectorPolicies,
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,

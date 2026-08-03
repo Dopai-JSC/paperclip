@@ -25,6 +25,14 @@ import { requireClaimEligibility } from "./router.js";
 
 type Json = Record<string, unknown>;
 
+function sameExactRef(
+  left: { id: string; revision: number; sha256: string } | null | undefined,
+  right: { id: string; revision: number; sha256: string } | null | undefined,
+): boolean {
+  if (!left || !right) return !left && !right;
+  return left.id === right.id && left.revision === right.revision && left.sha256 === right.sha256;
+}
+
 export async function requestActivation(
   db: Db,
   commandId: string,
@@ -42,6 +50,7 @@ export async function requestActivation(
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      let contextPackageRef: { id: string; revision: number; sha256: string } | null = null;
       const workItem = (await ctx.tx.execute(sql`
         SELECT state, project_id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
       `)) as unknown as Array<{ state: string; project_id: string | null }>;
@@ -76,7 +85,11 @@ export async function requestActivation(
       }
       if (contractPin) {
         // Hợp đồng phải active và đủ trường ngay tại thời điểm xin kích hoạt.
-        await requireActiveContract(ctx, contractPin.contractId, contractPin.revision);
+        const contract = await requireActiveContract(ctx, contractPin.contractId, contractPin.revision);
+        if (contract.workItemId !== p["workItemId"]) {
+          throw new CommandRejectedError("ERR-CONTRACT", "Execution contract is pinned to a different work item");
+        }
+        contextPackageRef = contract.contextPackageRef;
       }
       await ctx.emit({
         streamName: `dopaiosActivation-${p["activationId"]}`,
@@ -88,6 +101,9 @@ export async function requestActivation(
           engine: p["engine"],
           contractId: contractPin?.contractId ?? null,
           contractRevision: contractPin?.revision ?? null,
+          contextPackageId: contextPackageRef?.id ?? null,
+          contextPackageRevision: contextPackageRef?.revision ?? null,
+          contextPackageSha256: contextPackageRef?.sha256 ?? null,
         },
         expectedVersion: -1,
       });
@@ -111,6 +127,9 @@ export async function claimActivation(
     // phải thu hồi được (requeueExpiredActivations). Không lease = đường
     // KC-02 cũ, watchdog không thu hồi.
     lease?: { untilMs: number };
+    runtimeContract?: {
+      contextPackageRef?: { id: string; revision: number; sha256: string };
+    };
   },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
@@ -118,13 +137,18 @@ export async function claimActivation(
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const rows = (await ctx.tx.execute(sql`
-        SELECT state, work_item_id, contract_id, contract_revision FROM dopaios_activations
+        SELECT state, work_item_id, contract_id, contract_revision,
+               context_package_id, context_package_revision, context_package_sha256
+        FROM dopaios_activations
         WHERE id = ${p["activationId"]} FOR UPDATE
       `)) as unknown as Array<{
         state: string;
         work_item_id: string;
         contract_id: string | null;
         contract_revision: number | null;
+        context_package_id: string | null;
+        context_package_revision: number | null;
+        context_package_sha256: string | null;
       }>;
       if (rows.length === 0) {
         throw new CommandRejectedError("ERR-ACTIVATION", "Activation not found");
@@ -141,7 +165,26 @@ export async function claimActivation(
       // bắt đầu không được khởi động trên hợp đồng cũ); work-item Project mà
       // activation không mang pin (seed ngoài đường lệnh) cũng chặn.
       if (rows[0].contract_id) {
-        await requireActiveContract(ctx, rows[0].contract_id, Number(rows[0].contract_revision));
+        const contract = await requireActiveContract(ctx, rows[0].contract_id, Number(rows[0].contract_revision));
+        const activationContext = rows[0].context_package_id
+          ? {
+              id: rows[0].context_package_id,
+              revision: Number(rows[0].context_package_revision),
+              sha256: rows[0].context_package_sha256!,
+            }
+          : null;
+        if (!sameExactRef(contract.contextPackageRef, activationContext)) {
+          throw new CommandRejectedError("ERR-CONTEXT-PIN", "Activation Context Package pin differs from its active contract");
+        }
+        const runtimeContract = p["runtimeContract"] as
+          | { contextPackageRef?: { id: string; revision: number; sha256: string } }
+          | undefined;
+        if (
+          runtimeContract &&
+          !sameExactRef(runtimeContract.contextPackageRef, activationContext)
+        ) {
+          throw new CommandRejectedError("ERR-CONTEXT-PIN", "Runtime Context Package pin differs from the activation pin");
+        }
       } else {
         const workItemRow = (await ctx.tx.execute(sql`
           SELECT project_id FROM dopaios_work_items WHERE id = ${rows[0].work_item_id}
@@ -236,6 +279,7 @@ export async function runActivation(
   await claimActivation(db, `CMD-ACT-CLAIM-${input.activationId}`, {
     activationId: input.activationId,
     claimedBy: input.claimedBy,
+    runtimeContract: { contextPackageRef: input.contract.contextPackageRef },
   });
   const outcome = await runWorkItemSession(db, {
     sessionId: input.sessionId,

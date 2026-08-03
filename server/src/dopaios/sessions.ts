@@ -6,6 +6,7 @@ import {
   executeCommand,
   CommandRejectedError,
 } from "./event-store.js";
+import { requireApprovedContextPackage } from "./context-package.js";
 
 // KC-02 spike: record Phiên chạy AI theo work-item trên event store KC-01,
 // đúng ngữ nghĩa PRD Mục 3:
@@ -26,11 +27,15 @@ type SessionRow = {
   work_item_id: string;
   outcome: string | null;
   last_signal_at: Date | string | null;
+  context_package_id: string | null;
+  context_package_revision: number | null;
+  context_package_sha256: string | null;
 };
 
 async function loadSession(ctx: CommandContext, sessionId: string): Promise<SessionRow | null> {
   const rows = (await ctx.tx.execute(sql`
-    SELECT state, agent_id, work_item_id, outcome, last_signal_at
+    SELECT state, agent_id, work_item_id, outcome, last_signal_at,
+           context_package_id, context_package_revision, context_package_sha256
     FROM dopaios_ai_sessions WHERE id = ${sessionId}
   `)) as unknown as SessionRow[];
   return rows[0] ?? null;
@@ -64,17 +69,35 @@ async function requireNoRunningSession(ctx: CommandContext, workItemId: string):
 export async function startAiSession(
   db: Db,
   commandId: string,
-  payload: { sessionId: string; workItemId: string; agentId: string; engine: string },
+  payload: {
+    sessionId: string;
+    workItemId: string;
+    agentId: string;
+    engine: string;
+    contextPackageRef?: { id: string; revision: number; sha256: string };
+  },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
       const workItem = (await ctx.tx.execute(sql`
-        SELECT id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
-      `)) as unknown as Array<{ id: string }>;
+        SELECT id, project_id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
+      `)) as unknown as Array<{ id: string; project_id: string | null }>;
       if (workItem.length === 0) {
         throw new CommandRejectedError("ERR-WORKITEM", `Work item ${p["workItemId"]} not found`);
+      }
+      const contextPackageRef = p["contextPackageRef"] as
+        | { id: string; revision: number; sha256: string }
+        | undefined;
+      if (contextPackageRef) {
+        if (!workItem[0].project_id) {
+          throw new CommandRejectedError("ERR-CONTEXT-PIN", "Context Package session requires a Project-bound work item");
+        }
+        await requireApprovedContextPackage(ctx, contextPackageRef, {
+          projectId: workItem[0].project_id,
+          workItemId: p["workItemId"] as string,
+        });
       }
       await requireNoRunningSession(ctx, p["workItemId"] as string);
       await ctx.emit({
@@ -85,6 +108,9 @@ export async function startAiSession(
           workItemId: p["workItemId"],
           agentId: p["agentId"],
           engine: p["engine"],
+          contextPackageId: contextPackageRef?.id ?? null,
+          contextPackageRevision: contextPackageRef?.revision ?? null,
+          contextPackageSha256: contextPackageRef?.sha256 ?? null,
         },
         expectedVersion: -1,
       });
@@ -260,6 +286,25 @@ export async function createSuccessorSession(
       if (p["relation"] === "reassign" && p["agentId"] === predecessor.agent_id) {
         throw new CommandRejectedError("ERR-REASSIGN-SAME-AGENT", "Reassign must change the agent");
       }
+      const inheritedContextRef = predecessor.context_package_id
+        ? {
+            id: predecessor.context_package_id,
+            revision: Number(predecessor.context_package_revision),
+            sha256: predecessor.context_package_sha256!,
+          }
+        : null;
+      if (inheritedContextRef) {
+        const workItem = (await ctx.tx.execute(sql`
+          SELECT project_id FROM dopaios_work_items WHERE id = ${predecessor.work_item_id}
+        `)) as unknown as Array<{ project_id: string | null }>;
+        if (!workItem[0]?.project_id) {
+          throw new CommandRejectedError("ERR-CONTEXT-PIN", "Inherited Context Package has no Project-bound work item");
+        }
+        await requireApprovedContextPackage(ctx, inheritedContextRef, {
+          projectId: workItem[0].project_id,
+          workItemId: predecessor.work_item_id,
+        });
+      }
       // KC-05 B7: kế nhiệm cũng không được mở khi work-item còn phiên RUNNING
       // khác (cùng bất biến một-work-item-một-phiên-RUNNING).
       await requireNoRunningSession(ctx, predecessor.work_item_id);
@@ -273,6 +318,9 @@ export async function createSuccessorSession(
           engine: p["engine"],
           predecessorId: p["predecessorId"],
           relation: p["relation"],
+          contextPackageId: inheritedContextRef?.id ?? null,
+          contextPackageRevision: inheritedContextRef?.revision ?? null,
+          contextPackageSha256: inheritedContextRef?.sha256 ?? null,
         },
         expectedVersion: -1,
       });
