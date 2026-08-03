@@ -21,7 +21,12 @@ export default defineConfig({
   testMatch: "**/*.spec.ts",
   // These suites target dedicated multi-user configurations/ports and are
   // intentionally not part of the default local_trusted e2e run.
-  testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
+  testIgnore: [
+    "multi-user.spec.ts",
+    "multi-user-authenticated.spec.ts",
+    "kc07-project-create.spec.ts",
+    "kc07-project-create-mcp.spec.ts",
+  ],
   timeout: 60_000,
   retries: 0,
   // All specs share one throwaway server, and several toggle instance-level

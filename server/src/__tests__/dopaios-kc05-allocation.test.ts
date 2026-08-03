@@ -69,7 +69,15 @@ describeEmbeddedPostgres("dopaios KC-05 B2 — cấp phát nguyên tử + guard"
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("dopaios-kc05-b2-");
     db = createDb(tempDb.connectionString);
-    for (const run of ["RUN-REL-C", "RUN-REL-D", "RUN-REL-E", "RUN-REL-F", "RUN-REL-G", "RUN-REL-H"]) {
+    for (const run of [
+      "RUN-REL-C",
+      "RUN-REL-D",
+      "RUN-REL-E",
+      "RUN-REL-F",
+      "RUN-REL-G",
+      "RUN-REL-H",
+      "RUN-REL-I",
+    ]) {
       await seedRun(db, run);
     }
   }, 60_000);
@@ -349,58 +357,62 @@ describeEmbeddedPostgres("dopaios KC-05 B2 — cấp phát nguyên tử + guard"
   });
 
   it("credential: đúng scope + đúng claimer đọc được; chéo Release, actor không giữ claim và sau thu hồi bị chặn cả đọc kèm audit", async () => {
-    const portE = (await db.execute(
-      sql`SELECT port FROM dopaios_workspaces WHERE id = 'WS-REL-E'`,
-    )) as unknown as Array<{ port: number }>;
-    await activateWorkspace(db, "KC05-B2-ACT-E", {
-      workspaceId: "WS-REL-E",
-      materialized: { worktreeHead: "e".repeat(40), boundPort: portE[0].port },
+    // Fixture riêng: không phụ thuộc Release nào thắng cuộc đua 4 bên / 3 port ở ca trước.
+    const workspace = await provisionWorkspace(db, "KC05-B2-PROV-I", {
+      workspaceId: "WS-REL-I",
+      releaseId: "RUN-REL-I",
+      portPool: [15621],
+      baseRef: "kc05-base",
+    });
+    await activateWorkspace(db, "KC05-B2-ACT-I", {
+      workspaceId: "WS-REL-I",
+      materialized: { worktreeHead: "i".repeat(40), boundPort: workspace["port"] as number },
     });
     // B7: actor phải là claimer đang giữ Release — dựng work-item + claim thật.
     await executeCommand(db, {
-      commandId: "KC05-B2-SEED-WI-E",
-      payload: { workItemId: "WI-RUN-REL-E" },
+      commandId: "KC05-B2-SEED-WI-I",
+      payload: { workItemId: "WI-RUN-REL-I" },
       handler: async (ctx) => {
         await ctx.emit({
-          streamName: "dopaiosWorkItem-WI-RUN-REL-E",
+          streamName: "dopaiosWorkItem-WI-RUN-REL-I",
           type: "WorkItemCreated",
-          data: { workItemId: "WI-RUN-REL-E", runId: "RUN-REL-E", state: "ACCEPTED" },
+          data: { workItemId: "WI-RUN-REL-I", runId: "RUN-REL-I", state: "ACCEPTED" },
           expectedVersion: -1,
         });
         return { seeded: true };
       },
     });
-    await requestActivation(db, "KC05-B2-REQ-E", {
-      activationId: "ACT-RUN-REL-E",
-      workItemId: "WI-RUN-REL-E",
-      agentId: "AI-STAFF-BUILD-E",
+    await requestActivation(db, "KC05-B2-REQ-I", {
+      activationId: "ACT-RUN-REL-I",
+      workItemId: "WI-RUN-REL-I",
+      agentId: "AI-STAFF-BUILD-I",
       engine: "fake-acp-shape",
     });
     // Chưa claim → actor khai đúng tên mình vẫn bị chặn (không giữ claim).
     expect(
       await rejectionCode(
         accessWorkspaceCredential(db, "KC05-B2-CRED-NOCLAIM", {
-          workspaceId: "WS-REL-E",
-          forReleaseId: "RUN-REL-E",
-          actor: "AI-STAFF-BUILD-E",
+          workspaceId: "WS-REL-I",
+          forReleaseId: "RUN-REL-I",
+          actor: "AI-STAFF-BUILD-I",
         }),
       ),
     ).toBe("ERR-WS-CRED-ACTOR");
-    await claimActivation(db, "KC05-B2-CLAIM-E", {
-      activationId: "ACT-RUN-REL-E",
-      claimedBy: "AI-STAFF-BUILD-E",
+    await claimActivation(db, "KC05-B2-CLAIM-I", {
+      activationId: "ACT-RUN-REL-I",
+      claimedBy: "AI-STAFF-BUILD-I",
     });
-    const ok = await accessWorkspaceCredential(db, "KC05-B2-CRED-E", {
-      workspaceId: "WS-REL-E",
-      forReleaseId: "RUN-REL-E",
-      actor: "AI-STAFF-BUILD-E",
+    const ok = await accessWorkspaceCredential(db, "KC05-B2-CRED-I", {
+      workspaceId: "WS-REL-I",
+      forReleaseId: "RUN-REL-I",
+      actor: "AI-STAFF-BUILD-I",
     });
-    expect((ok["credentialRef"] as { id: string }).id).toBe("CRED-RUN-REL-E");
+    expect((ok["credentialRef"] as { id: string }).id).toBe("CRED-RUN-REL-I");
 
     expect(
       await rejectionCode(
         accessWorkspaceCredential(db, "KC05-B2-CRED-XSCOPE", {
-          workspaceId: "WS-REL-E",
+          workspaceId: "WS-REL-I",
           forReleaseId: "RUN-REL-F",
           actor: "AI-STAFF-BUILD-F",
         }),
