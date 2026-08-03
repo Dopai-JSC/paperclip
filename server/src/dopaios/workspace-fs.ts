@@ -6,12 +6,19 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { join, dirname, relative, sep } from "node:path";
 import { sql } from "drizzle-orm";
-import { canonicalJsonString, payloadSha256, type Db, CommandRejectedError } from "./event-store.js";
+import {
+  canonicalJsonString,
+  payloadSha256,
+  writeEvent,
+  type Db,
+  CommandRejectedError,
+} from "./event-store.js";
 import {
   releaseScopePrefix,
   resolveScopedPath,
   type WorkspaceCredentialRef,
   type WorkspacePurgeReport,
+  type WorkspaceRetentionControl,
 } from "./workspace.js";
 
 // KC-05 B3: tầng đĩa của workspace — vật chất hóa những gì lệnh provision đã
@@ -240,9 +247,11 @@ export const realPurgeFs: PurgeFsAdapter = {
 // branch ws/<releaseId> của repo nền, prune sổ worktree, post-check residue
 // gồm cả entry worktree/branch còn sót và port còn bận. KHÔNG tự ghi sổ —
 // caller đưa report vào lệnh recordWorkspacePurge để guard quyết định.
-// B7 (major review lens 2 — fail-closed tại tầng đĩa): hàm đọc sổ và TỪ CHỐI
-// khi workspace của Release không ở CLOSING/PURGE_BLOCKED — gọi nhầm
-// releaseId đang ACTIVE không còn hủy diệt được đĩa trước rồi mới bị sổ chặn.
+// B7/KC-09 (hai lens review — fail-closed tại tầng đĩa): trước khi chạm byte,
+// hàm đọc sổ và TỪ CHỐI nếu workspace chưa đóng, actor governed không hợp lệ,
+// hold/retention còn hiệu lực hoặc vẫn có session/claim RUNNING. Mỗi lần từ
+// chối ghi CommandRejected bất biến; recordWorkspacePurge vẫn lặp lại guard ở
+// bước ghi sổ để không tin báo cáo do caller cung cấp.
 export async function purgeReleaseScopeOnDisk(input: {
   db: Db;
   rootAbs: string;
@@ -252,16 +261,90 @@ export async function purgeReleaseScopeOnDisk(input: {
   port?: number;
   fs?: PurgeFsAdapter;
 }): Promise<{ report: WorkspacePurgeReport; error?: string }> {
-  const workspaceRows = (await input.db.execute(sql`
-    SELECT id, state, port FROM dopaios_workspaces
-    WHERE release_id = ${input.releaseId} AND state <> 'PURGED'
-  `)) as unknown as Array<{ id: string; state: string; port: number }>;
-  if (workspaceRows.length === 0 || (workspaceRows[0].state !== "CLOSING" && workspaceRows[0].state !== "PURGE_BLOCKED")) {
-    throw new CommandRejectedError(
-      "ERR-WS-STATE",
-      `Release ${input.releaseId} không có workspace ở CLOSING/PURGE_BLOCKED — không đụng đĩa (fail-closed)`,
-    );
-  }
+  const workspaceRows = await (async () => {
+    const rows = (await input.db.execute(sql`
+      SELECT id, state, port, retention_control FROM dopaios_workspaces
+      WHERE release_id = ${input.releaseId} AND state <> 'PURGED'
+    `)) as unknown as Array<{
+      id: string;
+      state: string;
+      port: number;
+      retention_control: WorkspaceRetentionControl | null;
+    }>;
+    if (rows.length === 0 || (rows[0].state !== "CLOSING" && rows[0].state !== "PURGE_BLOCKED")) {
+      throw new CommandRejectedError(
+        "ERR-WS-STATE",
+        `Release ${input.releaseId} không có workspace ở CLOSING/PURGE_BLOCKED — không đụng đĩa (fail-closed)`,
+      );
+    }
+    const retentionControl = rows[0].retention_control;
+    if (retentionControl !== null) {
+      const actors = (await input.db.execute(sql`
+        SELECT active, capabilities FROM dopaios_actors WHERE id = ${input.actor}
+      `)) as unknown as Array<{ active: boolean; capabilities: string[] }>;
+      if (!actors[0]?.active || !actors[0].capabilities.includes("retention-admin")) {
+        throw new CommandRejectedError(
+          "ERR-WS-PURGE-AUTH",
+          "A governed workspace purge requires one active retention administrator before physical deletion",
+        );
+      }
+      if (retentionControl.legalHold?.active === true) {
+        throw new CommandRejectedError(
+          "ERR-WS-LEGAL-HOLD",
+          `Workspace ${rows[0].id} is protected by legal hold ${retentionControl.legalHold.holdId}`,
+        );
+      }
+      if (retentionControl.retentionUntil !== null) {
+        const nowRows = (await input.db.execute(sql`SELECT CURRENT_TIMESTAMP AS now`)) as unknown as Array<{ now: Date }>;
+        if (Date.parse(retentionControl.retentionUntil) > new Date(nowRows[0]!.now).getTime()) {
+          throw new CommandRejectedError(
+            "ERR-WS-RETENTION",
+            `Workspace ${rows[0].id} is retained until ${retentionControl.retentionUntil}`,
+          );
+        }
+      }
+    }
+    const openWriters = (await input.db.execute(sql`
+      SELECT s.id AS session_id, NULL AS activation_id
+      FROM dopaios_ai_sessions s
+      JOIN dopaios_work_items w ON w.id = s.work_item_id
+      WHERE w.run_id = ${input.releaseId} AND s.state = 'RUNNING'
+      UNION ALL
+      SELECT NULL AS session_id, a.id AS activation_id
+      FROM dopaios_activations a
+      JOIN dopaios_work_items w ON w.id = a.work_item_id
+      WHERE w.run_id = ${input.releaseId} AND a.state = 'RUNNING'
+    `)) as unknown as Array<{ session_id: string | null; activation_id: string | null }>;
+    if (openWriters.length > 0) {
+      const detail = openWriters.map((writer) => writer.session_id ?? writer.activation_id).join(", ");
+      throw new CommandRejectedError(
+        "ERR-WS-SESSIONS-OPEN",
+        `Release ${input.releaseId} còn phiên/claim sống (${detail}) — không xóa dữ liệu vật lý`,
+      );
+    }
+    return rows;
+  })().catch(async (error: unknown) => {
+    if (error instanceof CommandRejectedError) {
+      const commandId = `KC09-PURGE-FS-${input.releaseId}-${input.actor}`;
+      await input.db.transaction(async (tx) => {
+        await writeEvent(tx, {
+          streamName: `dopaiosAudit-${commandId}`,
+          type: "CommandRejected",
+          data: {
+            commandId,
+            code: error.code,
+            reason: error.message,
+            payloadSha256: payloadSha256({
+              releaseId: input.releaseId,
+              actor: input.actor,
+              operation: "workspace-physical-purge",
+            }),
+          },
+        });
+      });
+    }
+    throw error;
+  });
   const port = input.port ?? Number(workspaceRows[0].port);
   const fs = input.fs ?? realPurgeFs;
   const prefix = releaseScopePrefix(input.releaseId);

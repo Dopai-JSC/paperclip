@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -52,6 +53,88 @@ describeDb("dopaios KC-09 database-enforced audit immutability", () => {
       SELECT rolname, rolcanlogin FROM pg_roles WHERE rolname = 'dopaios_runtime_actor'
     `)) as unknown as Array<{ rolname: string; rolcanlogin: boolean }>;
     expect(rows).toEqual([{ rolname: "dopaios_runtime_actor", rolcanlogin: false }]);
+  });
+
+  it("binds an ephemeral LOGIN principal to the runtime role without inheriting owner privileges", async () => {
+    const loginRole = "kc09_runtime_login";
+    const loginPassword = `kc09_${randomUUID().replaceAll("-", "")}`;
+    await db.execute(sql.raw(`
+      CREATE ROLE ${loginRole}
+        LOGIN PASSWORD '${loginPassword}'
+        NOSUPERUSER NOCREATEDB NOCREATEROLE NOINHERIT NOREPLICATION NOBYPASSRLS
+    `));
+    const runtimeUrl = new URL(tempDb!.connectionString);
+    runtimeUrl.username = loginRole;
+    runtimeUrl.password = loginPassword;
+    const runtimeDb = createDb(runtimeUrl.toString());
+    try {
+      const direct = (await runtimeDb.execute(sql.raw(`
+        SELECT session_user, current_user,
+               has_table_privilege(current_user, 'public.dopaios_authorization_audit_events', 'INSERT') AS insert_allowed
+      `))) as unknown as Array<{
+        session_user: string;
+        current_user: string;
+        insert_allowed: boolean;
+      }>;
+      expect(direct).toEqual([{
+        session_user: loginRole,
+        current_user: loginRole,
+        insert_allowed: false,
+      }]);
+
+      let preGrantSqlState: string | undefined;
+      try {
+        await runtimeDb.execute(sql.raw("SET ROLE dopaios_runtime_actor"));
+      } catch (error) {
+        const databaseError = error as { code?: string; cause?: { code?: string } };
+        preGrantSqlState = databaseError.code ?? databaseError.cause?.code;
+      }
+      expect(preGrantSqlState).toBe("42501");
+
+      await db.execute(sql.raw(`GRANT dopaios_runtime_actor TO ${loginRole}`));
+      const identity = await runtimeDb.transaction(async (tx) => {
+        await tx.execute(sql.raw("SET LOCAL ROLE dopaios_runtime_actor"));
+        await tx.execute(sql`
+          INSERT INTO dopaios_authorization_audit_events (
+            id, actor_type, actor_id, company_id, project_id, action, decision, reason
+          ) VALUES (
+            'KC09-AUDIT-RUNTIME-LOGIN', 'machine', 'KC09-RUNTIME-LOGIN', 'COMPANY-KC09',
+            'PROJECT-KC09', 'audit:append', 'allow', 'production-like local principal'
+          )
+        `);
+        return tx.execute(sql.raw(`
+          SELECT session_user, current_user, decision
+          FROM public.dopaios_authorization_audit_events
+          WHERE id = 'KC09-AUDIT-RUNTIME-LOGIN'
+        `));
+      });
+      expect(identity).toEqual([{
+        session_user: loginRole,
+        current_user: "dopaios_runtime_actor",
+        decision: "allow",
+      }]);
+
+      for (const operation of [
+        "UPDATE public.dopaios_authorization_audit_events SET decision = 'deny' WHERE id = 'KC09-AUDIT-RUNTIME-LOGIN'",
+        "DELETE FROM public.dopaios_authorization_audit_events WHERE id = 'KC09-AUDIT-RUNTIME-LOGIN'",
+        "TRUNCATE public.dopaios_authorization_audit_events",
+      ]) {
+        let sqlState: string | undefined;
+        try {
+          await runtimeDb.transaction(async (tx) => {
+            await tx.execute(sql.raw("SET LOCAL ROLE dopaios_runtime_actor"));
+            await tx.execute(sql.raw(operation));
+          });
+        } catch (error) {
+          const databaseError = error as { code?: string; cause?: { code?: string } };
+          sqlState = databaseError.code ?? databaseError.cause?.code;
+        }
+        expect(sqlState, operation).toBe("42501");
+      }
+    } finally {
+      await runtimeDb.$client.end();
+      await db.execute(sql.raw(`DROP ROLE IF EXISTS ${loginRole}`));
+    }
   });
 
   it("allows runtime reads but makes update and delete impossible on immutable record/audit stores", async () => {
