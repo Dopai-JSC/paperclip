@@ -14,7 +14,15 @@ import { sha256Utf8 } from "./context-package.js";
 
 type Json = Record<string, unknown>;
 type ExactRef = { id: string; revision: number; sha256: string };
-type OpaqueCredentialRef = { secretRef: string };
+type OpaqueCredentialRef =
+  | { secretRef: string }
+  | {
+      secretRef: string;
+      issuedAt: string;
+      expiresAt: string;
+      rotationEpoch: number;
+      revokedAt: string | null;
+    };
 type ConnectorPolicyApprovalRef = { recordId: string };
 
 const MAX_TIMER_MS = 2_147_483_647;
@@ -318,9 +326,32 @@ function requireCanonicalDate(value: string, field: string): number {
 
 function isExactOpaqueCredentialRef(value: unknown): value is OpaqueCredentialRef {
   if (!value || typeof value !== "object" || Array.isArray(value)) return false;
-  const entries = Object.entries(value as Record<string, unknown>);
-  return entries.length === 1 && entries[0]?.[0] === "secretRef" &&
-    typeof entries[0]?.[1] === "string" && /^secret:\/\/[A-Za-z0-9._~:/-]+$/u.test(entries[0][1]);
+  const candidate = value as Record<string, unknown>;
+  const keys = Object.keys(candidate).sort();
+  if (typeof candidate.secretRef !== "string" || !/^secret:\/\/[A-Za-z0-9._~:/-]+$/u.test(candidate.secretRef)) {
+    return false;
+  }
+  if (keys.length === 1 && keys[0] === "secretRef") return true;
+  if (keys.join(",") !== "expiresAt,issuedAt,revokedAt,rotationEpoch,secretRef") return false;
+  if (
+    typeof candidate.issuedAt !== "string" ||
+    typeof candidate.expiresAt !== "string" ||
+    !Number.isInteger(candidate.rotationEpoch) ||
+    Number(candidate.rotationEpoch) < 1 ||
+    (candidate.revokedAt !== null && typeof candidate.revokedAt !== "string")
+  ) {
+    return false;
+  }
+  const issuedAt = Date.parse(candidate.issuedAt);
+  const expiresAt = Date.parse(candidate.expiresAt);
+  const revokedAt = candidate.revokedAt === null ? null : Date.parse(candidate.revokedAt as string);
+  return Number.isFinite(issuedAt) &&
+    new Date(issuedAt).toISOString() === candidate.issuedAt &&
+    Number.isFinite(expiresAt) &&
+    new Date(expiresAt).toISOString() === candidate.expiresAt &&
+    expiresAt > issuedAt &&
+    (revokedAt === null ||
+      (Number.isFinite(revokedAt) && new Date(revokedAt).toISOString() === candidate.revokedAt && revokedAt >= issuedAt));
 }
 
 function requirePolicyShape(policy: ConnectorPolicyInput): void {
@@ -367,6 +398,12 @@ function requirePolicyShape(policy: ConnectorPolicyInput): void {
     throw new CommandRejectedError(
       "ERR-CONNECTOR-CREDENTIAL-REF",
       "Connector credentials must be represented by one opaque secret:// reference and never inline material",
+    );
+  }
+  if ("revokedAt" in policy.auth.credentialRef && policy.auth.credentialRef.revokedAt !== null) {
+    throw new CommandRejectedError(
+      "ERR-CONNECTOR-CREDENTIAL-REVOKED",
+      "A revoked credential reference cannot be materialized into an executable connector policy",
     );
   }
   if (
@@ -493,6 +530,31 @@ export async function materializeConnectorPolicy(
       await validatePolicyArtifact(ctx, policy.projectId, policy.lifecyclePolicyRef, "lifecycle-policy");
       await validatePolicyArtifact(ctx, policy.projectId, policy.retentionPolicyRef, "retention-policy");
       await validateConnectorPolicyApproval(ctx, policy);
+      if ("rotationEpoch" in policy.auth.credentialRef) {
+        const credentialRef = policy.auth.credentialRef;
+        const existingCredential = await one<{
+          issued_at: Date | string;
+          expires_at: Date | string;
+          revoked_at: Date | string | null;
+        }>(
+          ctx,
+          sql`SELECT issued_at, expires_at, revoked_at
+              FROM dopaios_connector_credentials
+              WHERE secret_ref = ${credentialRef.secretRef}
+                AND rotation_epoch = ${credentialRef.rotationEpoch}`,
+        );
+        if (
+          existingCredential &&
+          (new Date(existingCredential.issued_at).toISOString() !== credentialRef.issuedAt ||
+            new Date(existingCredential.expires_at).toISOString() !== credentialRef.expiresAt ||
+            existingCredential.revoked_at !== null)
+        ) {
+          throw new CommandRejectedError(
+            "ERR-CONNECTOR-CREDENTIAL-CONFLICT",
+            "A secret reference and rotation epoch must retain one immutable issue, expiry, and revocation lifecycle",
+          );
+        }
+      }
       const existingScope = await one<{ policy_id: string; latest_revision: number }>(
         ctx,
         sql`SELECT policy_id, max(policy_revision)::int AS latest_revision
@@ -543,6 +605,102 @@ export async function materializeConnectorPolicy(
         expectedVersion: policy.policyRevision - 2,
       });
       return { policyId: policy.policyId, policyRevision: policy.policyRevision, state: "approved", sha256 };
+    },
+  });
+}
+
+export async function revokeConnectorCredential(
+  db: Db,
+  commandId: string,
+  payload: {
+    policyId: string;
+    policyRevision: number;
+    secretRef: string;
+    rotationEpoch: number;
+    revokedAt: string;
+    actorId: string;
+  },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const actorId = p["actorId"] as string;
+      const actor = await one<{ active: boolean; capabilities: string[] }>(
+        ctx,
+        sql`SELECT active, capabilities FROM dopaios_actors WHERE id = ${actorId}`,
+      );
+      if (!actor?.active || !actor.capabilities.includes("credential-admin")) {
+        throw new CommandRejectedError(
+          "ERR-CONNECTOR-CREDENTIAL-AUTH",
+          `Actor ${actorId} is not an active registered credential administrator`,
+        );
+      }
+      const revokedAt = p["revokedAt"] as string;
+      const revokedTimestamp = Date.parse(revokedAt);
+      if (!Number.isFinite(revokedTimestamp) || new Date(revokedTimestamp).toISOString() !== revokedAt) {
+        throw new CommandRejectedError(
+          "ERR-CONNECTOR-CREDENTIAL-TIME",
+          "revokedAt must be a canonical ISO-8601 timestamp",
+        );
+      }
+      const credential = await one<{
+        credential_ref: OpaqueCredentialRef;
+        issued_at: Date | string | null;
+        revoked_at: Date | string | null;
+        database_now: Date | string;
+      }>(
+        ctx,
+        sql`SELECT policy.credential_ref, credential.issued_at, credential.revoked_at,
+                   CURRENT_TIMESTAMP AS database_now
+            FROM dopaios_connector_policies policy
+            LEFT JOIN dopaios_connector_credentials credential
+              ON credential.secret_ref = policy.credential_ref ->> 'secretRef'
+             AND credential.rotation_epoch = (policy.credential_ref ->> 'rotationEpoch')::int
+            WHERE policy.policy_id = ${p["policyId"]}
+              AND policy.policy_revision = ${p["policyRevision"]}`,
+      );
+      if (
+        !credential ||
+        !("rotationEpoch" in credential.credential_ref) ||
+        credential.issued_at === null ||
+        credential.credential_ref.secretRef !== p["secretRef"] ||
+        credential.credential_ref.rotationEpoch !== p["rotationEpoch"]
+      ) {
+        throw new CommandRejectedError(
+          "ERR-CONNECTOR-CREDENTIAL-REF",
+          "Credential revocation must match an exact materialized secret reference and rotation epoch",
+        );
+      }
+      if (
+        revokedTimestamp < new Date(credential.issued_at).getTime() ||
+        revokedTimestamp > new Date(credential.database_now).getTime()
+      ) {
+        throw new CommandRejectedError(
+          "ERR-CONNECTOR-CREDENTIAL-TIME",
+          "revokedAt must be at or after issuance and no later than the trusted database clock",
+        );
+      }
+      if (credential.revoked_at !== null) {
+        throw new CommandRejectedError("ERR-CONNECTOR-CREDENTIAL-REVOKED", "Credential is already revoked");
+      }
+      await ctx.emit({
+        streamName: `dopaiosConnectorCredential-${payloadSha256({
+          secretRef: p["secretRef"],
+          rotationEpoch: p["rotationEpoch"],
+        }).slice(0, 32)}`,
+        type: "ConnectorCredentialRevoked",
+        data: {
+          policyId: p["policyId"],
+          policyRevision: p["policyRevision"],
+          secretRef: p["secretRef"],
+          rotationEpoch: p["rotationEpoch"],
+          revokedAt,
+          actorId,
+        },
+        expectedVersion: -1,
+      });
+      return { secretRef: p["secretRef"], rotationEpoch: p["rotationEpoch"], state: "revoked" };
     },
   });
 }
@@ -642,6 +800,18 @@ function requestScopeKey(request: ConnectorRequest): string {
   }).slice(0, 32);
 }
 
+function sameCredentialRef(left: OpaqueCredentialRef, right: OpaqueCredentialRef): boolean {
+  if (left.secretRef !== right.secretRef) return false;
+  const leftHasLifecycle = "rotationEpoch" in left;
+  const rightHasLifecycle = "rotationEpoch" in right;
+  if (leftHasLifecycle !== rightHasLifecycle) return false;
+  if (!leftHasLifecycle || !rightHasLifecycle) return true;
+  return left.rotationEpoch === right.rotationEpoch &&
+    left.issuedAt === right.issuedAt &&
+    left.expiresAt === right.expiresAt &&
+    left.revokedAt === right.revokedAt;
+}
+
 function adapterMatchesPolicy(adapter: ConnectorAdapterIdentity, policy: MaterializedPolicy): boolean {
   return (
     adapter.connector.id === policy.connector_id &&
@@ -649,7 +819,7 @@ function adapterMatchesPolicy(adapter: ConnectorAdapterIdentity, policy: Materia
     adapter.runtime === policy.runtime &&
     adapter.environment === policy.environment &&
     adapter.authType === policy.auth_type &&
-    adapter.credentialRef.secretRef === policy.credential_ref.secretRef &&
+    sameCredentialRef(adapter.credentialRef, policy.credential_ref) &&
     adapter.supportsExternalIdempotency === true
   );
 }
@@ -858,9 +1028,14 @@ async function currentPolicyDenial(
     sql`SELECT state FROM dopaios_projects WHERE id = ${request.projectId}`,
   );
   if (project?.state !== "P0_ACTIVE") return "project-inactive";
-  const exact = await one<{ state: string; sha256: string; invalidation: ConnectorPolicyInput["invalidation"] }>(
+  const exact = await one<{
+    state: string;
+    sha256: string;
+    invalidation: ConnectorPolicyInput["invalidation"];
+    credential_ref: OpaqueCredentialRef;
+  }>(
     ctx,
-    sql`SELECT state, sha256, invalidation FROM dopaios_connector_policies
+    sql`SELECT state, sha256, invalidation, credential_ref FROM dopaios_connector_policies
         WHERE policy_id = ${policy.policy_id} AND policy_revision = ${policy.policy_revision}`,
   );
   const expiresAt = exact?.invalidation.expiresAt === null
@@ -873,6 +1048,27 @@ async function currentPolicyDenial(
     (expiresAt !== null && expiresAt <= observedAt.getTime())
   ) {
     return "policy-invalidated";
+  }
+  if ("rotationEpoch" in exact.credential_ref) {
+    const credentialStatus = await one<{
+      expires_at: Date | string;
+      revoked_at: Date | string | null;
+    }>(
+      ctx,
+      sql`SELECT expires_at, revoked_at FROM dopaios_connector_credentials
+          WHERE secret_ref = ${exact.credential_ref.secretRef}
+            AND rotation_epoch = ${exact.credential_ref.rotationEpoch}`,
+    );
+    if (!credentialStatus) return "credential-state-missing";
+    if (
+      credentialStatus.revoked_at !== null &&
+      new Date(credentialStatus.revoked_at).getTime() <= observedAt.getTime()
+    ) {
+      return "credential-revoked";
+    }
+    if (new Date(credentialStatus.expires_at).getTime() <= observedAt.getTime()) {
+      return "credential-expired";
+    }
   }
   const current = await one<{ policy_id: string; policy_revision: number; sha256: string }>(
     ctx,
@@ -894,7 +1090,16 @@ async function currentPolicyDenial(
   ) {
     return "policy-replaced";
   }
-  if (!adapterMatchesPolicy(connector.identity, policy)) return "adapter-policy-mismatch";
+  if (
+    "rotationEpoch" in connector.identity.credentialRef &&
+    "rotationEpoch" in exact.credential_ref &&
+    connector.identity.credentialRef.rotationEpoch !== exact.credential_ref.rotationEpoch
+  ) {
+    return "credential-rotation-mismatch";
+  }
+  if (!adapterMatchesPolicy(connector.identity, { ...policy, credential_ref: exact.credential_ref })) {
+    return "adapter-policy-mismatch";
+  }
   if (!(await executionBindingAllowed(ctx, request, observedAt))) return "execution-binding-invalid";
   if (!(await allPolicyRefsAllowed(ctx, policy))) return "policy-reference-invalid";
   return requestRangeDenial(policy, request);

@@ -10,7 +10,7 @@ import {
   replayProjections,
   snapshotProjections,
 } from "../dopaios/event-store.ts";
-import { activateSopRun, registerApprovedArtifact, createSopDefinition, publishSopDefinition, requestTestRun } from "../dopaios/commands.ts";
+import { activateSopRun, registerActor, registerApprovedArtifact, createSopDefinition, publishSopDefinition, requestTestRun } from "../dopaios/commands.ts";
 import {
   completeSession,
   createSuccessorSession,
@@ -236,6 +236,93 @@ describeEmbeddedPostgres("dopaios KC-02 AI session records", () => {
     await expect(
       completeSession(db, "S-17", { sessionId: "SES-C", outcome: "failed" }),
     ).rejects.toMatchObject({ code: "ERR-SESSION-TERMINAL" });
+  });
+
+  it("blocks and audits the next active-session action after Staff revocation", async () => {
+    await registerActor(db, "S-KC09-REGISTER-ACTOR", {
+      actorId: "AGENT-KC09-REVOKE",
+      kind: "ai",
+      active: true,
+      capabilities: ["work-item-executor"],
+    });
+    await db.execute(sql`
+      INSERT INTO dopaios_work_items (id, state, executor, project_id)
+      VALUES ('WI-KC09-REVOKE', 'ACCEPTED', 'AGENT-KC09-REVOKE', 'PROJECT-KC09')
+    `);
+    await startAiSession(db, "S-KC09-START", {
+      sessionId: "SES-KC09-REVOKE",
+      workItemId: "WI-KC09-REVOKE",
+      agentId: "AGENT-KC09-REVOKE",
+      engine: "fake",
+    });
+    await db.execute(sql`
+      UPDATE dopaios_actors SET active = false WHERE id = 'AGENT-KC09-REVOKE'
+    `);
+
+    try {
+      await expect(
+        recordSessionSignal(db, "S-KC09-AFTER-REVOKE", { sessionId: "SES-KC09-REVOKE" }),
+      ).rejects.toMatchObject({ code: "ERR-AUTH-REVOKED" });
+      const audit = await readStream(db, "dopaiosAudit-S-KC09-AFTER-REVOKE");
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        type: "CommandRejected",
+        data: { commandId: "S-KC09-AFTER-REVOKE", code: "ERR-AUTH-REVOKED" },
+      });
+      await expect(
+        recordSessionArtifact(db, "S-KC09-ARTIFACT-AFTER-REVOKE", {
+          sessionId: "SES-KC09-REVOKE",
+          seq: 1,
+          kind: "checkpoint",
+          ref: "ckpt/revoked",
+          sha256: "9".repeat(64),
+          confirmed: true,
+        }),
+      ).rejects.toMatchObject({ code: "ERR-AUTH-REVOKED" });
+      const artifactAudit = await readStream(db, "dopaiosAudit-S-KC09-ARTIFACT-AFTER-REVOKE");
+      expect(artifactAudit).toHaveLength(1);
+      expect(artifactAudit[0]).toMatchObject({
+        type: "CommandRejected",
+        data: { commandId: "S-KC09-ARTIFACT-AFTER-REVOKE", code: "ERR-AUTH-REVOKED" },
+      });
+    } finally {
+      await db.execute(sql`
+        UPDATE dopaios_actors SET active = true WHERE id = 'AGENT-KC09-REVOKE'
+      `);
+      await db.execute(sql`DELETE FROM dopaios_work_items WHERE id = 'WI-KC09-REVOKE'`);
+    }
+  });
+
+  it("blocks and audits a new session for an already revoked Staff actor", async () => {
+    await registerActor(db, "S-KC09-REGISTER-REVOKED", {
+      actorId: "AGENT-KC09-ALREADY-REVOKED",
+      kind: "ai",
+      active: false,
+      capabilities: ["work-item-executor"],
+    });
+    await db.execute(sql`
+      INSERT INTO dopaios_work_items (id, state, executor, project_id)
+      VALUES ('WI-KC09-ALREADY-REVOKED', 'ACCEPTED', 'AGENT-KC09-ALREADY-REVOKED', 'PROJECT-KC09')
+    `);
+
+    try {
+      await expect(
+        startAiSession(db, "S-KC09-START-REVOKED", {
+          sessionId: "SES-KC09-ALREADY-REVOKED",
+          workItemId: "WI-KC09-ALREADY-REVOKED",
+          agentId: "AGENT-KC09-ALREADY-REVOKED",
+          engine: "fake",
+        }),
+      ).rejects.toMatchObject({ code: "ERR-AUTH-REVOKED" });
+      const audit = await readStream(db, "dopaiosAudit-S-KC09-START-REVOKED");
+      expect(audit).toHaveLength(1);
+      expect(audit[0]).toMatchObject({
+        type: "CommandRejected",
+        data: { commandId: "S-KC09-START-REVOKED", code: "ERR-AUTH-REVOKED" },
+      });
+    } finally {
+      await db.execute(sql`DELETE FROM dopaios_work_items WHERE id = 'WI-KC09-ALREADY-REVOKED'`);
+    }
   });
 
   it("replay rebuilds session chains and artifacts byte-identically", async () => {
