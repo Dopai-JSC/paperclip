@@ -20,6 +20,7 @@ export type ExecutionContract = {
   contractRevision: number;
   sopRef: Record<string, unknown>;
   steps: string[];
+  contextPackageRef?: { id: string; revision: number; sha256: string };
 };
 
 export type EngineSessionParams = Record<string, unknown>;
@@ -123,6 +124,7 @@ export async function runWorkItemSession(
       workItemId: input.contract.workItemId,
       agentId: input.agentId,
       engine: input.adapter.name,
+      contextPackageRef: input.contract.contextPackageRef,
     });
   }
 

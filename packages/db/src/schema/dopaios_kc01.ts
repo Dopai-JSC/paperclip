@@ -1,4 +1,41 @@
-import { pgTable, text, integer, boolean, jsonb, timestamp, primaryKey } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import {
+  pgTable,
+  text,
+  integer,
+  boolean,
+  jsonb,
+  timestamp,
+  primaryKey,
+  customType,
+  doublePrecision,
+  index,
+  uniqueIndex,
+  unique,
+  check,
+  foreignKey,
+} from "drizzle-orm/pg-core";
+
+const vector4 = customType<{ data: number[]; driverData: string }>({
+  dataType() {
+    return "vector(4)";
+  },
+  toDriver(value) {
+    return `[${value.join(",")}]`;
+  },
+  fromDriver(value) {
+    return value
+      .slice(1, -1)
+      .split(",")
+      .map((part) => Number(part));
+  },
+});
+
+const tsvector = customType<{ data: string }>({
+  dataType() {
+    return "tsvector";
+  },
+});
 
 // KC-01 spike (Dopaios verification batch 1): command log + read projections
 // for the seven canonical state types of FS-003 SQR-003. Events are the source
@@ -200,7 +237,26 @@ export const dopaiosAiSessions = pgTable("dopaios_ai_sessions", {
   lastSignalAt: timestamp("last_signal_at"),
   detectionLatencyMs: integer("detection_latency_ms"),
   outcome: text("outcome"),
-});
+  contextPackageId: text("context_package_id"),
+  contextPackageRevision: integer("context_package_revision"),
+  contextPackageSha256: text("context_package_sha256"),
+}, (table) => ({
+  contextPackageComplete: check(
+    "dopaios_ai_sessions_context_package_complete",
+    sql`num_nonnulls(${table.contextPackageId}, ${table.contextPackageRevision}, ${table.contextPackageSha256}) IN (0, 3)`,
+  ),
+  contextPackageFk: foreignKey({
+    name: "dopaios_ai_sessions_context_package_fk",
+    columns: [table.contextPackageId, table.contextPackageRevision, table.contextPackageSha256],
+    foreignColumns: [dopaiosContextPackages.id, dopaiosContextPackages.revision, dopaiosContextPackages.sha256],
+  }),
+  contextPackageRefUq: unique("dopaios_ai_sessions_context_package_ref_uniq").on(
+    table.id,
+    table.contextPackageId,
+    table.contextPackageRevision,
+    table.contextPackageSha256,
+  ),
+}));
 
 export const dopaiosSessionArtifacts = pgTable(
   "dopaios_session_artifacts",
@@ -231,7 +287,20 @@ export const dopaiosActivations = pgTable("dopaios_activations", {
   leaseEpoch: integer("lease_epoch").notNull().default(0),
   contractId: text("contract_id"),
   contractRevision: integer("contract_revision"),
-});
+  contextPackageId: text("context_package_id"),
+  contextPackageRevision: integer("context_package_revision"),
+  contextPackageSha256: text("context_package_sha256"),
+}, (table) => ({
+  contextPackageComplete: check(
+    "dopaios_activations_context_package_complete",
+    sql`num_nonnulls(${table.contextPackageId}, ${table.contextPackageRevision}, ${table.contextPackageSha256}) IN (0, 3)`,
+  ),
+  contextPackageFk: foreignKey({
+    name: "dopaios_activations_context_package_fk",
+    columns: [table.contextPackageId, table.contextPackageRevision, table.contextPackageSha256],
+    foreignColumns: [dopaiosContextPackages.id, dopaiosContextPackages.revision, dopaiosContextPackages.sha256],
+  }),
+}));
 
 export const dopaiosAuthBreakers = pgTable("dopaios_auth_breakers", {
   id: text("id").primaryKey(),
@@ -420,8 +489,548 @@ export const dopaiosExecutionContracts = pgTable(
     state: text("state").notNull(),
     sha256: text("sha256").notNull(),
     compiledBy: text("compiled_by").notNull(),
+    contextPackageId: text("context_package_id"),
+    contextPackageRevision: integer("context_package_revision"),
+    contextPackageSha256: text("context_package_sha256"),
   },
-  (table) => ({ pk: primaryKey({ columns: [table.id, table.revision] }) }),
+  (table) => ({
+    pk: primaryKey({ columns: [table.id, table.revision] }),
+    contextPackageComplete: check(
+      "dopaios_execution_contracts_context_package_complete",
+      sql`num_nonnulls(${table.contextPackageId}, ${table.contextPackageRevision}, ${table.contextPackageSha256}) IN (0, 3)`,
+    ),
+    contextPackageFk: foreignKey({
+      name: "dopaios_execution_contracts_context_package_fk",
+      columns: [table.contextPackageId, table.contextPackageRevision, table.contextPackageSha256],
+      foreignColumns: [dopaiosContextPackages.id, dopaiosContextPackages.revision, dopaiosContextPackages.sha256],
+    }),
+  }),
+);
+
+// ===== KC-08: connector, context package and bounded hybrid retrieval =====
+
+export const dopaiosContextPackages = pgTable(
+  "dopaios_context_packages",
+  {
+    id: text("id").notNull(),
+    revision: integer("revision").notNull(),
+    projectId: text("project_id").notNull(),
+    workItemId: text("work_item_id").notNull(),
+    state: text("state").notNull(),
+    sha256: text("sha256").notNull(),
+    manifest: jsonb("manifest").$type<Record<string, unknown>>().notNull(),
+    maxBytes: integer("max_bytes").notNull(),
+    maxTokens: integer("max_tokens").notNull(),
+    totalBytes: integer("total_bytes").notNull(),
+    totalTokens: integer("total_tokens").notNull(),
+    approvedBy: text("approved_by").notNull(),
+    approvalRef: jsonb("approval_ref").$type<Record<string, unknown>>().notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.id, table.revision] }),
+    exactRefUq: unique("dopaios_context_packages_exact_ref_uniq").on(
+      table.id,
+      table.revision,
+      table.sha256,
+    ),
+    projectRefUq: unique("dopaios_context_packages_project_ref_uniq").on(
+      table.projectId,
+      table.id,
+      table.revision,
+    ),
+    projectExactRefUq: unique("dopaios_context_packages_project_exact_ref_uniq").on(
+      table.projectId,
+      table.id,
+      table.revision,
+      table.sha256,
+    ),
+    capsCheck: check(
+      "dopaios_context_packages_caps_check",
+      sql`${table.maxBytes} >= 0 AND ${table.maxTokens} >= 0
+          AND ${table.totalBytes} >= 0 AND ${table.totalTokens} >= 0
+          AND ${table.totalBytes} <= ${table.maxBytes}
+          AND ${table.totalTokens} <= ${table.maxTokens}`,
+    ),
+  }),
+);
+
+export const dopaiosContextPackageSources = pgTable(
+  "dopaios_context_package_sources",
+  {
+    contextPackageId: text("context_package_id").notNull(),
+    contextPackageRevision: integer("context_package_revision").notNull(),
+    projectId: text("project_id").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevision: integer("source_revision").notNull(),
+    sourceSha256: text("source_sha256").notNull(),
+    sourceType: text("source_type").notNull(),
+    required: boolean("required").notNull(),
+    priority: integer("priority").notNull(),
+    mountState: text("mount_state").notNull(),
+    omissionReason: text("omission_reason"),
+    contentBytes: integer("content_bytes").notNull(),
+    tokenCount: integer("token_count").notNull(),
+    content: text("content"),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [table.contextPackageId, table.contextPackageRevision, table.sourceId, table.sourceRevision],
+    }),
+    scopeUq: unique("dopaios_context_package_sources_scope_uniq").on(
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+      table.sourceId,
+      table.sourceRevision,
+    ),
+    exactRefUq: unique("dopaios_context_package_sources_exact_ref_uniq").on(
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+      table.sourceId,
+      table.sourceRevision,
+      table.sourceSha256,
+    ),
+    packageFk: foreignKey({
+      name: "dopaios_context_package_sources_package_fk",
+      columns: [table.projectId, table.contextPackageId, table.contextPackageRevision],
+      foreignColumns: [
+        dopaiosContextPackages.projectId,
+        dopaiosContextPackages.id,
+        dopaiosContextPackages.revision,
+      ],
+    }),
+    countsCheck: check(
+      "dopaios_context_package_sources_counts_check",
+      sql`${table.priority} >= 0 AND ${table.contentBytes} >= 0 AND ${table.tokenCount} >= 0`,
+    ),
+    mountCheck: check(
+      "dopaios_context_package_sources_mount_check",
+      sql`(
+            ${table.mountState} = 'mounted'
+            AND ${table.omissionReason} IS NULL
+            AND ${table.content} IS NOT NULL
+          ) OR (
+            ${table.mountState} = 'omitted'
+            AND ${table.omissionReason} IS NOT NULL
+            AND ${table.content} IS NULL
+          )`,
+    ),
+    requiredCheck: check(
+      "dopaios_context_package_sources_required_check",
+      sql`NOT ${table.required} OR ${table.mountState} = 'mounted'`,
+    ),
+    contentBytesCheck: check(
+      "dopaios_context_package_sources_content_bytes_check",
+      sql`${table.mountState} <> 'mounted' OR ${table.contentBytes} = octet_length(${table.content})`,
+    ),
+    projectIdx: index("dopaios_context_sources_project_idx").on(
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+    ),
+  }),
+);
+
+export const dopaiosArtifactProjectScopes = pgTable(
+  "dopaios_artifact_project_scopes",
+  {
+    artifactId: text("artifact_id").notNull(),
+    artifactRevision: integer("artifact_revision").notNull(),
+    projectId: text("project_id").notNull(),
+    scopeState: text("scope_state").notNull(),
+    boundBy: text("bound_by").notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.artifactId, table.artifactRevision, table.projectId] }),
+  }),
+);
+
+export const dopaiosConnectorPolicies = pgTable(
+  "dopaios_connector_policies",
+  {
+    policyId: text("policy_id").notNull(),
+    policyRevision: integer("policy_revision").notNull(),
+    configuration: jsonb("configuration").$type<Record<string, unknown>>().notNull(),
+    scopeLevel: text("scope_level").notNull(),
+    precedence: jsonb("precedence").$type<string[]>().notNull(),
+    approverCapability: text("approver_capability").notNull(),
+    effectiveAt: timestamp("effective_at", { withTimezone: true }).notNull(),
+    invalidation: jsonb("invalidation").$type<Record<string, unknown>>().notNull(),
+    connectorId: text("connector_id").notNull(),
+    connectorVersion: text("connector_version").notNull(),
+    projectId: text("project_id").notNull(),
+    purpose: text("purpose").notNull(),
+    action: text("action").notNull(),
+    direction: text("direction").notNull(),
+    authType: text("auth_type").notNull(),
+    credentialRef: jsonb("credential_ref").$type<Record<string, unknown>>().notNull(),
+    runtime: text("runtime").notNull(),
+    environment: text("environment").notNull(),
+    dataClasses: jsonb("data_classes")
+      .$type<Array<{ name: string; policyRef: Record<string, unknown> }>>()
+      .notNull(),
+    lifecyclePolicyRef: jsonb("lifecycle_policy_ref").$type<Record<string, unknown>>().notNull(),
+    retentionPolicyRef: jsonb("retention_policy_ref").$type<Record<string, unknown>>().notNull(),
+    scopes: jsonb("scopes").$type<string[]>().notNull(),
+    rateLimit: jsonb("rate_limit").$type<Record<string, unknown>>().notNull(),
+    timeoutMs: integer("timeout_ms").notNull(),
+    interruption: jsonb("interruption").$type<Record<string, unknown>>().notNull(),
+    retry: jsonb("retry").$type<Record<string, unknown>>().notNull(),
+    backoff: jsonb("backoff").$type<Record<string, unknown>>().notNull(),
+    circuitBreaker: jsonb("circuit_breaker").$type<Record<string, unknown>>().notNull(),
+    idempotency: jsonb("idempotency").$type<Record<string, unknown>>().notNull(),
+    reconciliation: jsonb("reconciliation").$type<Record<string, unknown>>().notNull(),
+    fallback: jsonb("fallback").$type<Record<string, unknown>>().notNull(),
+    audit: jsonb("audit").$type<Record<string, unknown>>().notNull(),
+    redaction: jsonb("redaction").$type<Record<string, unknown>>().notNull(),
+    approvalRef: jsonb("approval_ref").$type<Record<string, unknown>>().notNull(),
+    state: text("state").notNull(),
+    sha256: text("sha256").notNull(),
+    createdBy: text("created_by").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.policyId, table.policyRevision] }),
+    exactRefUq: unique("dopaios_connector_policies_exact_ref_uniq").on(
+      table.policyId,
+      table.policyRevision,
+      table.sha256,
+    ),
+    auditScopeUq: unique("dopaios_connector_policies_audit_scope_uniq").on(
+      table.policyId,
+      table.policyRevision,
+      table.sha256,
+      table.projectId,
+      table.connectorId,
+      table.connectorVersion,
+      table.purpose,
+      table.action,
+      table.direction,
+    ),
+    scopeUq: uniqueIndex("dopaios_connector_policy_scope_uniq").on(
+      table.connectorId,
+      table.connectorVersion,
+      table.projectId,
+      table.purpose,
+      table.action,
+      table.direction,
+      table.policyRevision,
+    ),
+  }),
+);
+
+export const dopaiosConnectorAuditEvents = pgTable(
+  "dopaios_connector_audit_events",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id").notNull(),
+    actorId: text("actor_id").notNull(),
+    sessionId: text("session_id").notNull(),
+    connectorId: text("connector_id").notNull(),
+    connectorVersion: text("connector_version").notNull(),
+    purpose: text("purpose").notNull(),
+    action: text("action").notNull(),
+    direction: text("direction").notNull(),
+    policyId: text("policy_id"),
+    policyRevision: integer("policy_revision"),
+    policySha256: text("policy_sha256"),
+    runtime: text("runtime"),
+    environment: text("environment"),
+    approvalRef: jsonb("approval_ref").$type<Record<string, unknown>>(),
+    fallbackContextRef: jsonb("fallback_context_ref").$type<Record<string, unknown>>(),
+    decision: text("decision").notNull(),
+    reasonCode: text("reason_code").notNull(),
+    requestId: text("request_id").notNull(),
+    requestSummary: jsonb("request_summary").$type<Record<string, unknown>>().notNull(),
+    responseSummary: jsonb("response_summary").$type<Record<string, unknown>>(),
+    retryClass: text("retry_class").notNull(),
+    attempt: integer("attempt").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    projectIdx: index("dopaios_connector_audit_project_idx").on(table.projectId, table.createdAt),
+    policyComplete: check(
+      "dopaios_connector_audit_policy_complete",
+      sql`num_nonnulls(${table.policyId}, ${table.policyRevision}, ${table.policySha256}) IN (0, 3)`,
+    ),
+    policyFk: foreignKey({
+      name: "dopaios_connector_audit_policy_fk",
+      columns: [table.policyId, table.policyRevision, table.policySha256],
+      foreignColumns: [
+        dopaiosConnectorPolicies.policyId,
+        dopaiosConnectorPolicies.policyRevision,
+        dopaiosConnectorPolicies.sha256,
+      ],
+    }),
+    policyScopeFk: foreignKey({
+      name: "dopaios_connector_audit_policy_scope_fk",
+      columns: [
+        table.policyId,
+        table.policyRevision,
+        table.policySha256,
+        table.projectId,
+        table.connectorId,
+        table.connectorVersion,
+        table.purpose,
+        table.action,
+        table.direction,
+      ],
+      foreignColumns: [
+        dopaiosConnectorPolicies.policyId,
+        dopaiosConnectorPolicies.policyRevision,
+        dopaiosConnectorPolicies.sha256,
+        dopaiosConnectorPolicies.projectId,
+        dopaiosConnectorPolicies.connectorId,
+        dopaiosConnectorPolicies.connectorVersion,
+        dopaiosConnectorPolicies.purpose,
+        dopaiosConnectorPolicies.action,
+        dopaiosConnectorPolicies.direction,
+      ],
+    }),
+  }),
+);
+
+export const dopaiosDkpChunks = pgTable(
+  "dopaios_dkp_chunks",
+  {
+    sourceId: text("source_id").notNull(),
+    sourceRevision: integer("source_revision").notNull(),
+    chunkId: text("chunk_id").notNull(),
+    projectId: text("project_id").notNull(),
+    contextPackageId: text("context_package_id").notNull(),
+    contextPackageRevision: integer("context_package_revision").notNull(),
+    ordinal: integer("ordinal").notNull(),
+    charStart: integer("char_start").notNull(),
+    charEnd: integer("char_end").notNull(),
+    rangeUnit: text("range_unit").notNull(),
+    content: text("content").notNull(),
+    searchVector: tsvector("search_vector").generatedAlwaysAs(sql`to_tsvector('simple', "content")`),
+    embedding: vector4("embedding").notNull(),
+    embeddingModelRef: jsonb("embedding_model_ref").$type<Record<string, unknown>>().notNull(),
+    indexVersion: text("index_version").notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.sourceId,
+        table.sourceRevision,
+        table.chunkId,
+        table.indexVersion,
+      ],
+    }),
+    searchIdx: index("dopaios_dkp_chunks_search_idx").using("gin", table.searchVector),
+    ordinalUq: unique("dopaios_dkp_chunks_ordinal_uniq").on(
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+      table.sourceId,
+      table.sourceRevision,
+      table.indexVersion,
+      table.ordinal,
+    ),
+    rangeCheck: check(
+      "dopaios_dkp_chunks_range_check",
+      sql`${table.ordinal} >= 0 AND ${table.charStart} >= 0
+          AND ${table.charEnd} > ${table.charStart}
+          AND ${table.rangeUnit} = 'utf16-code-unit'`,
+    ),
+    scopeIdx: index("dopaios_dkp_chunks_scope_idx").on(
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+    ),
+    sourceFk: foreignKey({
+      name: "dopaios_dkp_chunks_source_fk",
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.sourceId,
+        table.sourceRevision,
+      ],
+      foreignColumns: [
+        dopaiosContextPackageSources.projectId,
+        dopaiosContextPackageSources.contextPackageId,
+        dopaiosContextPackageSources.contextPackageRevision,
+        dopaiosContextPackageSources.sourceId,
+        dopaiosContextPackageSources.sourceRevision,
+      ],
+    }),
+  }),
+);
+
+export const dopaiosRetrievalQueries = pgTable(
+  "dopaios_retrieval_queries",
+  {
+    id: text("id").primaryKey(),
+    sessionId: text("session_id").notNull(),
+    projectId: text("project_id").notNull(),
+    contextPackageId: text("context_package_id").notNull(),
+    contextPackageRevision: integer("context_package_revision").notNull(),
+    contextPackageSha256: text("context_package_sha256").notNull(),
+    querySha256: text("query_sha256").notNull(),
+    queryRedacted: text("query_redacted").notNull(),
+    method: text("method").notNull(),
+    indexVersion: text("index_version").notNull(),
+    embeddingModelRef: jsonb("embedding_model_ref").$type<Record<string, unknown>>().notNull(),
+    policyDecision: text("policy_decision").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull(),
+  },
+  (table) => ({
+    provenanceUq: unique("dopaios_retrieval_queries_provenance_uniq").on(
+      table.id,
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+      table.contextPackageSha256,
+    ),
+    packageFk: foreignKey({
+      name: "dopaios_retrieval_queries_package_fk",
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.contextPackageSha256,
+      ],
+      foreignColumns: [
+        dopaiosContextPackages.projectId,
+        dopaiosContextPackages.id,
+        dopaiosContextPackages.revision,
+        dopaiosContextPackages.sha256,
+      ],
+    }),
+    sessionPackageFk: foreignKey({
+      name: "dopaios_retrieval_queries_session_package_fk",
+      columns: [
+        table.sessionId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.contextPackageSha256,
+      ],
+      foreignColumns: [
+        dopaiosAiSessions.id,
+        dopaiosAiSessions.contextPackageId,
+        dopaiosAiSessions.contextPackageRevision,
+        dopaiosAiSessions.contextPackageSha256,
+      ],
+    }),
+  }),
+);
+
+export const dopaiosRetrievalHits = pgTable(
+  "dopaios_retrieval_hits",
+  {
+    queryId: text("query_id").notNull(),
+    rank: integer("rank").notNull(),
+    projectId: text("project_id").notNull(),
+    contextPackageId: text("context_package_id").notNull(),
+    contextPackageRevision: integer("context_package_revision").notNull(),
+    contextPackageSha256: text("context_package_sha256").notNull(),
+    sourceId: text("source_id").notNull(),
+    sourceRevision: integer("source_revision").notNull(),
+    sourceSha256: text("source_sha256").notNull(),
+    chunkId: text("chunk_id").notNull(),
+    charStart: integer("char_start").notNull(),
+    charEnd: integer("char_end").notNull(),
+    rangeUnit: text("range_unit").notNull(),
+    excerpt: text("excerpt").notNull(),
+    method: text("method").notNull(),
+    indexVersion: text("index_version").notNull(),
+    embeddingModelRef: jsonb("embedding_model_ref").$type<Record<string, unknown>>().notNull(),
+    score: doublePrecision("score").notNull(),
+    policyDecision: text("policy_decision").notNull(),
+  },
+  (table) => ({
+    pk: primaryKey({ columns: [table.queryId, table.rank] }),
+    queryChunkUq: unique("dopaios_retrieval_hits_query_chunk_uniq").on(
+      table.queryId,
+      table.projectId,
+      table.contextPackageId,
+      table.contextPackageRevision,
+      table.sourceId,
+      table.sourceRevision,
+      table.chunkId,
+      table.indexVersion,
+    ),
+    queryFk: foreignKey({
+      name: "dopaios_retrieval_hits_query_fk",
+      columns: [
+        table.queryId,
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.contextPackageSha256,
+      ],
+      foreignColumns: [
+        dopaiosRetrievalQueries.id,
+        dopaiosRetrievalQueries.projectId,
+        dopaiosRetrievalQueries.contextPackageId,
+        dopaiosRetrievalQueries.contextPackageRevision,
+        dopaiosRetrievalQueries.contextPackageSha256,
+      ],
+    }),
+    packageFk: foreignKey({
+      name: "dopaios_retrieval_hits_package_fk",
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.contextPackageSha256,
+      ],
+      foreignColumns: [
+        dopaiosContextPackages.projectId,
+        dopaiosContextPackages.id,
+        dopaiosContextPackages.revision,
+        dopaiosContextPackages.sha256,
+      ],
+    }),
+    sourceFk: foreignKey({
+      name: "dopaios_retrieval_hits_source_fk",
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.sourceId,
+        table.sourceRevision,
+        table.sourceSha256,
+      ],
+      foreignColumns: [
+        dopaiosContextPackageSources.projectId,
+        dopaiosContextPackageSources.contextPackageId,
+        dopaiosContextPackageSources.contextPackageRevision,
+        dopaiosContextPackageSources.sourceId,
+        dopaiosContextPackageSources.sourceRevision,
+        dopaiosContextPackageSources.sourceSha256,
+      ],
+    }),
+    chunkFk: foreignKey({
+      name: "dopaios_retrieval_hits_chunk_fk",
+      columns: [
+        table.projectId,
+        table.contextPackageId,
+        table.contextPackageRevision,
+        table.sourceId,
+        table.sourceRevision,
+        table.chunkId,
+        table.indexVersion,
+      ],
+      foreignColumns: [
+        dopaiosDkpChunks.projectId,
+        dopaiosDkpChunks.contextPackageId,
+        dopaiosDkpChunks.contextPackageRevision,
+        dopaiosDkpChunks.sourceId,
+        dopaiosDkpChunks.sourceRevision,
+        dopaiosDkpChunks.chunkId,
+        dopaiosDkpChunks.indexVersion,
+      ],
+    }),
+  }),
 );
 
 // ===== KC-05: workspace song song theo Release =====

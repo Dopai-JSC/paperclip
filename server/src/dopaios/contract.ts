@@ -7,6 +7,7 @@ import {
   payloadSha256,
 } from "./event-store.js";
 import { executeAuditedCommand } from "./approval.js";
+import { requireApprovedContextPackage } from "./context-package.js";
 
 // KC-13 B3: Hợp đồng thực hiện AI (PRD FR-63 — FS-003 chủ đích không định
 // nghĩa, toàn bộ ngữ nghĩa lấy từ PRD). Biên dịch từ BỐN nguồn có phiên bản:
@@ -74,6 +75,7 @@ export async function compileExecutionContract(
     compiledBy: string;
     sopRef: { id: string; revision: number; sha256: string };
     fields: Json;
+    contextPackageRef?: { id: string; revision: number; sha256: string };
   },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
@@ -138,6 +140,15 @@ export async function compileExecutionContract(
 
       const fields = p["fields"] as Json;
       requireContractFields(fields);
+      const contextPackageRef = p["contextPackageRef"] as
+        | { id: string; revision: number; sha256: string }
+        | undefined;
+      if (contextPackageRef) {
+        await requireApprovedContextPackage(ctx, contextPackageRef, {
+          projectId: workItem.project_id,
+          workItemId: p["workItemId"] as string,
+        });
+      }
 
       const prior = (await ctx.tx.execute(sql`
         SELECT revision, state FROM dopaios_execution_contracts
@@ -150,6 +161,7 @@ export async function compileExecutionContract(
         manifest: manifestPin,
         project: projectPin,
         workItem: { id: p["workItemId"], state: workItem.state },
+        ...(contextPackageRef ? { contextPackage: contextPackageRef } : {}),
       };
       const sha256 = payloadSha256({ sources, fields });
 
@@ -164,6 +176,7 @@ export async function compileExecutionContract(
           fields,
           sha256,
           compiledBy: p["compiledBy"],
+          contextPackageRef: contextPackageRef ?? null,
         },
         metadata: { commandId, audit: true },
       });
@@ -211,11 +224,28 @@ export async function requireActiveContract(
   ctx: CommandContext,
   contractId: string,
   revision: number,
-): Promise<{ fields: Json; sha256: string; workItemId: string }> {
-  const contract = await one<{ fields: Json; state: string; sha256: string; work_item_id: string }>(
+): Promise<{
+  fields: Json;
+  sha256: string;
+  workItemId: string;
+  contextPackageRef: { id: string; revision: number; sha256: string } | null;
+}> {
+  const contract = await one<{
+    fields: Json;
+    state: string;
+    sha256: string;
+    work_item_id: string;
+    project_id: string | null;
+    context_package_id: string | null;
+    context_package_revision: number | null;
+    context_package_sha256: string | null;
+  }>(
     ctx,
-    sql`SELECT fields, state, sha256, work_item_id FROM dopaios_execution_contracts
-        WHERE id = ${contractId} AND revision = ${revision}`,
+    sql`SELECT c.fields, c.state, c.sha256, c.work_item_id, w.project_id,
+               c.context_package_id, c.context_package_revision, c.context_package_sha256
+        FROM dopaios_execution_contracts c
+        JOIN dopaios_work_items w ON w.id = c.work_item_id
+        WHERE c.id = ${contractId} AND c.revision = ${revision}`,
   );
   if (!contract) {
     throw new CommandRejectedError(
@@ -230,5 +260,34 @@ export async function requireActiveContract(
     );
   }
   requireContractFields(contract.fields);
-  return { fields: contract.fields, sha256: contract.sha256, workItemId: contract.work_item_id };
+  const contextColumns = [
+    contract.context_package_id,
+    contract.context_package_revision,
+    contract.context_package_sha256,
+  ];
+  if (contextColumns.some((value) => value !== null) && contextColumns.some((value) => value === null)) {
+    throw new CommandRejectedError("ERR-CONTEXT-PIN", "Execution contract carries a partial Context Package pin");
+  }
+  const contextPackageRef = contract.context_package_id
+    ? {
+        id: contract.context_package_id,
+        revision: Number(contract.context_package_revision),
+        sha256: contract.context_package_sha256!,
+      }
+    : null;
+  if (contextPackageRef) {
+    if (!contract.project_id) {
+      throw new CommandRejectedError("ERR-CONTEXT-PIN", "Context-pinned contract has no Project-bound work item");
+    }
+    await requireApprovedContextPackage(ctx, contextPackageRef, {
+      projectId: contract.project_id,
+      workItemId: contract.work_item_id,
+    });
+  }
+  return {
+    fields: contract.fields,
+    sha256: contract.sha256,
+    workItemId: contract.work_item_id,
+    contextPackageRef,
+  };
 }
