@@ -63,18 +63,6 @@ ecosystem = "npm"
 ignore = true
 reason = "Transitive build-time, lỗ hổng chỉ ảnh hưởng dev-server; vá vượt ranh breaking 0.x; xem lại khi đồng bộ upstream."
 
-# brace-expansion 1.1.16 — GHSA-mh99-v99m-4gvg (7.5, DoS out-of-memory qua expand()
-# không giới hạn độ dài kết quả): dòng 1.x KHÔNG có bản vá — fix duy nhất là 5.0.8
-# (kiểm OSV API 30/07/2026). 1.x là transitive của chuỗi minimatch legacy, không
-# nhảy major được; instance 5.0.6 đã override lên 5.0.8. Đầu vào glob của spike là
-# cấu hình cục bộ, không phải input không tin cậy.
-[[PackageOverrides]]
-name = "brace-expansion"
-version = "1.1.16"
-ecosystem = "npm"
-ignore = true
-reason = "Dòng 1.x không có bản vá (fix duy nhất 5.0.8 — nhảy major, kẹt chuỗi minimatch legacy); GHSA-3jxr đã vá bằng 1.1.16; xem lại khi đồng bộ upstream."
-
 # react-router 7.18.0 — GHSA-qwww-vcr4-c8h2 (7.1) ảnh hưởng 7.12.0 ≤ v < 8.3.0,
 # bản vá chỉ có ở major 8.3.0 (kiểm OSV API 30/07/2026). Đã nâng 7.16.0 → 7.18.0
 # vá 4 advisory còn lại của react-router; không nhảy major trên fork đóng băng.
