@@ -33,13 +33,14 @@ The exact restore order is:
 
 ## 1. Preflight and start
 
-Run from the repository root in PowerShell. Stop if the image inspection, compose
-validation, or resolved runtime root differs from the expected repository-local
-path.
+Run from the repository root in PowerShell 7 on Windows or Linux. The path
+construction below is platform-native; do not replace it with literal `\` or `/`
+separators. Stop if the image inspection, compose validation, or resolved runtime
+root differs from the expected repository-local path.
 
 ```powershell
 $kc16Root = (Resolve-Path .).Path
-$kc16Runtime = Join-Path $kc16Root '.kc16\runtime'
+$kc16Runtime = [System.IO.Path]::Combine($kc16Root, '.kc16', 'runtime')
 New-Item -ItemType Directory -Force -Path $kc16Runtime | Out-Null
 
 docker image inspect pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2 --format '{{.Id}}'
@@ -73,11 +74,16 @@ and fixture mounts are read-only.
 
 ```powershell
 $runtimeImage = 'dopaios-server@sha256:d7d12fee87d946612334e314203afdbd77d07e41460cdb618d1d2a607fcbcf29'
+$serverSource = [System.IO.Path]::Combine($kc16Root, 'server', 'src')
+$databaseSource = [System.IO.Path]::Combine($kc16Root, 'packages', 'db', 'src')
+$sharedSource = [System.IO.Path]::Combine($kc16Root, 'packages', 'shared', 'src')
+$dopaiosSource = [System.IO.Path]::Combine($kc16Root, 'dopaios')
+$migrationSource = [System.IO.Path]::Combine($databaseSource, 'migrations')
 $sourceMounts = @(
-  '-v', "${kc16Root}\server\src:/app/server/src:ro",
-  '-v', "${kc16Root}\packages\db\src:/app/packages/db/src:ro",
-  '-v', "${kc16Root}\packages\shared\src:/app/packages/shared/src:ro",
-  '-v', "${kc16Root}\dopaios:/app/dopaios:ro"
+  '-v', "${serverSource}:/app/server/src:ro",
+  '-v', "${databaseSource}:/app/packages/db/src:ro",
+  '-v', "${sharedSource}:/app/packages/shared/src:ro",
+  '-v', "${dopaiosSource}:/app/dopaios:ro"
 )
 
 docker run --rm --network dopaios-kc16_default --entrypoint node `
@@ -131,8 +137,12 @@ $sourceCommit = git rev-parse HEAD
 $bundleId = 'kc16-' + (Get-Date -Format 'yyyyMMddHHmmss')
 
 docker exec -u root dopaios-kc16-postgres-1 sh -ec "mkdir -p /kc16-runtime/recovery/$bundleId/artifacts /kc16-runtime/recovery/$bundleId/checkpoints; chown -R postgres:postgres /kc16-runtime/recovery/$bundleId"
-Copy-Item -Recurse -Force "$kc16Runtime\mirror\artifacts\*" "$kc16Runtime\recovery\$bundleId\artifacts\"
-Copy-Item -Recurse -Force "$kc16Runtime\mirror\checkpoints\*" "$kc16Runtime\recovery\$bundleId\checkpoints\"
+$mirrorArtifacts = [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'artifacts', '*')
+$mirrorCheckpoints = [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'checkpoints', '*')
+$bundleArtifacts = [System.IO.Path]::Combine($kc16Runtime, 'recovery', $bundleId, 'artifacts')
+$bundleCheckpoints = [System.IO.Path]::Combine($kc16Runtime, 'recovery', $bundleId, 'checkpoints')
+Copy-Item -Recurse -Force $mirrorArtifacts $bundleArtifacts
+Copy-Item -Recurse -Force $mirrorCheckpoints $bundleCheckpoints
 docker exec -u postgres dopaios-kc16-postgres-1 sh -ec "pg_dump -Fc -U paperclip -d dopaios_kc16 -f /kc16-runtime/recovery/$bundleId/postgres.dump; sync /kc16-runtime/recovery/$bundleId/postgres.dump"
 docker exec -u root dopaios-kc16-postgres-1 sh -ec "chown -R 1000:1000 /kc16-runtime/recovery/$bundleId"
 
@@ -140,7 +150,7 @@ docker run --rm --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" `
   -e "KC16_SOURCE_COMMIT=$sourceCommit" -e KC16_MIGRATION_ROOT=/kc16-migrations `
-  @sourceMounts -v "${kc16Root}\packages\db\src\migrations:/kc16-migrations:ro" `
+  @sourceMounts -v "${migrationSource}:/kc16-migrations:ro" `
   -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
   ./server/src/dopaios/create-kc16-recovery-bundle.ts
