@@ -1,11 +1,9 @@
 name: commitperclip PR Review
 
+# This fork does not provision the upstream-only COMMITPERCLIP_KEY GitHub App
+# private key. Keep the bot manual-only unless it is deliberately adopted.
 on:
-  pull_request_target:
-    types: [opened, synchronize, reopened]
-
-# Always runs from base branch context — never executes PR code.
-# pull_request_target gives access to secrets for untrusted fork PRs.
+  workflow_dispatch: {}
 
 permissions:
   pull-requests: write
