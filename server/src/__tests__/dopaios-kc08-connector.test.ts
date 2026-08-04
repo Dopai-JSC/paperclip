@@ -21,6 +21,7 @@ import {
   connectorPolicyApprovalSha256,
   executeConnectorRequest,
   materializeConnectorPolicy,
+  revokeConnectorCredential,
   type ConnectorAdapterIdentity,
   type ConnectorGatewayRuntime,
   type ConnectorPolicyInput,
@@ -143,6 +144,12 @@ describeDb("dopaios KC-08 connector gateway", () => {
       active: true,
       capabilities: ["connector-policy-approver"],
     });
+    await registerActor(db, cmd("credential-admin"), {
+      actorId: "CREDENTIAL-ADMIN-KC09",
+      kind: "human",
+      active: true,
+      capabilities: ["credential-admin"],
+    });
     await pinSeparationPolicy(db, cmd("connector-separation"), {
       policyId: "SEP-CONNECTOR-POLICY-KC08",
       artifactType: "connector-policy",
@@ -188,6 +195,9 @@ describeDb("dopaios KC-08 connector gateway", () => {
       "concurrent-rate",
       "revisioned",
       "policy-shift",
+      "credential-expired",
+      "credential-rotation",
+      "credential-revoked-retry",
     ];
     for (const binding of [
       { project: projectId, actor: auditIdentity.actorId, session: auditIdentity.sessionId, activation: auditIdentity.activationId, suffix: "A" },
@@ -895,6 +905,210 @@ describeDb("dopaios KC-08 connector gateway", () => {
       WHERE data::text LIKE '%must-never-persist%'
     `)) as unknown as Array<{ n: number }>;
     expect(leaked[0]?.n).toBe(0);
+  });
+
+  it("materializes an opaque credential reference with explicit TTL and rotation provenance", async () => {
+    const credentialRef = {
+      secretRef: "secret://github-app/kc09-lifecycle",
+      issuedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-08-04T00:00:00.000Z",
+      rotationEpoch: 1,
+      revokedAt: null,
+    };
+    await approveAndMaterialize("credential-lifecycle-policy", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-LIFECYCLE",
+      connector: { id: "credential-lifecycle", version: "2026-08-03" },
+      auth: { type: "github-app", credentialRef },
+      fallback: { mode: "none" },
+    });
+    const rows = (await db.execute(sql`
+      SELECT credential_ref FROM dopaios_connector_policies
+      WHERE policy_id = 'CONN-POL-KC09-CREDENTIAL-LIFECYCLE' AND policy_revision = 1
+    `)) as unknown as Array<{ credential_ref: typeof credentialRef }>;
+    expect(rows[0]?.credential_ref).toEqual(credentialRef);
+  });
+
+  it("rejects conflicting TTL metadata for the same credential rotation epoch", async () => {
+    const credentialRef = {
+      secretRef: "secret://github-app/kc09-lifecycle-conflict",
+      issuedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-08-04T00:00:00.000Z",
+      rotationEpoch: 2,
+      revokedAt: null,
+    };
+    await approveAndMaterialize("credential-lifecycle-conflict-first", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-CONFLICT-FIRST",
+      connector: { id: "credential-conflict-first", version: "2026-08-03" },
+      auth: { type: "github-app", credentialRef },
+      fallback: { mode: "none" },
+    });
+    await expect(approveAndMaterialize("credential-lifecycle-conflict-second", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-CONFLICT-SECOND",
+      connector: { id: "credential-conflict-second", version: "2026-08-03" },
+      auth: {
+        type: "github-app",
+        credentialRef: { ...credentialRef, expiresAt: "2026-08-05T00:00:00.000Z" },
+      },
+      fallback: { mode: "none" },
+    })).rejects.toMatchObject({ code: "ERR-CONNECTOR-CREDENTIAL-CONFLICT" });
+  });
+
+  it("rejects a credential reference that was revoked before policy materialization", async () => {
+    await expect(approveAndMaterialize("credential-revoked-policy", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-REVOKED",
+      connector: { id: "credential-revoked", version: "2026-08-03" },
+      auth: {
+        type: "github-app",
+        credentialRef: {
+          secretRef: "secret://github-app/kc09-revoked",
+          issuedAt: "2026-08-03T00:00:00.000Z",
+          expiresAt: "2026-08-04T00:00:00.000Z",
+          rotationEpoch: 1,
+          revokedAt: "2026-08-03T01:00:00.000Z",
+        },
+      },
+      fallback: { mode: "none" },
+    })).rejects.toMatchObject({ code: "ERR-CONNECTOR-CREDENTIAL-REVOKED" });
+  });
+
+  it("denies an expired credential before any connector side effect", async () => {
+    const credentialRef = {
+      secretRef: "secret://github-app/kc09-expired",
+      issuedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-08-03T02:00:00.000Z",
+      rotationEpoch: 4,
+      revokedAt: null,
+    };
+    await approveAndMaterialize("credential-expired-policy", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-EXPIRED",
+      connector: { id: "credential-expired", version: "2026-07-01" },
+      auth: { type: "github-app", credentialRef },
+      fallback: { mode: "none" },
+    });
+    const connector = new FakeConnector(
+      [{ ok: true, value: { mustNotRun: true } }],
+      { ...identity("credential-expired"), credentialRef },
+    );
+    await expect(executeConnectorRequest(db, connector, {
+      ...auditIdentity,
+      requestId: "REQ-CONN-CREDENTIAL-EXPIRED",
+      connector: { id: "credential-expired", version: "2026-07-01" },
+      projectId,
+      purpose: "read-source",
+      action: "repository.read",
+      direction: "egress",
+      dataClasses: ["source-code"],
+      scopes: ["contents:read"],
+      payload: {},
+    }, runtimeAt("2026-08-03T02:00:00.001Z"))).rejects.toMatchObject({ reasonCode: "credential-expired" });
+    expect(connector.invocationCount).toBe(0);
+  });
+
+  it("denies an adapter whose credential rotation epoch differs from the approved policy", async () => {
+    const approvedCredentialRef = {
+      secretRef: "secret://github-app/kc09-rotation",
+      issuedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-08-04T00:00:00.000Z",
+      rotationEpoch: 7,
+      revokedAt: null,
+    };
+    await approveAndMaterialize("credential-rotation-policy", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-ROTATION",
+      connector: { id: "credential-rotation", version: "2026-07-01" },
+      auth: { type: "github-app", credentialRef: approvedCredentialRef },
+      fallback: { mode: "none" },
+    });
+    const connector = new FakeConnector(
+      [{ ok: true, value: { mustNotRun: true } }],
+      {
+        ...identity("credential-rotation"),
+        credentialRef: { ...approvedCredentialRef, rotationEpoch: 8 },
+      },
+    );
+    await expect(executeConnectorRequest(db, connector, {
+      ...auditIdentity,
+      requestId: "REQ-CONN-CREDENTIAL-ROTATION-MISMATCH",
+      connector: { id: "credential-rotation", version: "2026-07-01" },
+      projectId,
+      purpose: "read-source",
+      action: "repository.read",
+      direction: "egress",
+      dataClasses: ["source-code"],
+      scopes: ["contents:read"],
+      payload: {},
+    }, runtimeAt("2026-08-03T02:30:00.000Z"))).rejects.toMatchObject({
+      reasonCode: "credential-rotation-mismatch",
+    });
+    expect(connector.invocationCount).toBe(0);
+  });
+
+  it("revalidates credential revocation before retrying an external action", async () => {
+    const credentialRef = {
+      secretRef: "secret://github-app/kc09-live-revoke",
+      issuedAt: "2026-08-03T00:00:00.000Z",
+      expiresAt: "2026-08-04T00:00:00.000Z",
+      rotationEpoch: 3,
+      revokedAt: null,
+    };
+    await approveAndMaterialize("credential-revoked-retry-policy", {
+      ...basePolicy,
+      policyId: "CONN-POL-KC09-CREDENTIAL-REVOKED-RETRY",
+      connector: { id: "credential-revoked-retry", version: "2026-07-01" },
+      auth: { type: "github-app", credentialRef },
+      fallback: { mode: "none" },
+      rateLimit: { limit: 20, windowMs: 60_000 },
+      circuitBreaker: { threshold: 20, reset: { mode: "after", delayMs: 3_600_000 } },
+    });
+    await expect(revokeConnectorCredential(db, "KC09-REVOKE-CREDENTIAL-BEFORE-ISSUANCE", {
+      policyId: "CONN-POL-KC09-CREDENTIAL-REVOKED-RETRY",
+      policyRevision: 1,
+      secretRef: credentialRef.secretRef,
+      rotationEpoch: credentialRef.rotationEpoch,
+      revokedAt: "2026-08-02T23:59:59.999Z",
+      actorId: "CREDENTIAL-ADMIN-KC09",
+    })).rejects.toMatchObject({ code: "ERR-CONNECTOR-CREDENTIAL-TIME" });
+    await expect(revokeConnectorCredential(db, "KC09-REVOKE-CREDENTIAL-IN-FUTURE", {
+      policyId: "CONN-POL-KC09-CREDENTIAL-REVOKED-RETRY",
+      policyRevision: 1,
+      secretRef: credentialRef.secretRef,
+      rotationEpoch: credentialRef.rotationEpoch,
+      revokedAt: "2100-01-01T00:00:00.000Z",
+      actorId: "CREDENTIAL-ADMIN-KC09",
+    })).rejects.toMatchObject({ code: "ERR-CONNECTOR-CREDENTIAL-TIME" });
+    const connector = new FakeConnector([
+      connectorTransientFailure("retry-safe before credential revocation"),
+      { ok: true, value: { mustNotRun: true } },
+    ], { ...identity("credential-revoked-retry"), credentialRef });
+    await expect(executeConnectorRequest(db, connector, {
+      ...auditIdentity,
+      requestId: "REQ-CONN-CREDENTIAL-REVOKED-RETRY",
+      connector: { id: "credential-revoked-retry", version: "2026-07-01" },
+      projectId,
+      purpose: "read-source",
+      action: "repository.read",
+      direction: "egress",
+      dataClasses: ["source-code"],
+      scopes: ["contents:read"],
+      payload: {},
+    }, runtimeAt("2026-08-03T03:00:00.000Z", {
+      sleep: async () => {
+        await revokeConnectorCredential(db, "KC09-REVOKE-CREDENTIAL-DURING-RETRY", {
+          policyId: "CONN-POL-KC09-CREDENTIAL-REVOKED-RETRY",
+          policyRevision: 1,
+          secretRef: credentialRef.secretRef,
+          rotationEpoch: credentialRef.rotationEpoch,
+          revokedAt: "2026-08-03T03:00:00.000Z",
+          actorId: "CREDENTIAL-ADMIN-KC09",
+        });
+      },
+    }))).rejects.toMatchObject({ reasonCode: "credential-revoked" });
+    expect(connector.invocationCount).toBe(1);
   });
 
   it("namespaces idempotency by Project so a reused request ID cannot cause cross-Project collision", async () => {

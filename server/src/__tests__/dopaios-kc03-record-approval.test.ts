@@ -5,7 +5,11 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import {
+  CommandPayloadMismatchError,
+  replayProjections,
+  snapshotProjections,
+} from "../dopaios/event-store.ts";
 import { registerActor, registerApprovedArtifact, createProjectShell } from "../dopaios/commands.ts";
 import {
   assembleDecisionPackage,
@@ -526,6 +530,51 @@ describeEmbeddedPostgres("dopaios KC-03 B2 — approval engine", () => {
         approvalRecordId: "REC-A2",
       }),
     ).rejects.toMatchObject({ code: "SFR-035" });
+  });
+
+  it("KC-09 chặn và audit actor giả danh người giữ capability phê duyệt", async () => {
+    await stageArtifact({
+      artifactId: "ART-KC09-IMPERSONATION",
+      sha: SHA_A,
+      createdBy: "STAFF-AUTHOR",
+      packageId: "PKG-KC09-IMPERSONATION",
+    });
+    await expect(recordApprovalDecision(db, "KC09-IMPERSONATED-DECISION", decision({
+      recordId: "REC-KC09-IMPERSONATION",
+      packageId: "PKG-KC09-IMPERSONATION",
+      target: { artifactId: "ART-KC09-IMPERSONATION", revision: 1, sha256: SHA_A },
+      actor: "STAFF-APPROVER-IMPERSONATED",
+    }))).rejects.toMatchObject({ code: "ERR-ACTOR" });
+    const audit = (await db.execute(sql`
+      SELECT data ->> 'code' AS code FROM message_store.messages
+      WHERE type = 'CommandRejected' AND data ->> 'commandId' = 'KC09-IMPERSONATED-DECISION'
+    `)) as unknown as Array<{ code: string }>;
+    expect(audit).toEqual([{ code: "ERR-ACTOR" }]);
+  });
+
+  it("KC-09 approval replay is idempotent and rejects a changed actor without a second decision", async () => {
+    await stageArtifact({
+      artifactId: "ART-KC09-REPLAY",
+      sha: SHA_B,
+      createdBy: "STAFF-AUTHOR",
+      packageId: "PKG-KC09-REPLAY",
+    });
+    const payload = decision({
+      recordId: "REC-KC09-REPLAY",
+      packageId: "PKG-KC09-REPLAY",
+      target: { artifactId: "ART-KC09-REPLAY", revision: 1, sha256: SHA_B },
+      actor: "STAFF-APPROVER",
+    });
+    const commandId = "KC09-APPROVAL-REPLAY";
+    await recordApprovalDecision(db, commandId, payload);
+    await expect(recordApprovalDecision(db, commandId, payload)).resolves.toMatchObject({ idempotentReplay: true });
+    await expect(recordApprovalDecision(db, commandId, { ...payload, actor: "CTO" })).rejects.toBeInstanceOf(
+      CommandPayloadMismatchError,
+    );
+    const rows = (await db.execute(sql`
+      SELECT count(*)::int AS n FROM dopaios_approval_records WHERE id = 'REC-KC09-REPLAY'
+    `)) as unknown as Array<{ n: number }>;
+    expect(rows[0]?.n).toBe(1);
   });
 
   it("replay dựng lại toàn bộ trạng thái approval engine byte-identical", async () => {

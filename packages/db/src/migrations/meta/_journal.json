@@ -1093,6 +1093,13 @@
       "when": 1785791100000,
       "tag": "0521_dopaios_kc08_context_connector",
       "breakpoints": true
+    },
+    {
+      "idx": 522,
+      "version": "7",
+      "when": 1785791200000,
+      "tag": "0522_dopaios_kc09_security",
+      "breakpoints": true
     }
   ]
 }

@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { sql } from "drizzle-orm";
 import {
   agents,
   authUsers,
@@ -771,6 +772,164 @@ describeEmbeddedPostgres("authorization service", () => {
       action: "secrets:read",
       resource: { type: "company", companyId: company.id },
     })).resolves.toMatchObject({ allowed: true, reason: "allow_simple_company_member" });
+  });
+
+  it("denies Dopaios issue reads outside the explicitly authorized Project scope", async () => {
+    const company = await createCompany(db, "DopaiosProjectReadScope");
+    const allowedProject = await createProject(db, company.id, "Allowed");
+    const deniedProject = await createProject(db, company.id, "Denied");
+    const actorAgent = await createAgent(db, company.id);
+    const deniedIssue = await createIssue(db, company.id, { projectId: deniedProject.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: deniedIssue.id,
+        projectId: deniedIssue.projectId,
+        parentIssueId: deniedIssue.parentId,
+        status: deniedIssue.status,
+      },
+      scope: {
+        dopaiosAuthorization: true,
+        projectIds: [allowedProject.id],
+        dataClasses: ["internal"],
+        requestedDataClass: "internal",
+        allowedActions: ["issue:read"],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_scope" });
+    const audit = (await db.execute(sql`
+      SELECT actor_id, project_id, action, decision, reason
+      FROM dopaios_authorization_audit_events
+      WHERE actor_id = ${actorAgent.id} AND project_id = ${deniedProject.id}
+      ORDER BY created_at DESC LIMIT 1
+    `)) as unknown as Array<Record<string, unknown>>;
+    expect(audit).toEqual([{
+      actor_id: actorAgent.id,
+      project_id: deniedProject.id,
+      action: "issue:read",
+      decision: "deny",
+      reason: "deny_scope",
+    }]);
+  });
+
+  it("denies Dopaios reads when the Staff capability is missing", async () => {
+    const company = await createCompany(db, "DopaiosCapabilityScope");
+    const project = await createProject(db, company.id, "Allowed");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: { capabilities: [] },
+    });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        status: issue.status,
+      },
+      scope: {
+        dopaiosAuthorization: true,
+        projectIds: [project.id],
+        dataClasses: ["internal"],
+        requestedDataClass: "internal",
+        requiredCapabilities: ["context-reader"],
+        allowedActions: ["issue:read"],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
+  it("denies Dopaios reads outside the authorized data class", async () => {
+    const company = await createCompany(db, "DopaiosDataClassScope");
+    const project = await createProject(db, company.id, "Allowed");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: { capabilities: ["context-reader"] },
+    });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        parentIssueId: issue.parentId,
+        status: issue.status,
+      },
+      scope: {
+        dopaiosAuthorization: true,
+        projectIds: [project.id],
+        dataClasses: ["internal"],
+        requestedDataClass: "restricted",
+        requiredCapabilities: ["context-reader"],
+        allowedActions: ["issue:read"],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_scope" });
+  });
+
+  it("denies Dopaios reads outside the explicitly authorized action set", async () => {
+    const company = await createCompany(db, "DopaiosActionScope");
+    const project = await createProject(db, company.id, "Allowed");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: { capabilities: ["context-reader"] },
+    });
+    const issue = await createIssue(db, company.id, { projectId: project.id });
+
+    const decision = await authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        status: issue.status,
+      },
+      scope: {
+        dopaiosAuthorization: true,
+        projectIds: [project.id],
+        dataClasses: ["internal"],
+        requestedDataClass: "internal",
+        requiredCapabilities: ["context-reader"],
+        allowedActions: ["issue:comment"],
+      },
+    });
+
+    expect(decision).toMatchObject({ allowed: false, reason: "deny_scope" });
   });
 
   it("denies null-mapped visibility actions for board users without an active membership", async () => {

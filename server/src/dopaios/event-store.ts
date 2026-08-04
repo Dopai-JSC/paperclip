@@ -30,6 +30,7 @@ import {
   dopaiosContextPackageSources,
   dopaiosArtifactProjectScopes,
   dopaiosConnectorPolicies,
+  dopaiosConnectorCredentials,
   dopaiosConnectorAuditEvents,
   dopaiosDkpChunks,
   dopaiosRetrievalQueries,
@@ -773,8 +774,27 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         createdBy: d["createdBy"],
         createdAt: event.time,
       });
+      if (typeof auth.credentialRef["rotationEpoch"] === "number") {
+        await tx.insert(dopaiosConnectorCredentials).values({
+          secretRef: auth.credentialRef["secretRef"] as string,
+          rotationEpoch: auth.credentialRef["rotationEpoch"] as number,
+          issuedAt: new Date(auth.credentialRef["issuedAt"] as string),
+          expiresAt: new Date(auth.credentialRef["expiresAt"] as string),
+          revokedAt: auth.credentialRef["revokedAt"]
+            ? new Date(auth.credentialRef["revokedAt"] as string)
+            : null,
+          lastActorId: d["createdBy"],
+        }).onConflictDoNothing();
+      }
       break;
     }
+    case "ConnectorCredentialRevoked":
+      await tx
+        .update(dopaiosConnectorCredentials)
+        .set({ revokedAt: new Date(d["revokedAt"] as string), lastActorId: d["actorId"] })
+        .where(sql`${dopaiosConnectorCredentials.secretRef} = ${d["secretRef"]}
+          AND ${dopaiosConnectorCredentials.rotationEpoch} = ${d["rotationEpoch"]}`);
+      break;
     case "ConnectorAuditRecorded":
       await tx.insert(dopaiosConnectorAuditEvents).values({
         id: d["auditId"],
@@ -1459,6 +1479,12 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ state: "CLOSING", closeReason: d["reason"] })
         .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
       break;
+    case "WorkspaceRetentionControlRecorded":
+      await tx
+        .update(dopaiosWorkspaces)
+        .set({ retentionControl: d["control"] })
+        .where(eq(dopaiosWorkspaces.id, d["workspaceId"]));
+      break;
     case "WorkspacePurged":
       await tx
         .update(dopaiosWorkspaces)
@@ -1640,6 +1666,7 @@ const PROJECTION_TABLES = [
   dopaiosContextPackages,
   dopaiosArtifactProjectScopes,
   dopaiosConnectorPolicies,
+  dopaiosConnectorCredentials,
   dopaiosQualityContracts,
   dopaiosRunSteps,
   dopaiosWorkItemDependencies,

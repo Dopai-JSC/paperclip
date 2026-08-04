@@ -722,6 +722,19 @@ export const dopaiosConnectorPolicies = pgTable(
   }),
 );
 
+export const dopaiosConnectorCredentials = pgTable(
+  "dopaios_connector_credentials",
+  {
+    secretRef: text("secret_ref").notNull(),
+    rotationEpoch: integer("rotation_epoch").notNull(),
+    issuedAt: timestamp("issued_at", { withTimezone: true }).notNull(),
+    expiresAt: timestamp("expires_at", { withTimezone: true }).notNull(),
+    revokedAt: timestamp("revoked_at", { withTimezone: true }),
+    lastActorId: text("last_actor_id"),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.secretRef, table.rotationEpoch] }) }),
+);
+
 export const dopaiosConnectorAuditEvents = pgTable(
   "dopaios_connector_audit_events",
   {
@@ -791,6 +804,22 @@ export const dopaiosConnectorAuditEvents = pgTable(
       ],
     }),
   }),
+);
+
+export const dopaiosAuthorizationAuditEvents = pgTable(
+  "dopaios_authorization_audit_events",
+  {
+    id: text("id").primaryKey(),
+    actorType: text("actor_type").notNull(),
+    actorId: text("actor_id").notNull(),
+    companyId: text("company_id").notNull(),
+    projectId: text("project_id"),
+    action: text("action").notNull(),
+    decision: text("decision").notNull(),
+    reason: text("reason").notNull(),
+    createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+  },
+  (table) => ({ scopeIdx: index("dopaios_authorization_audit_scope_idx").on(table.companyId, table.projectId, table.createdAt) }),
 );
 
 export const dopaiosDkpChunks = pgTable(
@@ -1055,6 +1084,7 @@ export const dopaiosWorkspaces = pgTable("dopaios_workspaces", {
   closeReason: text("close_reason"),
   purgeReport: jsonb("purge_report").$type<Record<string, unknown>>(),
   purgeFailure: jsonb("purge_failure").$type<Record<string, unknown>>(),
+  retentionControl: jsonb("retention_control").$type<Record<string, unknown>>(),
 });
 
 // Sổ cấp phát tài nguyên (0517): khóa (resource_type, value) — một giá trị

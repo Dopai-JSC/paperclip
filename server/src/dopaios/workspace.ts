@@ -45,17 +45,20 @@ function workspaceStream(workspaceId: string): string {
 type WorkspaceRow = {
   id: string;
   release_id: string;
+  project_id: string | null;
   state: string;
   rel_path: string;
   cache_rel_path: string;
   port: number;
   credential_ref: WorkspaceCredentialRef;
   base_ref: string;
+  retention_control: WorkspaceRetentionControl | null;
 };
 
 async function loadWorkspace(ctx: CommandContext, workspaceId: string): Promise<WorkspaceRow | null> {
   const rows = (await ctx.tx.execute(sql`
-    SELECT id, release_id, state, rel_path, cache_rel_path, port, credential_ref, base_ref
+    SELECT id, release_id, project_id, state, rel_path, cache_rel_path, port, credential_ref, base_ref,
+           retention_control
     FROM dopaios_workspaces WHERE id = ${workspaceId}
   `)) as unknown as WorkspaceRow[];
   return rows[0] ?? null;
@@ -319,6 +322,121 @@ export type WorkspacePurgeFailure = {
   correctiveAction: { owner: string; dueMs: number; scope: string[]; state: "open" };
 };
 
+type ExactPolicyRef = { id: string; revision: number; sha256: string };
+
+export type WorkspaceRetentionControl = {
+  policyRef: ExactPolicyRef;
+  retentionUntil: string | null;
+  legalHold: {
+    holdId: string;
+    active: boolean;
+    reason: string;
+    authorizedBy: string;
+  } | null;
+  actorId: string;
+};
+
+function canonicalTimestamp(value: string): boolean {
+  const timestamp = Date.parse(value);
+  return Number.isFinite(timestamp) && new Date(timestamp).toISOString() === value;
+}
+
+export async function recordWorkspaceRetentionControl(
+  db: Db,
+  commandId: string,
+  control: WorkspaceRetentionControl & { workspaceId: string },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: control as unknown as Json,
+    handler: async (ctx, p) => {
+      const workspace = await loadWorkspace(ctx, p["workspaceId"] as string);
+      if (!workspace || workspace.state === "PURGED") {
+        throw new CommandRejectedError(
+          "ERR-WS-RETENTION-STATE",
+          "Retention controls require an existing, non-purged workspace",
+        );
+      }
+      const actorId = p["actorId"] as string;
+      const actors = (await ctx.tx.execute(sql`
+        SELECT active, capabilities FROM dopaios_actors WHERE id = ${actorId}
+      `)) as unknown as Array<{ active: boolean; capabilities: string[] }>;
+      if (!actors[0]?.active || !actors[0].capabilities.includes("retention-admin")) {
+        throw new CommandRejectedError(
+          "ERR-WS-RETENTION-AUTH",
+          `Actor ${actorId} is not an active registered retention administrator`,
+        );
+      }
+      const policyRef = p["policyRef"] as ExactPolicyRef | undefined;
+      if (
+        !policyRef?.id ||
+        !Number.isInteger(policyRef.revision) ||
+        policyRef.revision < 1 ||
+        !/^[0-9a-f]{64}$/u.test(policyRef.sha256)
+      ) {
+        throw new CommandRejectedError("ERR-WS-RETENTION-POLICY", "Retention control requires an exact policy pin");
+      }
+      const policyRows = (await ctx.tx.execute(sql`
+        SELECT a.sha256, a.artifact_state, a.impact_status, a.artifact_type, s.scope_state
+        FROM dopaios_artifacts a
+        LEFT JOIN dopaios_artifact_project_scopes s
+          ON s.artifact_id = a.id
+         AND s.artifact_revision = a.revision
+         AND s.project_id = ${workspace.project_id}
+        WHERE a.id = ${policyRef.id} AND a.revision = ${policyRef.revision}
+      `)) as unknown as Array<{
+        sha256: string;
+        artifact_state: string;
+        impact_status: string;
+        artifact_type: string | null;
+        scope_state: string | null;
+      }>;
+      const policy = policyRows[0];
+      if (
+        workspace.project_id === null ||
+        !policy ||
+        policy.sha256 !== policyRef.sha256 ||
+        policy.artifact_state !== "approved" ||
+        (policy.impact_status !== "clear" && policy.impact_status !== "reaffirmed") ||
+        policy.artifact_type !== "retention-policy" ||
+        policy.scope_state !== "active"
+      ) {
+        throw new CommandRejectedError(
+          "ERR-WS-RETENTION-POLICY",
+          `Retention policy ${policyRef.id}@${policyRef.revision} is missing, stale, unapproved, impacted, or outside the workspace Project`,
+        );
+      }
+      const retentionUntil = p["retentionUntil"] as string | null;
+      if (retentionUntil !== null && !canonicalTimestamp(retentionUntil)) {
+        throw new CommandRejectedError(
+          "ERR-WS-RETENTION-TIME",
+          "retentionUntil must be null or a canonical ISO-8601 timestamp",
+        );
+      }
+      const legalHold = p["legalHold"] as WorkspaceRetentionControl["legalHold"];
+      if (
+        legalHold !== null &&
+        (!legalHold?.holdId ||
+          typeof legalHold.active !== "boolean" ||
+          !legalHold.reason ||
+          legalHold.authorizedBy !== actorId)
+      ) {
+        throw new CommandRejectedError(
+          "ERR-WS-LEGAL-HOLD-SHAPE",
+          "Legal hold changes require an id, reason, and the same registered retention administrator",
+        );
+      }
+      const recorded: WorkspaceRetentionControl = { policyRef, retentionUntil, legalHold, actorId };
+      await ctx.emit({
+        streamName: workspaceStream(workspace.id),
+        type: "WorkspaceRetentionControlRecorded",
+        data: { workspaceId: workspace.id, control: recorded as unknown as Json },
+      });
+      return { workspaceId: workspace.id, retentionControl: recorded as unknown as Json };
+    },
+  });
+}
+
 // Bước cuối của thứ tự đóng ADR-012, hai nhánh:
 //  - purged: post-check residue RỖNG, mọi đường trong purgedScope nằm trọn
 //    prefix Release → PURGED + release tài nguyên;
@@ -328,8 +446,8 @@ export async function recordWorkspacePurge(
   db: Db,
   commandId: string,
   payload:
-    | { workspaceId: string; outcome: "purged"; report: WorkspacePurgeReport }
-    | { workspaceId: string; outcome: "failed"; failure: WorkspacePurgeFailure },
+    | { workspaceId: string; actorId?: string; outcome: "purged"; report: WorkspacePurgeReport }
+    | { workspaceId: string; actorId?: string; outcome: "failed"; failure: WorkspacePurgeFailure },
 ): Promise<CommandResult> {
   return executeAuditedCommand(db, {
     commandId,
@@ -344,6 +462,41 @@ export async function recordWorkspacePurge(
           "ERR-WS-STATE",
           `Workspace ${workspace.id} ở ${workspace.state} — purge chỉ chạy sau khi bắt đầu đóng`,
         );
+      }
+      if (workspace.retention_control !== null) {
+        const actorId = p["actorId"] as string | undefined;
+        const actors = actorId
+          ? (await ctx.tx.execute(sql`
+              SELECT active, capabilities FROM dopaios_actors WHERE id = ${actorId}
+            `)) as unknown as Array<{ active: boolean; capabilities: string[] }>
+          : [];
+        const report = p["outcome"] === "purged" ? p["report"] as WorkspacePurgeReport | undefined : undefined;
+        if (
+          !actorId ||
+          !actors[0]?.active ||
+          !actors[0].capabilities.includes("retention-admin") ||
+          (report !== undefined && report.actor !== actorId)
+        ) {
+          throw new CommandRejectedError(
+            "ERR-WS-PURGE-AUTH",
+            "A governed workspace purge requires one active retention administrator bound to the purge report",
+          );
+        }
+      }
+      if (workspace.retention_control?.legalHold?.active === true) {
+        throw new CommandRejectedError(
+          "ERR-WS-LEGAL-HOLD",
+          `Workspace ${workspace.id} is protected by legal hold ${workspace.retention_control.legalHold.holdId}`,
+        );
+      }
+      if (workspace.retention_control?.retentionUntil !== null && workspace.retention_control?.retentionUntil !== undefined) {
+        const nowRows = (await ctx.tx.execute(sql`SELECT CURRENT_TIMESTAMP AS now`)) as unknown as Array<{ now: Date }>;
+        if (Date.parse(workspace.retention_control.retentionUntil) > new Date(nowRows[0]!.now).getTime()) {
+          throw new CommandRejectedError(
+            "ERR-WS-RETENTION",
+            `Workspace ${workspace.id} is retained until ${workspace.retention_control.retentionUntil}`,
+          );
+        }
       }
       // B7 (blocker vòng review đối kháng, cả hai lens): bước 2 của thứ tự
       // ADR-012 — "đóng phiên" — phải là GUARD của lệnh, không phải kỷ luật
@@ -469,9 +622,12 @@ export async function recordWorkspacePurge(
       await ctx.emit({
         streamName: workspaceStream(workspace.id),
         type: "WorkspacePurgeFailed",
-        data: { workspaceId: workspace.id, failure: failure as unknown as Json },
+        data: {
+          workspaceId: workspace.id,
+          failure: { ...failure, securityStatus: "blocked-security" } as unknown as Json,
+        },
       });
-      return { workspaceId: workspace.id, state: "PURGE_BLOCKED" };
+      return { workspaceId: workspace.id, state: "PURGE_BLOCKED", securityStatus: "blocked-security" };
     },
   });
 }

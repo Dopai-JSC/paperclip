@@ -6,6 +6,7 @@ import {
   executeCommand,
   CommandRejectedError,
 } from "./event-store.js";
+import { executeAuditedCommand } from "./approval.js";
 import { requireApprovedContextPackage } from "./context-package.js";
 
 // KC-02 spike: record Phiên chạy AI theo work-item trên event store KC-01,
@@ -39,6 +40,28 @@ async function loadSession(ctx: CommandContext, sessionId: string): Promise<Sess
     FROM dopaios_ai_sessions WHERE id = ${sessionId}
   `)) as unknown as SessionRow[];
   return rows[0] ?? null;
+}
+
+async function requireActorActiveIfRegistered(
+  ctx: CommandContext,
+  actorId: string,
+): Promise<void> {
+  const actors = (await ctx.tx.execute(sql`
+    SELECT active FROM dopaios_actors WHERE id = ${actorId}
+  `)) as unknown as Array<{ active: boolean }>;
+  if (actors[0] && !actors[0].active) {
+    throw new CommandRejectedError(
+      "ERR-AUTH-REVOKED",
+      `Actor ${actorId} was revoked before the next session action`,
+    );
+  }
+}
+
+async function requireSessionActorAuthorized(
+  ctx: CommandContext,
+  session: SessionRow,
+): Promise<void> {
+  await requireActorActiveIfRegistered(ctx, session.agent_id);
 }
 
 function sessionStream(sessionId: string): string {
@@ -77,10 +100,11 @@ export async function startAiSession(
     contextPackageRef?: { id: string; revision: number; sha256: string };
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
+      await requireActorActiveIfRegistered(ctx, p["agentId"] as string);
       const workItem = (await ctx.tx.execute(sql`
         SELECT id, project_id FROM dopaios_work_items WHERE id = ${p["workItemId"]}
       `)) as unknown as Array<{ id: string; project_id: string | null }>;
@@ -124,7 +148,7 @@ export async function recordSessionSignal(
   commandId: string,
   payload: { sessionId: string },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -132,6 +156,7 @@ export async function recordSessionSignal(
       if (!session || session.state !== "RUNNING") {
         throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
       }
+      await requireSessionActorAuthorized(ctx, session);
       await ctx.emit({
         streamName: sessionStream(p["sessionId"] as string),
         type: "AiSessionSignal",
@@ -154,7 +179,7 @@ export async function recordSessionArtifact(
     confirmed: boolean;
   },
 ): Promise<CommandResult> {
-  return executeCommand(db, {
+  return executeAuditedCommand(db, {
     commandId,
     payload: payload as unknown as Json,
     handler: async (ctx, p) => {
@@ -162,6 +187,7 @@ export async function recordSessionArtifact(
       if (!session || session.state !== "RUNNING") {
         throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
       }
+      await requireSessionActorAuthorized(ctx, session);
       const existing = (await ctx.tx.execute(sql`
         SELECT seq FROM dopaios_session_artifacts
         WHERE session_id = ${p["sessionId"]} AND seq = ${p["seq"]}

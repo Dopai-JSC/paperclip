@@ -23,6 +23,9 @@ export type ContextSourceInput = {
   type: "work-item" | "instructions" | "sop" | "project" | "dkp" | string;
   content: string;
   required: boolean;
+  trust?: "trusted-instruction" | "trusted-data" | "untrusted-data";
+  origin?: "approved-instruction" | "document" | "tool-output";
+  reuseScope?: "project" | "global";
 };
 
 export type ContextManifestSource = {
@@ -70,6 +73,24 @@ function priorityOf(type: string): number {
   return SOURCE_PRIORITY[type] ?? 4;
 }
 
+function untrustedInstructionReason(source: ContextSourceInput): string | null {
+  // Trust is derived from the approved ledger type, never from caller-supplied
+  // trust/origin labels. Approved instruction and SOP artifacts are the only
+  // instruction-bearing sources; every other class is data and is scanned.
+  if (source.type === "instructions" || source.type === "sop") return null;
+  if (source.reuseScope === "global") return "context-poisoning";
+  const normalized = source.content.normalize("NFKC").toLowerCase();
+  const overridesInstructions = /ignore\s+(all\s+)?(previous|prior|system)?\s*instructions?/u.test(normalized);
+  const requestsSecret = /(reveal|print|return|exfiltrat\w*)[^.\n]{0,80}(credential|secret|token|api\s*key)/u.test(normalized);
+  const requestsToolExecution = /(call|invoke|execute|run)[^.\n]{0,80}(tool|command|shell)/u.test(normalized);
+  if (overridesInstructions || requestsSecret || requestsToolExecution) {
+    return source.type === "tool-output" || source.origin === "tool-output"
+      ? "tool-output-injection"
+      : "prompt-injection";
+  }
+  return null;
+}
+
 function requiredFailure(reason: string): { code: string; message: string } {
   switch (reason) {
     case "impact-pending":
@@ -96,12 +117,14 @@ async function sourceDisposition(
     sha256: string;
     artifact_state: string;
     impact_status: string;
+    artifact_type: string | null;
   }>(
     ctx,
-    sql`SELECT sha256, artifact_state, impact_status
+    sql`SELECT sha256, artifact_state, impact_status, artifact_type
         FROM dopaios_artifacts WHERE id = ${source.id} AND revision = ${source.revision}`,
   );
   if (!artifact) return { allowed: false, reason: "missing" };
+  if (artifact.artifact_type !== source.type) return { allowed: false, reason: "type-mismatch" };
   if (artifact.sha256 !== source.sha256) return { allowed: false, reason: "hash-mismatch" };
   if (sha256Utf8(source.content) !== source.sha256) {
     return { allowed: false, reason: "content-hash-mismatch" };
@@ -260,6 +283,13 @@ export async function buildContextPackage(
             `Source ${source.id} must explicitly declare required=true or required=false`,
           );
         }
+        const untrustedReason = untrustedInstructionReason(source);
+        if (source.required && untrustedReason) {
+          throw new CommandRejectedError(
+            "ERR-CONTEXT-UNTRUSTED",
+            `Required untrusted source ${source.id}@${source.revision} was quarantined: ${untrustedReason}`,
+          );
+        }
         const key = `${source.id}@${source.revision}`;
         if (seen.has(source.id)) {
           throw new CommandRejectedError(
@@ -276,7 +306,10 @@ export async function buildContextPackage(
         }
         let mountState: "mounted" | "omitted" = "mounted";
         let omissionReason: string | null = null;
-        if (!disposition.allowed) {
+        if (untrustedReason) {
+          mountState = "omitted";
+          omissionReason = untrustedReason;
+        } else if (!disposition.allowed) {
           if (source.required) {
             const failure = requiredFailure(disposition.reason ?? "unknown");
             throw new CommandRejectedError(failure.code, `${failure.message}: ${key}`);

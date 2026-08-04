@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { and, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -162,6 +163,60 @@ function scopeValuesForKeys(grantScope: Record<string, unknown>, keys: string[])
 
 function scopeIncludesId(ids: string[], id: string | null | undefined) {
   return Boolean(id && ids.includes(id));
+}
+
+function dopaiosAuthorizationScopeDeny(input: {
+  action: AuthorizationAction;
+  resource: AuthorizationResource;
+  scope?: Record<string, unknown> | null;
+}): string | null {
+  if (input.scope?.dopaiosAuthorization !== true) return null;
+
+  const projectId =
+    input.resource.type === "project" || input.resource.type === "issue"
+      ? input.resource.projectId
+      : null;
+  const allowedProjectIds = scopeValueList(input.scope.projectIds);
+  if (!scopeIncludesId(allowedProjectIds, projectId)) {
+    return "Project is outside the explicit Dopaios authorization scope.";
+  }
+
+  const requestedDataClass =
+    typeof input.scope.requestedDataClass === "string"
+      ? input.scope.requestedDataClass.trim()
+      : "";
+  const allowedDataClasses = scopeValueList(input.scope.dataClasses);
+  if (!requestedDataClass || !allowedDataClasses.includes(requestedDataClass)) {
+    return "Data class is outside the explicit Dopaios authorization scope.";
+  }
+
+  const allowedActions = scopeValueList(input.scope.allowedActions);
+  if (!allowedActions.includes(input.action)) {
+    return "Action is outside the explicit Dopaios authorization scope.";
+  }
+
+  return null;
+}
+
+function dopaiosCapabilityDeny(
+  permissions: unknown,
+  scope?: Record<string, unknown> | null,
+): string | null {
+  if (scope?.dopaiosAuthorization !== true) return null;
+  const requiredCapabilities = scopeValueList(scope.requiredCapabilities);
+  if (requiredCapabilities.length === 0) return null;
+
+  const permissionRecord =
+    permissions && typeof permissions === "object"
+      ? permissions as Record<string, unknown>
+      : {};
+  const actorCapabilities = scopeValueList(permissionRecord.capabilities);
+  const missingCapability = requiredCapabilities.find(
+    (capability) => !actorCapabilities.includes(capability),
+  );
+  return missingCapability
+    ? `Staff capability ${missingCapability} is required by the Dopaios authorization scope.`
+    : null;
 }
 
 function isSimpleAssignableAgentStatus(status: string | null | undefined) {
@@ -464,6 +519,34 @@ export function authorizationDeniedDetails(decision: AuthorizationDecision) {
   return {
     ...(decision.code ? { code: decision.code } : {}),
     reason: decision.reason,
+  };
+}
+
+export async function assessBreakGlassReadiness(db: Db): Promise<{
+  state: "delegation-source-available" | "blocked-edge-007";
+  activeAdministratorCount: number;
+  automaticRecovery: false;
+  requiredAuthority: "DS-4-controlled-break-glass-or-delegation";
+}> {
+  const rows = (await db.execute(sql`
+    SELECT count(*)::int AS n
+    FROM (
+      SELECT id AS authority_id
+      FROM dopaios_actors
+      WHERE active = true AND capabilities @> '["platform-admin"]'::jsonb
+      UNION
+      SELECT roles.user_id AS authority_id
+      FROM instance_user_roles roles
+      JOIN "user" users ON users.id = roles.user_id
+      WHERE roles.role = 'instance_admin'
+    ) authorities
+  `)) as unknown as Array<{ n: number }>;
+  const activeAdministratorCount = Number(rows[0]?.n ?? 0);
+  return {
+    state: activeAdministratorCount > 0 ? "delegation-source-available" : "blocked-edge-007",
+    activeAdministratorCount,
+    automaticRecovery: false,
+    requiredAuthority: "DS-4-controlled-break-glass-or-delegation",
   };
 }
 
@@ -1287,6 +1370,15 @@ export function authorizationService(db: Db) {
       });
     }
 
+    const dopaiosScopeDeny = dopaiosAuthorizationScopeDeny(input);
+    if (dopaiosScopeDeny) {
+      return deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation: dopaiosScopeDeny,
+      });
+    }
+
     if (input.actor.type === "board") {
       let taskAssignmentPolicyEffect: AssignmentPolicyEffect | null = null;
       if (input.actor.source === "local_implicit") {
@@ -1449,6 +1541,15 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
+      });
+    }
+
+    const capabilityDeny = dopaiosCapabilityDeny(actorAgent.permissions, input.scope);
+    if (capabilityDeny) {
+      return deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation: capabilityDeny,
       });
     }
 
@@ -1727,7 +1828,30 @@ export function authorizationService(db: Db) {
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
     const agentDecision = await decideBase(input);
-    return applyResponsibleUserIntersection(input, agentDecision);
+    const decision = await applyResponsibleUserIntersection(input, agentDecision);
+    if (input.scope?.dopaiosAuthorization === true && !decision.allowed) {
+      const projectId = input.resource.type === "project" || input.resource.type === "issue"
+        ? input.resource.projectId ?? null
+        : null;
+      const actorId = input.actor.agentId ?? input.actor.userId ?? "anonymous";
+      await db.execute(sql`
+        INSERT INTO dopaios_authorization_audit_events (
+          id, actor_type, actor_id, company_id, project_id, action, decision, reason
+        ) VALUES (
+          ${randomUUID()}, ${input.actor.type}, ${actorId}, ${input.resource.companyId},
+          ${projectId}, ${input.action}, 'deny', ${decision.reason}
+        )
+      `);
+      logger.warn({
+        actorType: input.actor.type,
+        actorId,
+        companyId: input.resource.companyId,
+        projectId,
+        action: input.action,
+        reason: decision.reason,
+      }, "Dopaios authorization denied");
+    }
+    return decision;
   }
 
   return {
