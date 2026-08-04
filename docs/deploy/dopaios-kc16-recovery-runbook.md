@@ -36,23 +36,42 @@ The exact restore order is:
 Run from the repository root in PowerShell 7 on Windows or Linux. The path
 construction below is platform-native; do not replace it with literal `\` or `/`
 separators. Stop if the image inspection, compose validation, or resolved runtime
-root differs from the expected repository-local path.
+root differs from the expected repository-local path. The runtime image runs as uid 1000, gid 1000.
+Compose therefore runs the narrowly scoped `runtime-init`
+service as root before either filesystem writer starts. It creates only the
+mutable KC-16 trees and assigns them to `1000:1000`; it does not change the bind
+mount root, the PostgreSQL backup tree, or any recovery invariant.
 
 ```powershell
 $kc16Root = (Resolve-Path .).Path
 $kc16Runtime = [System.IO.Path]::Combine($kc16Root, '.kc16', 'runtime')
 New-Item -ItemType Directory -Force -Path $kc16Runtime | Out-Null
+$runtimeImage = 'dopaios-server@sha256:d7d12fee87d946612334e314203afdbd77d07e41460cdb618d1d2a607fcbcf29'
 
 docker image inspect pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2 --format '{{.Id}}'
-docker image inspect dopaios-server@sha256:d7d12fee87d946612334e314203afdbd77d07e41460cdb618d1d2a607fcbcf29 --format '{{.Id}}'
+docker image inspect $runtimeImage --format '{{.Id}}'
+$runtimeIds = docker run --rm --pull never --entrypoint sh $runtimeImage -ec 'printf "%s:%s" "$(id -u)" "$(id -g)"'
+if ($LASTEXITCODE -ne 0 -or $runtimeIds -ne '1000:1000') {
+  throw "Pinned runtime identity mismatch: $runtimeIds"
+}
 docker compose -f docker/docker-compose.kc16.yml config --quiet
 docker compose -f docker/docker-compose.kc16.yml up -d --pull never --no-build
-docker compose -f docker/docker-compose.kc16.yml ps
+$initExitCode = docker inspect dopaios-kc16-runtime-init-1 --format '{{.State.ExitCode}}'
+if ($initExitCode -ne '0') { throw "runtime-init failed with exit code $initExitCode" }
+docker compose -f docker/docker-compose.kc16.yml exec -T artifact sh -ec '
+  test "$(id -u):$(id -g)" = "1000:1000"
+  for path in /kc16/artifacts /kc16/checkpoints /kc16/mirror/artifacts /kc16/mirror/checkpoints /kc16/worker /kc16/recovery; do
+    test -d "$path" && test -w "$path"
+  done
+'
+if ($LASTEXITCODE -ne 0) { throw 'Runtime ownership preflight failed' }
+docker compose -f docker/docker-compose.kc16.yml ps --all
 ```
 
-Expected: application, PostgreSQL, artifact, and worker are all `healthy`.
+Expected: `runtime-init` is `exited (0)`; application, PostgreSQL, artifact, and
+worker are all `healthy`; and the uid-1000 write preflight returns zero.
 Application is loopback-only inside its container. PostgreSQL is published only
-on `127.0.0.1:55416` for the local drill.
+on `127.0.0.1:55416` for the local drill. Stop if any of these checks fail.
 
 ## 2. Schema and fixture
 
@@ -73,7 +92,6 @@ fixture. The container uses the already-present runtime dependencies; the source
 and fixture mounts are read-only.
 
 ```powershell
-$runtimeImage = 'dopaios-server@sha256:d7d12fee87d946612334e314203afdbd77d07e41460cdb618d1d2a607fcbcf29'
 $serverSource = [System.IO.Path]::Combine($kc16Root, 'server', 'src')
 $databaseSource = [System.IO.Path]::Combine($kc16Root, 'packages', 'db', 'src')
 $sharedSource = [System.IO.Path]::Combine($kc16Root, 'packages', 'shared', 'src')
@@ -86,13 +104,13 @@ $sourceMounts = @(
   '-v', "${dopaiosSource}:/app/dopaios:ro"
 )
 
-docker run --rm --network dopaios-kc16_default --entrypoint node `
+docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   @sourceMounts -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
   ./server/src/dopaios/seed-kc14-drill.ts
 
-docker run --rm --network dopaios-kc16_default --entrypoint node `
+docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   -e KC16_RUNTIME_ROOT=/kc16 @sourceMounts `
   -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
@@ -129,24 +147,39 @@ if ($running -contains 'application' -or $running -contains 'worker' -or $runnin
 
 Require a clean implementation commit because the manifest pins a full Git SHA.
 Create a unique bundle directory, copy only the confirmed mirror, dump the
-database, sync it, and hand ownership to the manifest writer.
+database, sync it, and hand ownership to the manifest writer. All bundle file
+operations run inside pinned containers: the runtime copy and manifest writer
+run explicitly as `1000:1000`; PostgreSQL stages its dump as `postgres`, then a
+root exec installs that one file as `1000:1000`. The host uid never owns bundle
+content.
 
 ```powershell
 if (git status --porcelain) { throw 'Commit or remove local changes before final evidence backup' }
 $sourceCommit = git rev-parse HEAD
 $bundleId = 'kc16-' + (Get-Date -Format 'yyyyMMddHHmmss')
 
-docker exec -u root dopaios-kc16-postgres-1 sh -ec "mkdir -p /kc16-runtime/recovery/$bundleId/artifacts /kc16-runtime/recovery/$bundleId/checkpoints; chown -R postgres:postgres /kc16-runtime/recovery/$bundleId"
-$mirrorArtifacts = [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'artifacts', '*')
-$mirrorCheckpoints = [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'checkpoints', '*')
-$bundleArtifacts = [System.IO.Path]::Combine($kc16Runtime, 'recovery', $bundleId, 'artifacts')
-$bundleCheckpoints = [System.IO.Path]::Combine($kc16Runtime, 'recovery', $bundleId, 'checkpoints')
-Copy-Item -Recurse -Force $mirrorArtifacts $bundleArtifacts
-Copy-Item -Recurse -Force $mirrorCheckpoints $bundleCheckpoints
-docker exec -u postgres dopaios-kc16-postgres-1 sh -ec "pg_dump -Fc -U paperclip -d dopaios_kc16 -f /kc16-runtime/recovery/$bundleId/postgres.dump; sync /kc16-runtime/recovery/$bundleId/postgres.dump"
-docker exec -u root dopaios-kc16-postgres-1 sh -ec "chown -R 1000:1000 /kc16-runtime/recovery/$bundleId"
+$bundleCopyScript = @'
+set -eu
+bundle="/kc16/recovery/$KC16_BUNDLE_ID"
+test ! -e "$bundle"
+mkdir -p "$bundle/artifacts" "$bundle/checkpoints"
+cp -a /kc16/mirror/artifacts/. "$bundle/artifacts/"
+cp -a /kc16/mirror/checkpoints/. "$bundle/checkpoints/"
+sync "$bundle/artifacts" "$bundle/checkpoints"
+'@
+docker run --rm --pull never --user 1000:1000 --network none --read-only `
+  --cap-drop ALL --security-opt no-new-privileges `
+  -e "KC16_BUNDLE_ID=$bundleId" -v "${kc16Runtime}:/kc16" `
+  --entrypoint sh $runtimeImage -ec $bundleCopyScript
+if ($LASTEXITCODE -ne 0) { throw 'Confirmed mirror copy failed' }
 
-docker run --rm --network dopaios-kc16_default --entrypoint node `
+$dumpStage = "/tmp/$bundleId.postgres.dump"
+docker exec -u postgres dopaios-kc16-postgres-1 sh -ec "pg_dump -Fc -U paperclip -d dopaios_kc16 -f '$dumpStage'; sync '$dumpStage'"
+if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL dump failed' }
+docker exec -u root dopaios-kc16-postgres-1 sh -ec "install -o 1000 -g 1000 -m 0600 '$dumpStage' '/kc16-runtime/recovery/$bundleId/postgres.dump'; sync '/kc16-runtime/recovery/$bundleId/postgres.dump'; rm -f '$dumpStage'"
+if ($LASTEXITCODE -ne 0) { throw 'PostgreSQL dump install failed' }
+
+docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" `
   -e "KC16_SOURCE_COMMIT=$sourceCommit" -e KC16_MIGRATION_ROOT=/kc16-migrations `
@@ -194,19 +227,96 @@ Keep all writers fenced. Verify the bundle again. Restore PostgreSQL into
 docker exec dopaios-kc16-postgres-1 psql -v ON_ERROR_STOP=1 -U paperclip -d postgres `
   -c "DROP DATABASE IF EXISTS dopaios_kc16_restore WITH (FORCE)" `
   -c "CREATE DATABASE dopaios_kc16_restore OWNER paperclip"
-docker exec -u postgres dopaios-kc16-postgres-1 pg_restore --exit-on-error --no-owner `
+docker exec -u root dopaios-kc16-postgres-1 pg_restore --exit-on-error --no-owner `
   -U paperclip -d dopaios_kc16_restore "/kc16-runtime/recovery/$bundleId/postgres.dump"
 ```
 
 Before replacing artifact/checkpoint directories, resolve and print all four
 targets. Each must be a child of the exact `$kc16Runtime` root. Move the faulted
 directories to timestamped quarantine names (recoverable), create empty targets,
-then copy the verified bundle to both live and mirror paths.
+then copy the verified bundle to both live and mirror paths. The root helper is
+limited to the repository-local bind mount, has no network, uses only the
+ownership/file capabilities needed for the move, and finishes by assigning all
+restored writer trees to `1000:1000`.
+
+```powershell
+$runtimeFull = [System.IO.Path]::GetFullPath($kc16Runtime)
+$runtimePrefix = $runtimeFull.TrimEnd(
+  [System.IO.Path]::DirectorySeparatorChar,
+  [System.IO.Path]::AltDirectorySeparatorChar
+) + [System.IO.Path]::DirectorySeparatorChar
+$restoreTargets = @(
+  [System.IO.Path]::Combine($kc16Runtime, 'artifacts'),
+  [System.IO.Path]::Combine($kc16Runtime, 'checkpoints'),
+  [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'artifacts'),
+  [System.IO.Path]::Combine($kc16Runtime, 'mirror', 'checkpoints')
+)
+foreach ($target in $restoreTargets) {
+  $targetFull = [System.IO.Path]::GetFullPath($target)
+  Write-Output $targetFull
+  if (-not $targetFull.StartsWith($runtimePrefix, [System.StringComparison]::Ordinal)) {
+    throw "Restore target escapes KC-16 runtime root: $targetFull"
+  }
+}
+if ($bundleId -notmatch '^kc16-[0-9]{14}$') { throw "Invalid bundle id: $bundleId" }
+$quarantineId = 'faulted-' + (Get-Date -Format 'yyyyMMddHHmmss')
+
+$restoreFilesScript = @'
+set -eu
+bundle="/kc16/recovery/$KC16_BUNDLE_ID"
+quarantine="/kc16/quarantine/$KC16_QUARANTINE_ID"
+test -f "$bundle/COMPLETE"
+test -f "$bundle/manifest.sha256"
+test -d "$bundle/artifacts"
+test -d "$bundle/checkpoints"
+test ! -e "$quarantine"
+for path in \
+  /kc16/artifacts \
+  /kc16/checkpoints \
+  /kc16/mirror/artifacts \
+  /kc16/mirror/checkpoints; do
+  test -d "$path"
+done
+mkdir -p "$quarantine/mirror"
+mv /kc16/artifacts "$quarantine/artifacts"
+mv /kc16/checkpoints "$quarantine/checkpoints"
+mv /kc16/mirror/artifacts "$quarantine/mirror/artifacts"
+mv /kc16/mirror/checkpoints "$quarantine/mirror/checkpoints"
+mkdir -p /kc16/artifacts /kc16/checkpoints /kc16/mirror/artifacts /kc16/mirror/checkpoints
+cp -a "$bundle/artifacts/." /kc16/artifacts/
+cp -a "$bundle/artifacts/." /kc16/mirror/artifacts/
+cp -a "$bundle/checkpoints/." /kc16/checkpoints/
+cp -a "$bundle/checkpoints/." /kc16/mirror/checkpoints/
+chown -R 1000:1000 \
+  /kc16/artifacts \
+  /kc16/checkpoints \
+  /kc16/mirror
+sync /kc16/artifacts /kc16/checkpoints /kc16/mirror
+'@
+docker run --rm --pull never --user 0:0 --network none --read-only `
+  --cap-drop ALL --cap-add CHOWN --cap-add DAC_OVERRIDE --cap-add FOWNER `
+  --security-opt no-new-privileges `
+  -e "KC16_BUNDLE_ID=$bundleId" -e "KC16_QUARANTINE_ID=$quarantineId" `
+  -v "${kc16Runtime}:/kc16" --entrypoint sh $runtimeImage -ec $restoreFilesScript
+if ($LASTEXITCODE -ne 0) { throw 'Artifact/checkpoint restore failed' }
+
+docker run --rm --pull never --user 1000:1000 --network none --read-only `
+  --cap-drop ALL --security-opt no-new-privileges `
+  -v "${kc16Runtime}:/kc16" --entrypoint sh $runtimeImage -ec '
+    for path in /kc16/artifacts /kc16/checkpoints /kc16/mirror/artifacts /kc16/mirror/checkpoints; do
+      test -d "$path" && test -w "$path"
+    done
+    probe=/kc16/artifacts/.ownership-preflight
+    printf "kc16-uid-1000\n" > "$probe"
+    rm -f "$probe"
+  '
+if ($LASTEXITCODE -ne 0) { throw 'Restored runtime ownership preflight failed' }
+```
 
 Run the recovery verifier against the temporary database:
 
 ```powershell
-docker run --rm --network dopaios-kc16_default --entrypoint node `
+docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16_restore `
   -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" -e KC16_LIVE_ROOT=/kc16 `
   @sourceMounts -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
