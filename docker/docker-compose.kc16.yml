@@ -1,0 +1,119 @@
+name: dopaios-kc16
+
+x-runtime-image: &runtime-image dopaios-server@sha256:d7d12fee87d946612334e314203afdbd77d07e41460cdb618d1d2a607fcbcf29
+x-runtime-root: &runtime-root ${KC16_RUNTIME_DIR:-../.kc16/runtime}
+
+services:
+  postgres:
+    image: pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2
+    entrypoint: ["sh", "-ec"]
+    command:
+      - |
+        mkdir -p /kc16-runtime/backup/wal
+        chown -R postgres:postgres /kc16-runtime/backup
+        exec /usr/local/bin/docker-entrypoint.sh postgres \
+          -c wal_level=replica \
+          -c archive_mode=on \
+          -c "archive_command=test ! -f /kc16-runtime/backup/wal/%f && cp %p /kc16-runtime/backup/wal/%f" \
+          -c archive_timeout=60
+    environment:
+      POSTGRES_DB: dopaios_kc16
+      POSTGRES_HOST_AUTH_METHOD: trust
+      POSTGRES_USER: paperclip
+    ports:
+      - "127.0.0.1:${KC16_POSTGRES_PORT:-55416}:5432"
+    volumes:
+      - kc16-pgdata:/var/lib/postgresql/data
+      - ../packages/db/src/migrations:/kc16-migrations:ro
+      - type: bind
+        source: *runtime-root
+        target: /kc16-runtime
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U paperclip -d dopaios_kc16"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: "no"
+
+  artifact:
+    image: *runtime-image
+    entrypoint: ["sh", "-ec"]
+    command: ["mkdir -p /kc16/artifacts /kc16/checkpoints; exec sleep infinity"]
+    volumes:
+      - type: bind
+        source: *runtime-root
+        target: /kc16
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - >-
+          p=/kc16/artifacts/.health-$$;
+          printf 'dopaios-kc16-artifact-health\n' > $$p &&
+          sync $$p &&
+          test "$$(cat $$p)" = 'dopaios-kc16-artifact-health' &&
+          rm -f $$p
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: "no"
+
+  worker:
+    image: *runtime-image
+    entrypoint: ["node"]
+    command:
+      - --import
+      - ./server/node_modules/tsx/dist/loader.mjs
+      - --input-type=module
+      - --eval
+      - |
+        import { writeWorkerHeartbeatAtomic } from './server/src/dopaios/kc16-probes.ts';
+        const heartbeatPath = '/kc16/worker/heartbeat.json';
+        const tick = () => writeWorkerHeartbeatAtomic(heartbeatPath, new Date());
+        await tick();
+        setInterval(() => void tick(), 10_000);
+    working_dir: /app
+    volumes:
+      - ../server/src/dopaios:/app/server/src/dopaios:ro
+      - type: bind
+        source: *runtime-root
+        target: /kc16
+    healthcheck:
+      test: ["CMD-SHELL", "test -s /kc16/worker/heartbeat.json"]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    restart: "no"
+
+  application:
+    image: *runtime-image
+    depends_on:
+      postgres:
+        condition: service_healthy
+      artifact:
+        condition: service_healthy
+      worker:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgres://paperclip@postgres:5432/dopaios_kc16
+      HOST: 127.0.0.1
+      PAPERCLIP_DEPLOYMENT_MODE: local_trusted
+      PAPERCLIP_DEPLOYMENT_EXPOSURE: private
+      PAPERCLIP_HOME: /paperclip
+      PAPERCLIP_MIGRATION_AUTO_APPLY: "true"
+      PORT: 3100
+      SERVE_UI: "true"
+    volumes:
+      - kc16-appdata:/paperclip
+      - type: bind
+        source: *runtime-root
+        target: /kc16
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:3100/api/health >/dev/null"]
+      interval: 5s
+      timeout: 3s
+      retries: 24
+    restart: "no"
+
+volumes:
+  kc16-appdata:
+  kc16-pgdata:
