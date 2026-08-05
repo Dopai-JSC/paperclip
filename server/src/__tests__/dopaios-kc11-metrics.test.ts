@@ -255,7 +255,10 @@ describeEmbeddedPostgres("dopaios KC-11 metric event sources", () => {
 
   it("sources gate load from approval records, gate records and action requests", async () => {
     const load = await gateLoad(db);
-    expect(load.approvalsByOutcome).toEqual({ approve: 1 });
+    // Hai approval record thật: seedApprovedQualityContract duyệt Hợp đồng
+    // chất lượng (điểm phê duyệt artifact) + quyết định WI-M4 (điểm phê duyệt
+    // run) — tải tại cổng đếm MỌI điểm phê duyệt, không lọc theo nguồn.
+    expect(load.approvalsByOutcome).toEqual({ approve: 2 });
     // Điểm phê duyệt run test không phải Cổng A/B/C — không được có Gate Record.
     expect(load.gateRecordsByGate).toEqual({});
     // Yêu cầu quyết định của WI-M4 được ghi và chuyển trạng thái khi quyết —
