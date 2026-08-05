@@ -1,5 +1,142 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { fileURLToPath } from "node:url";
 import test from "node:test";
+
+const metricsCli = fileURLToPath(
+  new URL("../dopaios/emit-kc16-recovery-metrics.ts", import.meta.url),
+);
+const tsxLoader = new URL("../../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
+
+test("metrics CLI derives the recovery measurements from monotonic timestamps", () => {
+  const result = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      KC16_FAULT_MONOTONIC_MS: "100000",
+      KC16_DETECTION_MONOTONIC_MS: "103490",
+      KC16_READINESS_MONOTONIC_MS: "480890",
+      KC16_RPO_LOSS_COUNT: "0",
+    },
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, [
+    "# TYPE dopaios_kc16_detection_seconds gauge",
+    "dopaios_kc16_detection_seconds 3.49",
+    "# TYPE dopaios_kc16_rto_seconds gauge",
+    "dopaios_kc16_rto_seconds 380.89",
+    "# TYPE dopaios_kc16_rpo_loss_records gauge",
+    "dopaios_kc16_rpo_loss_records 0",
+    "# TYPE dopaios_kc16_objective_pass gauge",
+    "dopaios_kc16_objective_pass 1",
+    "",
+  ].join("\n"));
+});
+
+test("metrics CLI accepts the exact inclusive detection and RTO boundaries", () => {
+  const result = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      KC16_FAULT_MONOTONIC_MS: "0",
+      KC16_DETECTION_MONOTONIC_MS: "300000",
+      KC16_READINESS_MONOTONIC_MS: "14400000",
+      KC16_RPO_LOSS_COUNT: "0",
+    },
+  });
+
+  assert.equal(result.status, 0);
+  assert.match(result.stdout, /dopaios_kc16_objective_pass 1\n$/u);
+});
+
+test("metrics CLI fails closed when a recovery objective is missed", () => {
+  const result = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      KC16_FAULT_MONOTONIC_MS: "100000",
+      KC16_DETECTION_MONOTONIC_MS: "400001",
+      KC16_READINESS_MONOTONIC_MS: "480890",
+      KC16_RPO_LOSS_COUNT: "0",
+    },
+  });
+
+  assert.equal(result.status, 2);
+  assert.match(result.stdout, /dopaios_kc16_objective_pass 0\n$/u);
+});
+
+test("metrics CLI fails closed for RTO and RPO breaches", () => {
+  const baseEnv = {
+    ...process.env,
+    KC16_FAULT_MONOTONIC_MS: "100000",
+    KC16_DETECTION_MONOTONIC_MS: "103490",
+    KC16_READINESS_MONOTONIC_MS: "480890",
+    KC16_RPO_LOSS_COUNT: "0",
+  };
+  const cases = [
+    {
+      label: "RTO over 14400 seconds",
+      env: { ...baseEnv, KC16_READINESS_MONOTONIC_MS: "14500001" },
+    },
+    {
+      label: "RPO loss above zero",
+      env: { ...baseEnv, KC16_RPO_LOSS_COUNT: "1" },
+    },
+  ];
+
+  for (const item of cases) {
+    const result = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+      encoding: "utf8",
+      env: item.env,
+    });
+    assert.equal(result.status, 2, item.label);
+    assert.match(result.stdout, /dopaios_kc16_objective_pass 0\n$/u, item.label);
+  }
+});
+
+test("metrics CLI rejects timestamps that are not monotonic", () => {
+  const result = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      KC16_FAULT_MONOTONIC_MS: "100000",
+      KC16_DETECTION_MONOTONIC_MS: "99999",
+      KC16_READINESS_MONOTONIC_MS: "480890",
+      KC16_RPO_LOSS_COUNT: "0",
+    },
+  });
+
+  assert.equal(result.status, 1);
+  assert.equal(result.stdout, "");
+  assert.match(result.stderr, /detection monotonic timestamp cannot precede fault/u);
+});
+
+test("metrics CLI rejects missing measurements and fractional RPO loss", () => {
+  const baseEnv = {
+    ...process.env,
+    KC16_FAULT_MONOTONIC_MS: "100000",
+    KC16_DETECTION_MONOTONIC_MS: "103490",
+    KC16_READINESS_MONOTONIC_MS: "480890",
+    KC16_RPO_LOSS_COUNT: "0",
+  };
+  const missingFaultEnv: NodeJS.ProcessEnv = { ...baseEnv };
+  delete missingFaultEnv.KC16_FAULT_MONOTONIC_MS;
+
+  const missingFault = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: missingFaultEnv,
+  });
+  const fractionalLoss = spawnSync(process.execPath, ["--import", tsxLoader, metricsCli], {
+    encoding: "utf8",
+    env: { ...baseEnv, KC16_RPO_LOSS_COUNT: "0.5" },
+  });
+
+  assert.equal(missingFault.status, 1);
+  assert.match(missingFault.stderr, /KC16_FAULT_MONOTONIC_MS is required/u);
+  assert.equal(fractionalLoss.status, 1);
+  assert.match(fractionalLoss.stderr, /KC16_RPO_LOSS_COUNT must be a non-negative integer/u);
+});
 
 test("recovery metrics expose detection, RTO and RPO in stable units", async () => {
   const observability = await import("../dopaios/kc16-observability.ts").catch(() => ({})) as {

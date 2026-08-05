@@ -122,16 +122,14 @@ The KC-16 fixture must report the pre-confirmation fault as contained, two
 durably mirrored content files, one checkpoint, and confirmed FakeConnector
 evidence with the real GitHub oracle still deferred.
 
-### Migration-with-data branch
+### KC-01 migration verification boundary
 
-Use a disposable database, never the live database, to rehearse KC-01 schema
-evolution. Apply 0500-0502, insert a v0.1 SOP-run/event fixture, and take a
-`pg_dump -Fc`. Run a transaction containing a temporary DDL statement followed
-by `SELECT 1 / 0`; require non-zero exit and verify the temporary column is
-absent. Then apply 0503 and verify `completed_at` exists while the fixture row is
-unchanged. The decision is `rollback` before commit. After commit, choose a
-verified forward-fix when safe; choose restore for corruption; stop if the backup
-does not verify.
+Migration-with-data rehearsal is not a branch of the KC-16 recovery drill. It
+belongs to a separate KC-01 schema-evolution verification with its own pinned
+commands, disposable database, acceptance criteria, and evidence. Do not
+improvise that verification here and never run it against the KC-16 live
+database. KC-16 applies the required migrations in §2 and preserves and verifies
+that migrated state through §5 as part of the fixed restore order.
 
 ## 3. Create a verified backup bundle
 
@@ -203,6 +201,88 @@ For the approved drill, mutate one confirmed live artifact and remove one event
 from the disposable local database after recording the fault timestamp. Run the
 verifier. It must fail non-zero and identify the first failed component. Record
 the detection timestamp. Never mutate the backup bundle.
+
+Use the exact fixture-owned artifact and event below. The event selector is
+stable by stream, type, and confirmed artifact reference; do not substitute a
+host-specific `global_position`. Keep this PowerShell session open through §5
+because the monotonic timestamps are inputs to the pinned metrics emitter.
+
+```powershell
+function Get-Kc16MonotonicMilliseconds {
+  return [long][Math]::Floor(
+    ([System.Diagnostics.Stopwatch]::GetTimestamp() * 1000.0) /
+    [System.Diagnostics.Stopwatch]::Frequency
+  )
+}
+
+$eventTargetOutput = docker exec dopaios-kc16-postgres-1 psql `
+  -v ON_ERROR_STOP=1 -U paperclip -d dopaios_kc16 -Atc @'
+SELECT CASE WHEN count(*) = 1
+  THEN min(global_position)::text
+  ELSE 'INVALID:' || count(*)::text
+END
+FROM message_store.messages
+WHERE stream_name = 'dopaiosAiSession-KC16-DRILL-SESSION'
+  AND type = 'AiSessionArtifactRecorded'
+  AND data->>'ref' = 'artifacts/confirmed/kc16-output.txt';
+'@
+$eventTargetExit = $LASTEXITCODE
+$eventTarget = ([string]$eventTargetOutput).Trim()
+if ($eventTargetExit -ne 0 -or $eventTarget -notmatch '^[0-9]+$') {
+  throw "KC-16 fault event selector is not unique: $eventTarget"
+}
+
+docker run --rm --pull never --user 1000:1000 --network none --read-only `
+  --cap-drop ALL --security-opt no-new-privileges `
+  -v "${kc16Runtime}:/kc16:ro" --entrypoint sh $runtimeImage -ec '
+    sha256sum \
+      /kc16/artifacts/confirmed/kc16-output.txt \
+      /kc16/mirror/artifacts/confirmed/kc16-output.txt
+  '
+if ($LASTEXITCODE -ne 0) { throw 'Pre-fault artifact inventory failed' }
+
+$faultUtc = [DateTimeOffset]::UtcNow.ToString('O')
+$faultMonotonicMs = Get-Kc16MonotonicMilliseconds
+docker run --rm --pull never --user 1000:1000 --network none `
+  --cap-drop ALL --security-opt no-new-privileges `
+  -v "${kc16Runtime}:/kc16" --entrypoint sh $runtimeImage -ec '
+    printf "KC16-FAULT-INJECTION\n" >> /kc16/artifacts/confirmed/kc16-output.txt
+    sync /kc16/artifacts/confirmed/kc16-output.txt
+  '
+if ($LASTEXITCODE -ne 0) { throw 'Live artifact fault injection failed' }
+
+$deletedEvent = docker exec dopaios-kc16-postgres-1 psql `
+  -v ON_ERROR_STOP=1 -U paperclip -d dopaios_kc16 -Atc `
+  "DELETE FROM message_store.messages WHERE global_position = $eventTarget RETURNING global_position"
+if ($LASTEXITCODE -ne 0 -or ([string]$deletedEvent).Trim() -ne $eventTarget) {
+  throw "Live event fault injection failed for global_position $eventTarget"
+}
+
+$verifierOutput = @(
+  docker run --rm --pull never --user 1000:1000 `
+    --network dopaios-kc16_default --entrypoint node `
+    -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
+    -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" `
+    -e KC16_LIVE_ROOT=/kc16 @sourceMounts `
+    -v "${kc16Runtime}:/kc16:ro" -w /app $runtimeImage `
+    --import ./server/node_modules/tsx/dist/loader.mjs `
+    ./server/src/dopaios/verify-kc16-recovery.ts 2>&1
+)
+$verifierExit = $LASTEXITCODE
+$detectionUtc = [DateTimeOffset]::UtcNow.ToString('O')
+$detectionMonotonicMs = Get-Kc16MonotonicMilliseconds
+$verifierText = $verifierOutput -join [Environment]::NewLine
+$verifierOutput | Write-Output
+if ($verifierExit -eq 0) { throw 'Fault verifier unexpectedly passed' }
+if ($verifierText -notmatch 'Recovered artifact inventory does not match the verified backup') {
+  throw "Fault verifier failed for an unexpected reason (exit $verifierExit)"
+}
+$detectionMs = $detectionMonotonicMs - $faultMonotonicMs
+Write-Output "fault_utc=$faultUtc"
+Write-Output "detection_utc=$detectionUtc"
+Write-Output "detection_ms=$detectionMs"
+if ($detectionMs -gt 300000) { throw "Detection objective missed: ${detectionMs}ms" }
+```
 
 Decision table:
 
@@ -336,10 +416,134 @@ docker compose -f docker/docker-compose.kc16.yml up -d --pull never --no-build a
 docker compose -f docker/docker-compose.kc16.yml ps
 ```
 
-Record RTO only after all four services are healthy, application health returns
-`status=ok`, the application container image ID equals the pinned digest,
-PostgreSQL reports primary mode with the pinned server/pgvector versions, the
-worker heartbeat is fresh, and reconciliation is still exact.
+Record RTO only through the pinned gate below. It requires all four services to
+be healthy, application health to return `status=ok`, both container images to
+match their pinned digests, PostgreSQL to be primary with server/pgvector
+versions present, the worker heartbeat to be fresh, and the verifier to pass
+against the reopened live database. The metrics CLI owns the fixed thresholds;
+an operator cannot supply lower or higher PASS criteria.
+
+```powershell
+$healthContainers = @(
+  'dopaios-kc16-postgres-1',
+  'dopaios-kc16-artifact-1',
+  'dopaios-kc16-worker-1',
+  'dopaios-kc16-application-1'
+)
+$healthDeadline = [DateTimeOffset]::UtcNow.AddMinutes(5)
+do {
+  $unhealthy = @(
+    foreach ($container in $healthContainers) {
+      $status = docker inspect $container --format '{{.State.Health.Status}}' 2>$null
+      if ($LASTEXITCODE -ne 0 -or $status -ne 'healthy') { $container }
+    }
+  )
+  if ($unhealthy.Count -eq 0) { break }
+  Start-Sleep -Seconds 5
+} while ([DateTimeOffset]::UtcNow -lt $healthDeadline)
+if ($unhealthy.Count -ne 0) {
+  throw "Health gate failed: $($unhealthy -join ', ')"
+}
+
+$applicationHealth = docker exec dopaios-kc16-application-1 `
+  sh -ec 'curl -fsS http://127.0.0.1:3100/api/health'
+$applicationHealthExit = $LASTEXITCODE
+try {
+  $applicationHealthStatus = ($applicationHealth | ConvertFrom-Json).status
+} catch {
+  throw 'Application health response is not valid JSON'
+}
+if ($applicationHealthExit -ne 0 -or $applicationHealthStatus -ne 'ok') {
+  throw 'Application health gate failed'
+}
+$expectedRuntimeImageId = docker image inspect $runtimeImage --format '{{.Id}}'
+$applicationImageId = docker inspect dopaios-kc16-application-1 --format '{{.Image}}'
+if ($LASTEXITCODE -ne 0 -or $applicationImageId -ne $expectedRuntimeImageId) {
+  throw 'Application image digest gate failed'
+}
+
+$postgresImage = 'pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2'
+$expectedPostgresImageId = docker image inspect $postgresImage --format '{{.Id}}'
+$postgresImageId = docker inspect dopaios-kc16-postgres-1 --format '{{.Image}}'
+$postgresPrimary = docker exec dopaios-kc16-postgres-1 psql `
+  -v ON_ERROR_STOP=1 -U paperclip -d dopaios_kc16 -Atc 'SELECT pg_is_in_recovery()'
+$postgresVersion = docker exec dopaios-kc16-postgres-1 psql `
+  -v ON_ERROR_STOP=1 -U paperclip -d dopaios_kc16 -Atc 'SHOW server_version'
+$pgvectorVersion = docker exec dopaios-kc16-postgres-1 psql `
+  -v ON_ERROR_STOP=1 -U paperclip -d dopaios_kc16 -Atc `
+  "SELECT extversion FROM pg_extension WHERE extname = 'vector'"
+if (
+  $LASTEXITCODE -ne 0 -or
+  $postgresImageId -ne $expectedPostgresImageId -or
+  $postgresPrimary -ne 'f' -or
+  [string]::IsNullOrWhiteSpace($postgresVersion) -or
+  [string]::IsNullOrWhiteSpace($pgvectorVersion)
+) {
+  throw 'PostgreSQL primary/version/image gate failed'
+}
+
+$workerHeartbeatAgeMs = docker exec dopaios-kc16-worker-1 node -e '
+  const heartbeat = JSON.parse(require("node:fs").readFileSync("/kc16/worker/heartbeat.json", "utf8"));
+  const age = Date.now() - Date.parse(heartbeat.heartbeatAt);
+  if (!Number.isFinite(age) || age < 0) process.exit(2);
+  process.stdout.write(String(age));
+'
+if (
+  $LASTEXITCODE -ne 0 -or
+  [long]$workerHeartbeatAgeMs -gt 60000
+) {
+  throw "Worker heartbeat freshness gate failed: ${workerHeartbeatAgeMs}ms"
+}
+
+$liveVerifierOutput = @(
+  docker run --rm --pull never --user 1000:1000 `
+    --network dopaios-kc16_default --entrypoint node `
+    -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
+    -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" `
+    -e KC16_LIVE_ROOT=/kc16 @sourceMounts `
+    -v "${kc16Runtime}:/kc16:ro" -w /app $runtimeImage `
+    --import ./server/node_modules/tsx/dist/loader.mjs `
+    ./server/src/dopaios/verify-kc16-recovery.ts 2>&1
+)
+$liveVerifierExit = $LASTEXITCODE
+$liveVerifierText = $liveVerifierOutput -join [Environment]::NewLine
+$liveVerifierOutput | Write-Output
+if (
+  $liveVerifierExit -ne 0 -or
+  $liveVerifierText -notmatch 'after replay: RPO-0 byte-identical across all seven categories'
+) {
+  throw 'Live RPO-0 reconciliation gate failed; readiness remains closed'
+}
+
+$readinessUtc = [DateTimeOffset]::UtcNow.ToString('O')
+$readinessMonotonicMs = Get-Kc16MonotonicMilliseconds
+$metricsOutput = @(
+  docker run --rm --pull never --user 1000:1000 --network none --read-only `
+    --cap-drop ALL --security-opt no-new-privileges `
+    -e "KC16_FAULT_MONOTONIC_MS=$faultMonotonicMs" `
+    -e "KC16_DETECTION_MONOTONIC_MS=$detectionMonotonicMs" `
+    -e "KC16_READINESS_MONOTONIC_MS=$readinessMonotonicMs" `
+    -e KC16_RPO_LOSS_COUNT=0 @sourceMounts -w /app $runtimeImage `
+    --import ./server/node_modules/tsx/dist/loader.mjs `
+    ./server/src/dopaios/emit-kc16-recovery-metrics.ts 2>&1
+)
+$metricsExit = $LASTEXITCODE
+$metricsText = ($metricsOutput -join [Environment]::NewLine) + [Environment]::NewLine
+$metricsDirectory = [System.IO.Path]::Combine($kc16Root, '.kc16', 'evidence')
+$metricsPath = [System.IO.Path]::Combine($metricsDirectory, "$bundleId-metrics.prom")
+New-Item -ItemType Directory -Force -Path $metricsDirectory | Out-Null
+[System.IO.File]::WriteAllText(
+  $metricsPath,
+  $metricsText,
+  [System.Text.UTF8Encoding]::new($false)
+)
+$metricsOutput | Write-Output
+Write-Output "readiness_utc=$readinessUtc"
+Write-Output "metrics_path=$metricsPath"
+if ($metricsExit -ne 0) {
+  throw "Recovery objective gate failed; metrics emitter exit code $metricsExit"
+}
+```
 
 ## 6. Independent-operator acceptance
 
