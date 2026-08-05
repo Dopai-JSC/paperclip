@@ -106,7 +106,7 @@ lockfile that was not committed. Corrected in verification batch 1:
   `better-auth 1.6.22`, `body-parser 2.3.0`, `brace-expansion 1.1.16 / 5.0.8`,
   `dompurify 3.4.12`, `fast-uri 3.1.4`, `form-data 4.0.6`, `esbuild 0.28.1`
   (for the `^0.27` instance).
-- `osv-scanner.toml` records the accepted-risk baseline with reasons: packages
+- `osv-scanner.toml` recorded the accepted-risk baseline at that point with reasons: packages
   whose only fix crosses a major/breaking boundary (`tar 6.2.1`,
   `@hono/node-server 1.19.13`, `@tootallnate/once 1.1.2`,
   `brace-expansion 1.1.16`, `esbuild 0.18.20`, `vite 7.3.1` — vitest-internal,
@@ -114,6 +114,20 @@ lockfile that was not committed. Corrected in verification batch 1:
   `@anthropic-ai/sdk 0.81.0`, owned by KC-02 (engine/adapter decision). New
   advisories against any other package still fail the gate. Review the whole
   baseline at the next upstream sync or before the architecture freeze.
+
+The baseline was refreshed again on 2026-08-04 after the current OSV database
+reported actionable advisories in same-major dependency lines:
+
+- Same-major pins were raised to `undici 7.29.0`, `postcss 8.5.23`,
+  `hono 4.12.34`, `ip-address 10.3.1`, `brace-expansion 1.1.18 / 5.0.9`,
+  and `fast-uri 3.1.5`; `pnpm-lock.yaml` was regenerated from those pins.
+- The obsolete `brace-expansion 1.1.16` exception was removed because patched
+  releases are now available on both pinned major lines.
+- The current accepted-risk baseline is limited to `tar 6.2.1`,
+  `@hono/node-server 1.19.13`, `@tootallnate/once 1.1.2`, `esbuild 0.18.20`,
+  `vite 7.3.1`, `@anthropic-ai/sdk 0.81.0`, and advisory
+  `GHSA-qwww-vcr4-c8h2` on `react-router 7.18.0`. New advisories outside this
+  reviewed baseline continue to fail the gate.
 
 ## Dopai-authored fixture catalog (verification batch 1)
 
