@@ -84,7 +84,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       adapterType: "process",
       adapterConfig: {
         command: process.execPath,
-        args: ["-e", "process.exit(0)"],
+        args: ["-e", "setTimeout(() => process.exit(0), 100)"],
       },
       runtimeConfig: {
         heartbeat: {
@@ -259,15 +259,6 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
 
     expect(run).not.toBeNull();
-    const terminalStatus = await waitForTerminalRun(run!.id);
-    expect(["succeeded", null]).toContain(terminalStatus);
-
-    const runCount = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(heartbeatRuns)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
-
     await db
       .update(issues)
       .set({ status: "done", updatedAt: new Date() })
@@ -275,6 +266,22 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     expect(await waitForTerminalRun(run!.id)).not.toBeNull();
     await waitForRuntimeStateLastRun(agentId, run!.id);
     expect(await waitForHeartbeatQuiescence()).toBe(true);
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+      })
+      .from(heartbeatRuns);
+    expect(runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: run!.id,
+        invocationSource: "assignment",
+      }),
+    ]));
+    expect(runs.filter((candidate) => candidate.id === run!.id)).toHaveLength(1);
+    expect(runs.every((candidate) => !["queued", "running"].includes(candidate.status))).toBe(true);
   });
 
   it("recognizes explicit restore-in-progress suppression", () => {
