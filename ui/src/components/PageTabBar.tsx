@@ -12,14 +12,18 @@ interface PageTabBarProps {
   value?: string;
   onValueChange?: (value: string) => void;
   align?: "center" | "start";
+  /** ID of the dynamic panel rendered for the selected route tab. */
+  panelId?: string;
 }
 
-export function PageTabBar({ items, value, onValueChange, align = "center" }: PageTabBarProps) {
+export function PageTabBar({ items, value, onValueChange, align = "center", panelId }: PageTabBarProps) {
   const { isMobile } = useSidebar();
 
   if (isMobile && value !== undefined && onValueChange) {
     return (
       <select
+        aria-label="Page section"
+        aria-controls={panelId}
         value={value}
         onChange={(e) => onValueChange(e.target.value)}
         className="h-9 rounded-md border border-border bg-background px-2 py-1 text-base focus:outline-none focus:ring-1 focus:ring-ring"
@@ -36,7 +40,11 @@ export function PageTabBar({ items, value, onValueChange, align = "center" }: Pa
   return (
     <TabsList variant="line" className={align === "start" ? "justify-start" : undefined}>
       {items.map((item) => (
-        <TabsTrigger key={item.value} value={item.value}>
+        <TabsTrigger
+          key={item.value}
+          value={item.value}
+          {...(panelId ? { "aria-controls": panelId } : {})}
+        >
           {item.label}
         </TabsTrigger>
       ))}

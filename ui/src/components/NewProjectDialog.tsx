@@ -63,6 +63,8 @@ export function NewProjectDialog() {
   const [statusOpen, setStatusOpen] = useState(false);
   const [goalOpen, setGoalOpen] = useState(false);
   const descriptionEditorRef = useRef<MarkdownEditorRef>(null);
+  const nameInputRef = useRef<HTMLInputElement>(null);
+  const repoUrlInputRef = useRef<HTMLInputElement>(null);
 
   const { data: goals } = useQuery({
     queryKey: queryKeys.goals.list(selectedCompanyId!),
@@ -218,7 +220,7 @@ export function NewProjectDialog() {
         <div className="flex items-center justify-between px-4 py-2.5 border-b border-border">
           <div className="flex items-center gap-2 text-sm text-muted-foreground">
             {selectedCompany && (
-              <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium">
+              <span className="bg-muted px-1.5 py-0.5 rounded text-xs font-medium text-neutral-700 dark:text-neutral-300">
                 {selectedCompany.name.slice(0, 3).toUpperCase()}
               </span>
             )}
@@ -230,6 +232,7 @@ export function NewProjectDialog() {
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
+              aria-label={expanded ? "Collapse project dialog" : "Expand project dialog"}
               onClick={() => setExpanded(!expanded)}
             >
               {expanded ? <Minimize2 className="h-3.5 w-3.5" /> : <Maximize2 className="h-3.5 w-3.5" />}
@@ -238,6 +241,7 @@ export function NewProjectDialog() {
               variant="ghost"
               size="icon-xs"
               className="text-muted-foreground"
+              aria-label="Close project dialog"
               onClick={() => { reset(); closeNewProject(); }}
             >
               <span className="text-lg leading-none">&times;</span>
@@ -248,6 +252,7 @@ export function NewProjectDialog() {
         {/* Name */}
         <div className="px-4 pt-4 pb-2 shrink-0">
           <input
+            ref={nameInputRef}
             className="w-full text-lg font-semibold bg-transparent outline-none placeholder:text-muted-foreground/50"
             placeholder="Project name"
             value={name}
@@ -271,6 +276,10 @@ export function NewProjectDialog() {
             placeholder="Add description..."
             bordered={false}
             mentions={mentionOptions}
+            onTabOut={(direction) => {
+              if (direction === "backward") nameInputRef.current?.focus();
+              else repoUrlInputRef.current?.focus();
+            }}
             contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
@@ -283,7 +292,7 @@ export function NewProjectDialog() {
           <div>
             <div className="mb-1 flex items-center gap-1.5">
               <label className="block text-xs text-muted-foreground">Repo URL</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <span className="text-xs text-muted-foreground">optional</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
@@ -294,6 +303,7 @@ export function NewProjectDialog() {
               </Tooltip>
             </div>
             <input
+              ref={repoUrlInputRef}
               className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs outline-none"
               value={workspaceRepoUrl}
               onChange={(e) => { setWorkspaceRepoUrl(e.target.value); setWorkspaceError(null); }}
@@ -304,7 +314,7 @@ export function NewProjectDialog() {
           <div>
             <div className="mb-1 flex items-center gap-1.5">
               <label className="block text-xs text-muted-foreground">Local folder</label>
-              <span className="text-xs text-muted-foreground/50">optional</span>
+              <span className="text-xs text-muted-foreground">optional</span>
               <Tooltip delayDuration={300}>
                 <TooltipTrigger asChild>
                   <HelpCircle className="h-3 w-3 text-muted-foreground/50 cursor-help" />
@@ -413,10 +423,14 @@ export function NewProjectDialog() {
           </Popover>
 
           {/* Target date */}
-          <div className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs">
+          <div
+            data-focus-visible-container
+            className="inline-flex items-center gap-1.5 rounded-md border border-border px-2 py-1 text-xs focus-within:ring-2 focus-within:ring-ring focus-within:ring-offset-2"
+          >
             <Calendar className="h-3 w-3 text-muted-foreground" />
             <input
               type="date"
+              aria-label="Target date"
               className="bg-transparent outline-none text-xs w-24"
               value={targetDate}
               onChange={(e) => setTargetDate(e.target.value)}

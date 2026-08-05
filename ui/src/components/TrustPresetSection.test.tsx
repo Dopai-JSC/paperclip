@@ -47,6 +47,7 @@ describe("TrustPresetSection", () => {
     const view = renderSection({ canCreateAgents: false, trustPreset: "standard" });
 
     expect(view.text()).toContain("Trust preset");
+    expect(container?.querySelector("select")?.getAttribute("aria-label")).toBe("Trust preset");
     expect(view.text()).not.toContain("Boundary type");
     expect(view.text()).not.toContain("Get Paperclip EE.");
   });
@@ -70,6 +71,14 @@ describe("TrustPresetSection", () => {
     expect(view.text()).toContain("Paperclip App");
     expect(view.text()).toContain("Get Paperclip EE.");
     expect(view.text()).not.toContain("Managed by EE/API");
+  });
+
+  it("uses contrast-safe text when low-trust containment has no boundary", () => {
+    renderSection({ canCreateAgents: false, trustPreset: "low_trust_review" });
+
+    expect(container?.querySelector('[role="alert"]')?.className).toContain("text-red-800");
+    expect(Array.from(container?.querySelectorAll("label") ?? []).every((label) =>
+      label.className.includes("text-neutral-700"))).toBe(true);
   });
 
   it("renders multi-boundary policies as read-only", () => {

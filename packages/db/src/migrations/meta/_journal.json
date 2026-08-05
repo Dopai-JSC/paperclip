@@ -1100,6 +1100,13 @@
       "when": 1785791200000,
       "tag": "0522_dopaios_kc09_security",
       "breakpoints": true
+    },
+    {
+      "idx": 523,
+      "version": "7",
+      "when": 1785791300000,
+      "tag": "0523_dopaios_kc10_scale_projection",
+      "breakpoints": true
     }
   ]
 }

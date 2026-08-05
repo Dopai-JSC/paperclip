@@ -74,7 +74,11 @@ export function HintIcon({ text }: { text: string }) {
   return (
     <Tooltip>
       <TooltipTrigger asChild>
-        <button type="button" className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors">
+        <button
+          type="button"
+          aria-label={`Help: ${text}`}
+          className="inline-flex text-muted-foreground/50 hover:text-muted-foreground transition-colors"
+        >
           <HelpCircle className="h-3 w-3" />
         </button>
       </TooltipTrigger>
@@ -89,7 +93,7 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   return (
     <div>
       <div className="flex items-center gap-1.5 mb-1">
-        <label className="text-xs text-muted-foreground">{label}</label>
+        <label className="text-xs text-neutral-700 dark:text-neutral-300">{label}</label>
         {hint && <HintIcon text={hint} />}
       </div>
       {children}
@@ -120,6 +124,9 @@ export function ToggleField({
         data-slot="toggle"
         data-testid={toggleTestId}
         type="button"
+        role="switch"
+        aria-checked={checked}
+        aria-label={label}
         className={cn(
           "relative inline-flex h-5 w-9 items-center rounded-full transition-colors",
           checked ? "bg-green-600" : "bg-muted"
@@ -170,6 +177,7 @@ export function ToggleWithNumber({
         <ToggleSwitch
           checked={checked}
           onCheckedChange={onCheckedChange}
+          aria-label={label}
         />
       </div>
       {showNumber && (
@@ -177,6 +185,7 @@ export function ToggleWithNumber({
           {numberPrefix && <span>{numberPrefix}</span>}
           <input
             type="number"
+            aria-label={numberLabel}
             className="w-16 rounded-md border border-border px-2 py-0.5 bg-transparent outline-none text-xs font-mono text-center"
             value={number}
             onChange={(e) => onNumberChange(Number(e.target.value))}

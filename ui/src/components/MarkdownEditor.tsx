@@ -87,6 +87,8 @@ interface MarkdownEditorProps {
   mentions?: MentionOption[];
   /** Called on Cmd/Ctrl+Enter */
   onSubmit?: () => void;
+  /** Lets a containing form move focus out instead of trapping Tab in the rich editor. */
+  onTabOut?: (direction: "forward" | "backward") => void;
   /** Render the rich editor without allowing edits. */
   readOnly?: boolean;
 }
@@ -142,6 +144,42 @@ function convertHtmlImagesToMarkdown(text: string): string {
 function prepareMarkdownForEditor(value: string): string {
   const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
   return convertHtmlImagesToMarkdown(normalizedLineEndings);
+}
+
+const TAB_STOP_SELECTOR = [
+  "a[href]",
+  "button",
+  "input",
+  "select",
+  "textarea",
+  "[contenteditable='true']",
+  "[tabindex]",
+].join(",");
+
+export function focusAdjacentControl(
+  editorRoot: HTMLElement | null,
+  direction: "forward" | "backward",
+): boolean {
+  if (!editorRoot) return false;
+  const active = document.activeElement;
+  const stops = Array.from(document.querySelectorAll<HTMLElement>(TAB_STOP_SELECTOR)).filter((element) => {
+    if ((element.tabIndex < 0 && element !== active) || element.hasAttribute("disabled")) return false;
+    if (element.closest("[hidden], [aria-hidden='true']")) return false;
+    return !(element instanceof HTMLInputElement && element.type === "hidden");
+  });
+  let index = stops.findIndex((element) => element === active);
+  if (index < 0) {
+    const contained = stops
+      .map((element, ordinal) => ({ element, ordinal }))
+      .filter(({ element }) => editorRoot.contains(element));
+    index = direction === "forward"
+      ? contained.at(-1)?.ordinal ?? -1
+      : contained[0]?.ordinal ?? -1;
+  }
+  const next = stops[index + (direction === "forward" ? 1 : -1)];
+  if (!next) return false;
+  next.focus();
+  return document.activeElement === next;
 }
 
 function escapeRegExp(value: string): string {
@@ -631,6 +669,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
   bordered = true,
   mentions,
   onSubmit,
+  onTabOut,
   readOnly = false,
 }: MarkdownEditorProps, forwardedRef) {
   const editorValue = useMemo(() => prepareMarkdownForEditor(value), [value]);
@@ -1171,6 +1210,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           }}
           onBlur={() => onBlur?.()}
           onKeyDown={(event) => {
+            if (onTabOut && event.key === "Tab") {
+              event.preventDefault();
+              onTabOut(event.shiftKey ? "backward" : "forward");
+              return;
+            }
+            if (event.key === "Tab") {
+              event.preventDefault();
+              focusAdjacentControl(containerRef.current, event.shiftKey ? "backward" : "forward");
+              return;
+            }
             if (onSubmit && event.key === "Enter" && (event.metaKey || event.ctrlKey)) {
               event.preventDefault();
               onSubmit();
@@ -1250,6 +1299,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
               return;
             }
           }
+        }
+        if (e.key === "Tab") {
+          e.preventDefault();
+          e.stopPropagation();
+          const direction = e.shiftKey ? "backward" : "forward";
+          if (onTabOut) onTabOut(direction);
+          else focusAdjacentControl(containerRef.current, direction);
         }
       }}
       onDragEnter={(evt) => {

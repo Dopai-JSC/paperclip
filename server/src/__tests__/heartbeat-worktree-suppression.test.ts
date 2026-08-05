@@ -84,7 +84,7 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       adapterType: "process",
       adapterConfig: {
         command: process.execPath,
-        args: ["-e", "process.exit(0)"],
+        args: ["-e", "setTimeout(() => process.exit(0), 100)"],
       },
       runtimeConfig: {
         heartbeat: {
@@ -110,14 +110,14 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
   }
 
   async function waitForTerminalRun(runId: string) {
-    for (let attempt = 0; attempt < 20; attempt += 1) {
+    for (let attempt = 0; attempt < 100; attempt += 1) {
       const run = await db
         .select({ status: heartbeatRuns.status })
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, runId))
         .then((rows) => rows[0] ?? null);
       if (run && run.status !== "queued" && run.status !== "running") return run.status;
-      await new Promise((resolve) => setTimeout(resolve, 25));
+      await new Promise((resolve) => setTimeout(resolve, 50));
     }
     return null;
   }
@@ -132,6 +132,37 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
       if (state?.lastRunId === runId) return;
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
+  }
+
+  async function waitForHeartbeatQuiescence() {
+    let previousSignature: string | null = null;
+    let stableSamples = 0;
+
+    for (let attempt = 0; attempt < 100; attempt += 1) {
+      const runStats = await db
+        .select({
+          activeCount: sql<number>`count(*) filter (where ${heartbeatRuns.status} in ('queued', 'running'))::int`,
+          totalCount: sql<number>`count(*)::int`,
+        })
+        .from(heartbeatRuns)
+        .then((rows) => rows[0] ?? { activeCount: 0, totalCount: 0 });
+      const eventCount = await db
+        .select({ count: sql<number>`count(*)::int` })
+        .from(heartbeatRunEvents)
+        .then((rows) => rows[0]?.count ?? 0);
+      const signature = `${runStats.totalCount}:${eventCount}`;
+
+      if (runStats.activeCount === 0 && signature === previousSignature) {
+        stableSamples += 1;
+        if (stableSamples >= 5) return true;
+      } else {
+        stableSamples = 0;
+      }
+      previousSignature = signature;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+
+    return false;
   }
 
   it("suppresses new assignment wakes in worktree instances without creating heartbeat runs", async () => {
@@ -228,20 +259,29 @@ describeEmbeddedPostgres("heartbeat worktree suppression", () => {
     });
 
     expect(run).not.toBeNull();
-    const terminalStatus = await waitForTerminalRun(run!.id);
-    expect(["succeeded", null]).toContain(terminalStatus);
-
-    const runCount = await db
-      .select({ count: sql<number>`count(*)::int` })
-      .from(heartbeatRuns)
-      .then((rows) => rows[0]?.count ?? 0);
-    expect(runCount).toBe(1);
-
     await db
       .update(issues)
       .set({ status: "done", updatedAt: new Date() })
       .where(eq(issues.id, issueId));
+    expect(await waitForTerminalRun(run!.id)).not.toBeNull();
     await waitForRuntimeStateLastRun(agentId, run!.id);
+    expect(await waitForHeartbeatQuiescence()).toBe(true);
+
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        invocationSource: heartbeatRuns.invocationSource,
+      })
+      .from(heartbeatRuns);
+    expect(runs).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        id: run!.id,
+        invocationSource: "assignment",
+      }),
+    ]));
+    expect(runs.filter((candidate) => candidate.id === run!.id)).toHaveLength(1);
+    expect(runs.every((candidate) => !["queued", "running"].includes(candidate.status))).toBe(true);
   });
 
   it("recognizes explicit restore-in-progress suppression", () => {

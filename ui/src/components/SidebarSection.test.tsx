@@ -105,6 +105,11 @@ describe("SidebarSection", () => {
     expect(projectsLabel?.parentElement?.textContent).toBe("Projects");
     expect(projectsLabel?.parentElement?.querySelector("svg")).toBeNull();
     expect(container.querySelector('button[aria-label="Collapse Projects"] svg')).toBeTruthy();
+    expect(projectsLabel?.getAttribute("class")).toContain("text-muted-foreground");
+    expect(projectsLabel?.getAttribute("class")).not.toContain("text-muted-foreground/60");
+    const collapseButton = container.querySelector('button[aria-label="Collapse Projects"]');
+    expect(collapseButton?.getAttribute("class")).toContain("h-6");
+    expect(collapseButton?.getAttribute("class")).toContain("w-6");
   });
 
   it("keeps collapse on the caret and opens the menu from the heading", async () => {

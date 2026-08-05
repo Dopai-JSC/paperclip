@@ -108,6 +108,7 @@ export function TrustPresetSection({
       <div className="rounded-lg border border-border p-4 space-y-3">
         <Field label="Trust preset" hint="Choose how broadly this agent can read and act on Paperclip work objects.">
           <select
+            aria-label="Trust preset"
             className={inputClass}
             value={preset}
             onChange={(event) => handlePresetChange(event.target.value)}
@@ -127,7 +128,7 @@ export function TrustPresetSection({
               "rounded-md border px-3 py-2.5 text-sm flex gap-2",
               hasScope
                 ? "border-amber-500/30 bg-amber-500/10 text-amber-700 dark:text-amber-100"
-                : "border-destructive/30 bg-destructive/10 text-destructive",
+                : "border-destructive/30 bg-destructive/10 text-red-800 dark:text-red-200",
             )}
           >
             {hasScope ? (
@@ -151,6 +152,7 @@ export function TrustPresetSection({
                   <div className="grid gap-3 sm:grid-cols-[minmax(0,0.75fr)_minmax(0,1fr)]">
                     <Field label="Boundary type">
                       <select
+                        aria-label="Boundary type"
                         className={inputClass}
                         value={targetType}
                         onChange={(event) => setTargetType(event.target.value as LowTrustBoundaryTargetType)}
@@ -163,6 +165,7 @@ export function TrustPresetSection({
                     </Field>
                     <Field label={BOUNDARY_TARGET_LABELS[targetType]}>
                       <select
+                        aria-label={BOUNDARY_TARGET_LABELS[targetType]}
                         className={inputClass}
                         value={boundaryValue}
                         onChange={(event) => handleBoundaryTargetChange(event.target.value)}
@@ -184,7 +187,7 @@ export function TrustPresetSection({
                     </Field>
                   </div>
                   <div className="flex flex-wrap items-center justify-between gap-2">
-                    <p className="text-xs text-muted-foreground">
+                    <p className="text-xs text-neutral-700 dark:text-neutral-300">
                       CE saves one containment boundary at a time. Saved policies include this company id.
                     </p>
                     {boundaryTarget ? (

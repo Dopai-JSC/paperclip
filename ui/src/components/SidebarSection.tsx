@@ -74,7 +74,7 @@ function SidebarSectionHeader({
   const hasMenu = Boolean(
     menu && ((menu.actions?.length ?? 0) > 0 || (menu.radioChoices?.length ?? 0) > 0),
   );
-  const labelClassName = "text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground/60";
+  const labelClassName = "text-[10px] font-medium uppercase tracking-widest font-mono text-muted-foreground";
   const headerControlVisibilityClassName = isMobile
     ? "opacity-100"
     : "opacity-0 group-hover/sidebar-section:opacity-100 group-focus-within/sidebar-section:opacity-100";
@@ -159,7 +159,7 @@ function SidebarSectionHeader({
             <button
               type="button"
               data-slot="icon-button"
-              className="absolute -left-4 flex h-5 w-5 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
+              className="absolute -left-5 flex h-6 w-6 items-center justify-center rounded-sm outline-none transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-1"
               aria-label={collapsible.open ? `Collapse ${label}` : `Expand ${label}`}
             >
               <ChevronRight className={caretClassName} aria-hidden="true" />
