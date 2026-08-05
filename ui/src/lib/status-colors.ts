@@ -53,10 +53,10 @@ export const statusBadge: Record<string, string> = {
   scheduled_retry: "bg-sky-100 text-sky-700 dark:bg-sky-900/50 dark:text-sky-300",
   paused: "bg-orange-100 text-orange-700 dark:bg-orange-900/50 dark:text-orange-300",
   idle: "bg-yellow-100 text-yellow-700 dark:bg-yellow-900/50 dark:text-yellow-300",
-  archived: "bg-muted text-muted-foreground",
+  archived: "bg-muted text-neutral-700 dark:text-neutral-300",
 
   // Goal statuses
-  planned: "bg-muted text-muted-foreground",
+  planned: "bg-muted text-neutral-700 dark:text-neutral-300",
   achieved: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
   completed: "bg-green-100 text-green-700 dark:bg-green-900/50 dark:text-green-300",
 
@@ -88,7 +88,7 @@ export const statusBadge: Record<string, string> = {
   cancelled: "bg-muted text-muted-foreground",
 };
 
-export const statusBadgeDefault = "bg-muted text-muted-foreground";
+export const statusBadgeDefault = "bg-muted text-neutral-700 dark:text-neutral-300";
 
 // ---------------------------------------------------------------------------
 // Agent status — brand state system (PAP-75)

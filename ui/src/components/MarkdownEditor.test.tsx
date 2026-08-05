@@ -247,6 +247,74 @@ describe("MarkdownEditor", () => {
     mdxEditorMockState.suppressHtmlProcessingValues = [];
   });
 
+  it("lets a dialog move focus out of the rich editor with Tab", async () => {
+    const onTabOut = vi.fn();
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <MarkdownEditor value="Description" onChange={vi.fn()} onTabOut={onTabOut} />,
+      );
+    });
+    await flush();
+
+    const editor = container.querySelector('[data-testid="mdx-editor"]');
+    expect(editor).not.toBeNull();
+    const forward = new KeyboardEvent("keydown", { key: "Tab", bubbles: true, cancelable: true });
+    editor?.dispatchEvent(forward);
+    expect(forward.defaultPrevented).toBe(true);
+    expect(onTabOut).toHaveBeenLastCalledWith("forward");
+
+    const backward = new KeyboardEvent("keydown", {
+      key: "Tab",
+      shiftKey: true,
+      bubbles: true,
+      cancelable: true,
+    });
+    editor?.dispatchEvent(backward);
+    expect(backward.defaultPrevented).toBe(true);
+    expect(onTabOut).toHaveBeenLastCalledWith("backward");
+
+    await act(async () => root.unmount());
+  });
+
+  it("moves focus to the adjacent control when no owner callback is provided", async () => {
+    const root = createRoot(container);
+    await act(async () => {
+      root.render(
+        <div>
+          <button type="button" data-testid="previous">Previous</button>
+          <MarkdownEditor value="Description" onChange={vi.fn()} />
+          <button type="button" data-testid="next">Next</button>
+        </div>,
+      );
+    });
+    await flush();
+
+    const editor = container.querySelector<HTMLElement>('[data-testid="mdx-editor"]');
+    editor?.focus();
+    await act(async () => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Tab",
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="next"]'));
+
+    editor?.focus();
+    await act(async () => {
+      editor?.dispatchEvent(new KeyboardEvent("keydown", {
+        key: "Tab",
+        shiftKey: true,
+        bubbles: true,
+        cancelable: true,
+      }));
+    });
+    expect(document.activeElement).toBe(container.querySelector('[data-testid="previous"]'));
+
+    await act(async () => root.unmount());
+  });
+
   it("applies async external value updates once the editor ref becomes ready", async () => {
     const root = createRoot(container);
 

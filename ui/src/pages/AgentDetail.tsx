@@ -1024,7 +1024,11 @@ export function AgentDetail() {
             value={agent.icon}
             onChange={(icon) => updateIcon.mutate(icon)}
           >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
+            <button
+              type="button"
+              aria-label={`Change icon for ${agent.name}`}
+              className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors"
+            >
               <AgentIcon icon={agent.icon} className="h-6 w-6" />
             </button>
           </AgentIconPicker>
@@ -1091,6 +1095,7 @@ export function AgentDetail() {
             ]}
             value={activeView}
             onValueChange={(value) => navigate(`/agents/${canonicalAgentRef}/${value}`)}
+            panelId="agent-detail-view-panel"
           />
         </Tabs>
       )}
@@ -1160,7 +1165,8 @@ export function AgentDetail() {
         </div>
       )}
 
-      {/* View content */}
+      {/* A single dynamic panel is shared by the route tabs above. */}
+      <div id="agent-detail-view-panel" role="tabpanel" aria-label="Agent detail view">
       {activeView === "dashboard" && (
         <AgentOverview
           agent={agent}
@@ -1225,6 +1231,7 @@ export function AgentDetail() {
           />
         </div>
       ) : null}
+      </div>
     </div>
   );
 }
@@ -1754,6 +1761,7 @@ function ConfigurationTab({
               </p>
             </div>
             <ToggleSwitch
+              aria-label="Can create new agents"
               checked={canCreateAgents}
               onCheckedChange={() =>
                 updatePermissions.mutate({
@@ -1773,6 +1781,7 @@ function ConfigurationTab({
               </p>
             </div>
             <ToggleSwitch
+              aria-label="Can create or import skills"
               checked={canCreateSkills}
               onCheckedChange={() =>
                 updatePermissions.mutate({
@@ -1792,6 +1801,7 @@ function ConfigurationTab({
               </p>
             </div>
             <ToggleSwitch
+              aria-label="Can assign tasks"
               checked={canAssignTasks}
               onCheckedChange={() =>
                 updatePermissions.mutate({
