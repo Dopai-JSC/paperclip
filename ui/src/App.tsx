@@ -74,6 +74,7 @@ import {
   shouldRedirectCompanylessRouteToOnboarding,
 } from "./lib/onboarding-route";
 import { normalizeRememberedInstanceSettingsPath } from "./lib/instance-settings";
+import { Kc10RouteSwitch } from "./components/kc10/Kc10OperationalJourney";
 
 function boardRoutes() {
   return (
@@ -119,24 +120,24 @@ function boardRoutes() {
       <Route path="agents/:agentId" element={<AgentDetail />} />
       <Route path="agents/:agentId/:tab" element={<AgentDetail />} />
       <Route path="agents/:agentId/runs/:runId" element={<AgentDetail />} />
-      <Route path="projects" element={<Projects />} />
-      <Route path="projects/:projectId" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/overview" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/issues" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/issues/:filter" element={<ProjectDetail />} />
+      <Route path="projects" element={<Kc10RouteSwitch journey="project-list" fallback={<Projects />} />} />
+      <Route path="projects/:projectId" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
+      <Route path="projects/:projectId/overview" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
+      <Route path="projects/:projectId/issues" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
+      <Route path="projects/:projectId/issues/:filter" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
       <Route path="projects/:projectId/workspaces/:workspaceId" element={<ProjectWorkspaceDetail />} />
-      <Route path="projects/:projectId/workspaces" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/configuration" element={<ProjectDetail />} />
-      <Route path="projects/:projectId/budget" element={<ProjectDetail />} />
+      <Route path="projects/:projectId/workspaces" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
+      <Route path="projects/:projectId/configuration" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
+      <Route path="projects/:projectId/budget" element={<Kc10RouteSwitch journey="project-detail" fallback={<ProjectDetail />} />} />
       <Route path="workspaces" element={<Workspaces />} />
       <Route path="issues" element={<Issues />} />
-      <Route path="search" element={<Search />} />
+      <Route path="search" element={<Kc10RouteSwitch journey="search" fallback={<Search />} />} />
       <Route path="issues/all" element={<Navigate to="/issues" replace />} />
       <Route path="issues/active" element={<Navigate to="/issues" replace />} />
       <Route path="issues/backlog" element={<Navigate to="/issues" replace />} />
       <Route path="issues/done" element={<Navigate to="/issues" replace />} />
       <Route path="issues/recent" element={<Navigate to="/issues" replace />} />
-      <Route path="issues/:issueId" element={<IssueDetail />} />
+      <Route path="issues/:issueId" element={<Kc10RouteSwitch journey="work-item" fallback={<IssueDetail />} />} />
       {import.meta.env.DEV ? (
         <Route path="tests/perf/long-thread" element={<IssueChatLongThreadPerf />} />
       ) : null}
@@ -200,11 +201,11 @@ function boardRoutes() {
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
       <Route path="inbox" element={<InboxRootRedirect />} />
-      <Route path="inbox/mine" element={<Inbox />} />
-      <Route path="inbox/recent" element={<Inbox />} />
-      <Route path="inbox/unread" element={<Inbox />} />
-      <Route path="inbox/blocked" element={<Inbox />} />
-      <Route path="inbox/all" element={<Inbox />} />
+      <Route path="inbox/mine" element={<Kc10RouteSwitch journey="action-inbox" fallback={<Inbox />} />} />
+      <Route path="inbox/recent" element={<Kc10RouteSwitch journey="action-inbox" fallback={<Inbox />} />} />
+      <Route path="inbox/unread" element={<Kc10RouteSwitch journey="action-inbox" fallback={<Inbox />} />} />
+      <Route path="inbox/blocked" element={<Kc10RouteSwitch journey="action-inbox" fallback={<Inbox />} />} />
+      <Route path="inbox/all" element={<Kc10RouteSwitch journey="action-inbox" fallback={<Inbox />} />} />
       <Route path="inbox/requests" element={<JoinRequestQueue />} />
       <Route path="inbox/new" element={<Navigate to="/inbox/mine" replace />} />
       <Route path="u/:userSlug" element={<UserProfile />} />
