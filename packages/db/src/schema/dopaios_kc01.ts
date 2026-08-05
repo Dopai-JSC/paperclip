@@ -9,6 +9,7 @@ import {
   primaryKey,
   customType,
   doublePrecision,
+  numeric,
   index,
   uniqueIndex,
   unique,
@@ -240,6 +241,15 @@ export const dopaiosAiSessions = pgTable("dopaios_ai_sessions", {
   contextPackageId: text("context_package_id"),
   contextPackageRevision: integer("context_package_revision"),
   contextPackageSha256: text("context_package_sha256"),
+  // KC-11: tổng usage/chi phí của phiên — projection cộng dồn từ event
+  // AiSessionUsageRecorded; budget_state ghi warned/stopped của trần costUsd.
+  usageInputTokens: integer("usage_input_tokens").notNull().default(0),
+  usageCachedInputTokens: integer("usage_cached_input_tokens").notNull().default(0),
+  usageCacheCreationInputTokens: integer("usage_cache_creation_input_tokens").notNull().default(0),
+  usageOutputTokens: integer("usage_output_tokens").notNull().default(0),
+  usageCostUsdReported: numeric("usage_cost_usd_reported", { precision: 14, scale: 8 }).notNull().default("0"),
+  usageCostUsdComputed: numeric("usage_cost_usd_computed", { precision: 14, scale: 8 }).notNull().default("0"),
+  budgetState: text("budget_state"),
 }, (table) => ({
   contextPackageComplete: check(
     "dopaios_ai_sessions_context_package_complete",
@@ -267,6 +277,29 @@ export const dopaiosSessionArtifacts = pgTable(
     ref: text("ref").notNull(),
     sha256: text("sha256").notNull(),
     confirmed: boolean("confirmed").notNull(),
+  },
+  (table) => ({ pk: primaryKey({ columns: [table.sessionId, table.seq] }) }),
+);
+
+// KC-11: một dòng usage cho mỗi bước engine (một lần gọi CLI/model) của một
+// Phiên chạy AI. cost_usd_reported là số CLI/adapter tự báo (null khi đường
+// không báo — ví dụ Codex); cost_usd_computed là token × bảng giá LiteLLM đã
+// pin (price_source ghi commit nguồn giá).
+export const dopaiosSessionUsage = pgTable(
+  "dopaios_session_usage",
+  {
+    sessionId: text("session_id").notNull(),
+    seq: integer("seq").notNull(),
+    step: text("step").notNull(),
+    model: text("model").notNull(),
+    billingType: text("billing_type").notNull(),
+    inputTokens: integer("input_tokens").notNull(),
+    cachedInputTokens: integer("cached_input_tokens").notNull(),
+    cacheCreationInputTokens: integer("cache_creation_input_tokens").notNull(),
+    outputTokens: integer("output_tokens").notNull(),
+    costUsdReported: numeric("cost_usd_reported", { precision: 14, scale: 8 }),
+    costUsdComputed: numeric("cost_usd_computed", { precision: 14, scale: 8 }).notNull(),
+    priceSource: text("price_source").notNull(),
   },
   (table) => ({ pk: primaryKey({ columns: [table.sessionId, table.seq] }) }),
 );

@@ -1,10 +1,14 @@
 import { sql } from "drizzle-orm";
 import { type Db, payloadSha256 } from "./event-store.js";
+import { computeCostUsd, PRICE_SOURCE } from "./pricing.js";
 import {
   completeSession,
   createSuccessorSession,
+  recordBudgetStop,
+  recordBudgetWarning,
   recordSessionArtifact,
   recordSessionSignal,
+  recordSessionUsage,
   startAiSession,
 } from "./sessions.js";
 
@@ -25,12 +29,29 @@ export type ExecutionContract = {
 
 export type EngineSessionParams = Record<string, unknown>;
 
+// KC-11: usage của một bước engine — một lần gọi CLI/model. costUsdReported
+// là số adapter tự báo (null khi đường không báo, ví dụ Codex); token là số
+// nguyên không âm. Cost chuỗi 8 chữ số thập phân do tầng trên quantize.
+export type StepUsage = {
+  step: string;
+  model: string;
+  billingType: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  costUsdReported: string | null;
+};
+
 export type EngineRunInput = {
   sessionId: string;
   contract: ExecutionContract;
   resume?: EngineSessionParams;
   onSignal: (payload: { step: string }) => Promise<void>;
   onCheckpoint: (payload: { step: string; ref: string; sha256: string }) => Promise<void>;
+  // KC-11: gọi SAU checkpoint của bước (bước đã bền — successor resume qua
+  // được bước này kể cả khi budget dừng ngay sau đó).
+  onUsage?: (usage: StepUsage) => Promise<void>;
 };
 
 export type EngineRunResult = {
@@ -53,13 +74,27 @@ export class EngineCrashError extends Error {
 
 // FakeEngine: chạy tuần tự các bước của hợp đồng, mỗi bước một tín hiệu +
 // một checkpoint; `crashAfterStep` giả lập process chết sau bước đó (lần
-// dùng một lần rồi tự xóa để lần resume sau chạy tiếp).
+// dùng một lần rồi tự xóa để lần resume sau chạy tiếp). KC-11: mỗi bước phát
+// một usage tất định (cấu hình qua constructor) để contract test đo chi phí
+// không cần token thật.
+export type FakeStepUsage = {
+  model: string;
+  billingType: string;
+  inputTokens: number;
+  cachedInputTokens: number;
+  cacheCreationInputTokens: number;
+  outputTokens: number;
+  costUsdReported: string | null;
+};
+
 export class FakeEngine implements EngineAdapter {
   readonly name = "fake-acp-shape";
   private crashPlan: string[];
+  private readonly stepUsage: FakeStepUsage | null;
 
-  constructor(crashPlan: string[] = []) {
+  constructor(crashPlan: string[] = [], stepUsage: FakeStepUsage | null = null) {
     this.crashPlan = [...crashPlan];
+    this.stepUsage = stepUsage;
   }
 
   async execute(input: EngineRunInput): Promise<EngineRunResult> {
@@ -74,6 +109,9 @@ export class FakeEngine implements EngineAdapter {
         ref: `ckpt/${input.sessionId}/${index}`,
         sha256: payloadSha256({ sessionId: input.sessionId, step, index }),
       });
+      if (this.stepUsage && input.onUsage) {
+        await input.onUsage({ step, ...this.stepUsage });
+      }
       if (this.crashPlan[0] === step) {
         this.crashPlan.shift();
         throw new EngineCrashError(step);
@@ -92,7 +130,38 @@ export class FakeEngine implements EngineAdapter {
 
 export type SessionRunOutcome =
   | { kind: "succeeded"; sessionId: string }
-  | { kind: "process-lost"; sessionId: string; afterStep: string };
+  | { kind: "process-lost"; sessionId: string; afterStep: string }
+  | {
+      kind: "budget-stopped";
+      sessionId: string;
+      afterStep: string;
+      limitUsd: string;
+      observedUsd: string;
+      overshootUsd: string;
+    };
+
+// KC-11: trần chi phí của Hợp đồng thực hiện AI (limits.costUsd) áp tại ranh
+// bước — đơn vị nguyên tử là một lần gọi CLI/model, nên overshoot bị chặn
+// trên bởi chi phí đúng một bước. priorChainCostUsd cộng chi phí các phiên
+// trước trong chuỗi retry/continue/reassign để trần áp theo WORK-ITEM chứ
+// không reset theo phiên.
+export type SessionBudget = {
+  costUsdLimit: number;
+  warnAtFraction?: number;
+  priorChainCostUsd?: number;
+};
+
+export class BudgetStopError extends Error {
+  constructor(
+    readonly afterStep: string,
+    readonly limitUsd: string,
+    readonly observedUsd: string,
+    readonly overshootUsd: string,
+  ) {
+    super(`budget hard-stop after step ${afterStep}: observed ${observedUsd} >= limit ${limitUsd}`);
+    this.name = "BudgetStopError";
+  }
+}
 
 // Chạy một phiên cho một work-item dưới Hợp đồng thực hiện AI. Mọi bước đi
 // qua tầng lệnh (event trước projection); khi engine chết cứng thì phiên Ở
@@ -107,6 +176,7 @@ export async function runWorkItemSession(
     contract: ExecutionContract;
     predecessor?: { id: string; relation: "retry" | "continue" | "reassign" };
     resume?: EngineSessionParams;
+    budget?: SessionBudget;
   },
 ): Promise<SessionRunOutcome> {
   const contractSha = payloadSha256(input.contract);
@@ -130,6 +200,19 @@ export async function runWorkItemSession(
 
   let signalSeq = 0;
   let artifactSeq = 0;
+  let usageSeq = 0;
+  // KC-11: cộng dồn chi phí hiệu lực (reported nếu có, computed nếu không)
+  // theo micro-USD nguyên (8 chữ số thập phân × 1e8) để so sánh trần không
+  // dính lỗi float; trần áp theo work-item = priorChain + phiên hiện tại.
+  const SCALE = 1e8;
+  const toScaled = (cost: string): number => Math.round(Number(cost) * SCALE);
+  const toCostString = (scaled: number): string => (scaled / SCALE).toFixed(8);
+  let chainScaled = Math.round((input.budget?.priorChainCostUsd ?? 0) * SCALE);
+  const limitScaled = input.budget ? Math.round(input.budget.costUsdLimit * SCALE) : null;
+  const warnScaled = input.budget
+    ? Math.round(input.budget.costUsdLimit * (input.budget.warnAtFraction ?? 0.8) * SCALE)
+    : null;
+  let warned = false;
   try {
     const result = await input.adapter.execute({
       sessionId: input.sessionId,
@@ -154,6 +237,50 @@ export async function runWorkItemSession(
         });
         void step;
       },
+      onUsage: async (usage) => {
+        usageSeq += 1;
+        const computed = computeCostUsd(usage.model, {
+          inputTokens: usage.inputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          outputTokens: usage.outputTokens,
+        });
+        await recordSessionUsage(db, `CMD-SES-USE-${input.sessionId}-${usageSeq}`, {
+          sessionId: input.sessionId,
+          seq: usageSeq,
+          step: usage.step,
+          model: usage.model,
+          billingType: usage.billingType,
+          inputTokens: usage.inputTokens,
+          cachedInputTokens: usage.cachedInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
+          outputTokens: usage.outputTokens,
+          costUsdReported: usage.costUsdReported,
+          costUsdComputed: computed,
+          priceSource: PRICE_SOURCE,
+        });
+        chainScaled += toScaled(usage.costUsdReported ?? computed);
+        if (limitScaled !== null && chainScaled >= limitScaled) {
+          const observed = toCostString(chainScaled);
+          const limit = toCostString(limitScaled);
+          const overshoot = toCostString(chainScaled - limitScaled);
+          await recordBudgetStop(db, `CMD-SES-BSTOP-${input.sessionId}`, {
+            sessionId: input.sessionId,
+            limitUsd: limit,
+            observedUsd: observed,
+            overshootUsd: overshoot,
+          });
+          throw new BudgetStopError(usage.step, limit, observed, overshoot);
+        }
+        if (warnScaled !== null && !warned && chainScaled >= warnScaled) {
+          warned = true;
+          await recordBudgetWarning(db, `CMD-SES-BWARN-${input.sessionId}`, {
+            sessionId: input.sessionId,
+            limitUsd: toCostString(limitScaled!),
+            observedUsd: toCostString(chainScaled),
+          });
+        }
+      },
     });
     artifactSeq += 1;
     await recordSessionArtifact(db, `CMD-SES-OUT-${input.sessionId}`, {
@@ -173,6 +300,23 @@ export async function runWorkItemSession(
   } catch (error) {
     if (error instanceof EngineCrashError) {
       return { kind: "process-lost", sessionId: input.sessionId, afterStep: error.afterStep };
+    }
+    if (error instanceof BudgetStopError) {
+      // Hard-stop FR-38: phiên đóng terminal budget_stopped — không tiếp tục
+      // âm thầm; checkpoint của bước đã bền nên successor (sau khi người nới
+      // trần qua revision hợp đồng) resume được từ bước kế tiếp.
+      await completeSession(db, `CMD-SES-DONE-${input.sessionId}`, {
+        sessionId: input.sessionId,
+        outcome: "budget_stopped",
+      });
+      return {
+        kind: "budget-stopped",
+        sessionId: input.sessionId,
+        afterStep: error.afterStep,
+        limitUsd: error.limitUsd,
+        observedUsd: error.observedUsd,
+        overshootUsd: error.overshootUsd,
+      };
     }
     throw error;
   }

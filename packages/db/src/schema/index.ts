@@ -116,6 +116,7 @@ export {
   dopaiosProductBaselines,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosSessionUsage,
   dopaiosActivations,
   dopaiosAuthBreakers,
   dopaiosSeparationPolicies,

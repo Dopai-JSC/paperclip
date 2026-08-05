@@ -215,6 +215,156 @@ export async function recordSessionArtifact(
   });
 }
 
+// KC-11: usage của một bước engine (một lần gọi CLI/model). Cost mang dạng
+// CHUỖI đã quantize 8 chữ số thập phân — caller tính qua module pricing đã
+// pin; handler chỉ kiểm bất biến và ghi event, nên replay không tái tính và
+// byte-identical. Seq bất biến như artifact: ghi trùng seq bị từ chối.
+export async function recordSessionUsage(
+  db: Db,
+  commandId: string,
+  payload: {
+    sessionId: string;
+    seq: number;
+    step: string;
+    model: string;
+    billingType: string;
+    inputTokens: number;
+    cachedInputTokens: number;
+    cacheCreationInputTokens: number;
+    outputTokens: number;
+    costUsdReported: string | null;
+    costUsdComputed: string;
+    priceSource: string;
+  },
+): Promise<CommandResult> {
+  return executeAuditedCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      await requireSessionActorAuthorized(ctx, session);
+      for (const key of [
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheCreationInputTokens",
+        "outputTokens",
+      ] as const) {
+        const value = p[key];
+        if (!Number.isInteger(value) || (value as number) < 0) {
+          throw new CommandRejectedError("ERR-USAGE-TOKENS", `${key} must be a non-negative integer`);
+        }
+      }
+      const costPattern = /^\d+\.\d{8}$/u;
+      const computed = p["costUsdComputed"];
+      if (typeof computed !== "string" || !costPattern.test(computed)) {
+        throw new CommandRejectedError(
+          "ERR-USAGE-COST",
+          "costUsdComputed must be a decimal string with 8 fraction digits",
+        );
+      }
+      const reported = p["costUsdReported"];
+      if (reported !== null && (typeof reported !== "string" || !costPattern.test(reported))) {
+        throw new CommandRejectedError(
+          "ERR-USAGE-COST",
+          "costUsdReported must be null or a decimal string with 8 fraction digits",
+        );
+      }
+      const existing = (await ctx.tx.execute(sql`
+        SELECT seq FROM dopaios_session_usage
+        WHERE session_id = ${p["sessionId"]} AND seq = ${p["seq"]}
+      `)) as unknown as unknown[];
+      if (existing.length > 0) {
+        throw new CommandRejectedError(
+          "ERR-USAGE-IMMUTABLE",
+          "Usage seq already recorded — usage rows are append-only",
+        );
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionUsageRecorded",
+        data: {
+          sessionId: p["sessionId"],
+          seq: p["seq"],
+          step: p["step"],
+          model: p["model"],
+          billingType: p["billingType"],
+          inputTokens: p["inputTokens"],
+          cachedInputTokens: p["cachedInputTokens"],
+          cacheCreationInputTokens: p["cacheCreationInputTokens"],
+          outputTokens: p["outputTokens"],
+          costUsdReported: reported,
+          costUsdComputed: computed,
+          priceSource: p["priceSource"],
+        },
+      });
+      return { sessionId: p["sessionId"] as string, seq: p["seq"] as number };
+    },
+  });
+}
+
+// KC-11: cảnh báo sắp chạm trần chi phí (FR-38 — sắp chạm thì cảnh báo).
+// Ghi một lần cho mỗi phiên; số quan sát đóng băng trong event.
+export async function recordBudgetWarning(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string; limitUsd: string; observedUsd: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionBudgetWarned",
+        data: {
+          sessionId: p["sessionId"],
+          limitUsd: p["limitUsd"],
+          observedUsd: p["observedUsd"],
+        },
+      });
+      return { sessionId: p["sessionId"] as string };
+    },
+  });
+}
+
+// KC-11: chạm trần chi phí của Hợp đồng thực hiện AI (limits.costUsd) —
+// hard-stop theo FR-38: dừng, không tiếp tục âm thầm; overshoot đóng băng
+// trong event làm số đo cho NFR-2/ADR budget.
+export async function recordBudgetStop(
+  db: Db,
+  commandId: string,
+  payload: { sessionId: string; limitUsd: string; observedUsd: string; overshootUsd: string },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      const session = await loadSession(ctx, p["sessionId"] as string);
+      if (!session || session.state !== "RUNNING") {
+        throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
+      }
+      await ctx.emit({
+        streamName: sessionStream(p["sessionId"] as string),
+        type: "AiSessionBudgetStopped",
+        data: {
+          sessionId: p["sessionId"],
+          limitUsd: p["limitUsd"],
+          observedUsd: p["observedUsd"],
+          overshootUsd: p["overshootUsd"],
+        },
+      });
+      return { sessionId: p["sessionId"] as string, overshootUsd: p["overshootUsd"] as string };
+    },
+  });
+}
+
 // Watchdog interruption. The caller (watchdog tick) supplies its clock; the
 // detection latency is computed against last_signal_at on the SAME snapshot
 // and frozen into the event — this is the NFR-8 measurement of the spike.
@@ -252,7 +402,7 @@ export async function interruptSession(
 export async function completeSession(
   db: Db,
   commandId: string,
-  payload: { sessionId: string; outcome: "succeeded" | "failed" | "abandoned" },
+  payload: { sessionId: string; outcome: "succeeded" | "failed" | "abandoned" | "budget_stopped" },
 ): Promise<CommandResult> {
   return executeCommand(db, {
     commandId,

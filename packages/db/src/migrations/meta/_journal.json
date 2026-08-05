@@ -1107,6 +1107,13 @@
       "when": 1785791300000,
       "tag": "0523_dopaios_kc10_scale_projection",
       "breakpoints": true
+    },
+    {
+      "idx": 524,
+      "version": "7",
+      "when": 1785791400000,
+      "tag": "0524_dopaios_kc11_cost_usage",
+      "breakpoints": true
     }
   ]
 }
