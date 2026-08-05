@@ -16,6 +16,7 @@ import {
   dopaiosProductBaselines,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosSessionUsage,
   dopaiosActivations,
   dopaiosAuthBreakers,
   dopaiosSeparationPolicies,
@@ -929,6 +930,45 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         confirmed: d["confirmed"],
       });
       break;
+    case "AiSessionUsageRecorded": {
+      await tx.insert(dopaiosSessionUsage).values({
+        sessionId: d["sessionId"],
+        seq: d["seq"],
+        step: d["step"],
+        model: d["model"],
+        billingType: d["billingType"],
+        inputTokens: d["inputTokens"],
+        cachedInputTokens: d["cachedInputTokens"],
+        outputTokens: d["outputTokens"],
+        costUsdReported: (d["costUsdReported"] as string | null) ?? null,
+        costUsdComputed: d["costUsdComputed"] as string,
+        priceSource: d["priceSource"],
+      });
+      const reportedDelta = (d["costUsdReported"] as string | null) ?? "0";
+      await tx
+        .update(dopaiosAiSessions)
+        .set({
+          usageInputTokens: sql`${dopaiosAiSessions.usageInputTokens} + ${d["inputTokens"]}`,
+          usageCachedInputTokens: sql`${dopaiosAiSessions.usageCachedInputTokens} + ${d["cachedInputTokens"]}`,
+          usageOutputTokens: sql`${dopaiosAiSessions.usageOutputTokens} + ${d["outputTokens"]}`,
+          usageCostUsdReported: sql`${dopaiosAiSessions.usageCostUsdReported} + ${reportedDelta}::numeric`,
+          usageCostUsdComputed: sql`${dopaiosAiSessions.usageCostUsdComputed} + ${d["costUsdComputed"]}::numeric`,
+        })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
+    }
+    case "AiSessionBudgetWarned":
+      await tx
+        .update(dopaiosAiSessions)
+        .set({ budgetState: sql`COALESCE(${dopaiosAiSessions.budgetState}, 'warned')` })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
+    case "AiSessionBudgetStopped":
+      await tx
+        .update(dopaiosAiSessions)
+        .set({ budgetState: "stopped" })
+        .where(eq(dopaiosAiSessions.id, d["sessionId"]));
+      break;
     case "AiSessionInterrupted":
       await tx
         .update(dopaiosAiSessions)
@@ -1650,6 +1690,7 @@ const PROJECTION_TABLES = [
   dopaiosRetrievalQueries,
   dopaiosAiSessions,
   dopaiosSessionArtifacts,
+  dopaiosSessionUsage,
   dopaiosActivations,
   dopaiosAuthBreakers,
   dopaiosSeparationPolicies,
