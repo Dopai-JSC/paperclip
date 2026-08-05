@@ -11,19 +11,22 @@ CREATE TABLE "dopaios_session_usage" (
   "billing_type" text NOT NULL,
   "input_tokens" integer NOT NULL,
   "cached_input_tokens" integer NOT NULL,
+  "cache_creation_input_tokens" integer NOT NULL,
   "output_tokens" integer NOT NULL,
   "cost_usd_reported" numeric(14, 8),
   "cost_usd_computed" numeric(14, 8) NOT NULL,
   "price_source" text NOT NULL,
   CONSTRAINT "dopaios_session_usage_pk" PRIMARY KEY ("session_id", "seq"),
   CONSTRAINT "dopaios_session_usage_tokens_nonneg" CHECK (
-    "input_tokens" >= 0 AND "cached_input_tokens" >= 0 AND "output_tokens" >= 0
+    "input_tokens" >= 0 AND "cached_input_tokens" >= 0
+    AND "cache_creation_input_tokens" >= 0 AND "output_tokens" >= 0
   )
 );
 
 ALTER TABLE "dopaios_ai_sessions"
   ADD COLUMN "usage_input_tokens" integer NOT NULL DEFAULT 0,
   ADD COLUMN "usage_cached_input_tokens" integer NOT NULL DEFAULT 0,
+  ADD COLUMN "usage_cache_creation_input_tokens" integer NOT NULL DEFAULT 0,
   ADD COLUMN "usage_output_tokens" integer NOT NULL DEFAULT 0,
   ADD COLUMN "usage_cost_usd_reported" numeric(14, 8) NOT NULL DEFAULT 0,
   ADD COLUMN "usage_cost_usd_computed" numeric(14, 8) NOT NULL DEFAULT 0,

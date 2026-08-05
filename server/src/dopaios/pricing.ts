@@ -17,11 +17,13 @@ export type ModelPrice = {
   inputCostPerToken: number;
   outputCostPerToken: number;
   cacheReadCostPerToken: number;
+  cacheCreationCostPerToken: number;
 };
 
 export type StepTokenUsage = {
   inputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   outputTokens: number;
 };
 
@@ -70,10 +72,12 @@ export function resolveModelPrice(model: string): ModelPrice {
     const output = entry["output_cost_per_token"];
     if (typeof input !== "number" || typeof output !== "number") continue;
     const cacheRead = entry["cache_read_input_token_cost"];
+    const cacheCreation = entry["cache_creation_input_token_cost"];
     return {
       inputCostPerToken: input,
       outputCostPerToken: output,
       cacheReadCostPerToken: typeof cacheRead === "number" ? cacheRead : input,
+      cacheCreationCostPerToken: typeof cacheCreation === "number" ? cacheCreation : input,
     };
   }
   throw new PriceResolutionError(
@@ -89,9 +93,11 @@ export function computeCostUsd(model: string, usage: StepTokenUsage): string {
   if (
     !Number.isInteger(usage.inputTokens) ||
     !Number.isInteger(usage.cachedInputTokens) ||
+    !Number.isInteger(usage.cacheCreationInputTokens) ||
     !Number.isInteger(usage.outputTokens) ||
     usage.inputTokens < 0 ||
     usage.cachedInputTokens < 0 ||
+    usage.cacheCreationInputTokens < 0 ||
     usage.outputTokens < 0
   ) {
     throw new PriceResolutionError("ERR-PRICE-USAGE", "Token counts must be non-negative integers");
@@ -100,6 +106,7 @@ export function computeCostUsd(model: string, usage: StepTokenUsage): string {
   const cost =
     usage.inputTokens * price.inputCostPerToken +
     usage.cachedInputTokens * price.cacheReadCostPerToken +
+    usage.cacheCreationInputTokens * price.cacheCreationCostPerToken +
     usage.outputTokens * price.outputCostPerToken;
   return cost.toFixed(8);
 }

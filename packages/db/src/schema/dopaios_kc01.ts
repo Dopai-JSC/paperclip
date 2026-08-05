@@ -245,6 +245,7 @@ export const dopaiosAiSessions = pgTable("dopaios_ai_sessions", {
   // AiSessionUsageRecorded; budget_state ghi warned/stopped của trần costUsd.
   usageInputTokens: integer("usage_input_tokens").notNull().default(0),
   usageCachedInputTokens: integer("usage_cached_input_tokens").notNull().default(0),
+  usageCacheCreationInputTokens: integer("usage_cache_creation_input_tokens").notNull().default(0),
   usageOutputTokens: integer("usage_output_tokens").notNull().default(0),
   usageCostUsdReported: numeric("usage_cost_usd_reported", { precision: 14, scale: 8 }).notNull().default("0"),
   usageCostUsdComputed: numeric("usage_cost_usd_computed", { precision: 14, scale: 8 }).notNull().default("0"),
@@ -294,6 +295,7 @@ export const dopaiosSessionUsage = pgTable(
     billingType: text("billing_type").notNull(),
     inputTokens: integer("input_tokens").notNull(),
     cachedInputTokens: integer("cached_input_tokens").notNull(),
+    cacheCreationInputTokens: integer("cache_creation_input_tokens").notNull(),
     outputTokens: integer("output_tokens").notNull(),
     costUsdReported: numeric("cost_usd_reported", { precision: 14, scale: 8 }),
     costUsdComputed: numeric("cost_usd_computed", { precision: 14, scale: 8 }).notNull(),

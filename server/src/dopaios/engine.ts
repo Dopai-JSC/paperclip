@@ -38,6 +38,7 @@ export type StepUsage = {
   billingType: string;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   outputTokens: number;
   costUsdReported: string | null;
 };
@@ -81,6 +82,7 @@ export type FakeStepUsage = {
   billingType: string;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   outputTokens: number;
   costUsdReported: string | null;
 };
@@ -240,6 +242,7 @@ export async function runWorkItemSession(
         const computed = computeCostUsd(usage.model, {
           inputTokens: usage.inputTokens,
           cachedInputTokens: usage.cachedInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
           outputTokens: usage.outputTokens,
         });
         await recordSessionUsage(db, `CMD-SES-USE-${input.sessionId}-${usageSeq}`, {
@@ -250,6 +253,7 @@ export async function runWorkItemSession(
           billingType: usage.billingType,
           inputTokens: usage.inputTokens,
           cachedInputTokens: usage.cachedInputTokens,
+          cacheCreationInputTokens: usage.cacheCreationInputTokens,
           outputTokens: usage.outputTokens,
           costUsdReported: usage.costUsdReported,
           costUsdComputed: computed,

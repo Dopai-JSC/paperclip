@@ -230,6 +230,7 @@ export async function recordSessionUsage(
     billingType: string;
     inputTokens: number;
     cachedInputTokens: number;
+    cacheCreationInputTokens: number;
     outputTokens: number;
     costUsdReported: string | null;
     costUsdComputed: string;
@@ -245,7 +246,12 @@ export async function recordSessionUsage(
         throw new CommandRejectedError("ERR-SESSION-STATE", "Session is not RUNNING");
       }
       await requireSessionActorAuthorized(ctx, session);
-      for (const key of ["inputTokens", "cachedInputTokens", "outputTokens"] as const) {
+      for (const key of [
+        "inputTokens",
+        "cachedInputTokens",
+        "cacheCreationInputTokens",
+        "outputTokens",
+      ] as const) {
         const value = p[key];
         if (!Number.isInteger(value) || (value as number) < 0) {
           throw new CommandRejectedError("ERR-USAGE-TOKENS", `${key} must be a non-negative integer`);
@@ -287,6 +293,7 @@ export async function recordSessionUsage(
           billingType: p["billingType"],
           inputTokens: p["inputTokens"],
           cachedInputTokens: p["cachedInputTokens"],
+          cacheCreationInputTokens: p["cacheCreationInputTokens"],
           outputTokens: p["outputTokens"],
           costUsdReported: reported,
           costUsdComputed: computed,

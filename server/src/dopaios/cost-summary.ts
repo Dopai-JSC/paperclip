@@ -16,6 +16,7 @@ export type SessionCostRow = {
   budgetState: string | null;
   inputTokens: number;
   cachedInputTokens: number;
+  cacheCreationInputTokens: number;
   outputTokens: number;
   costUsdReported: string;
   costUsdComputed: string;
@@ -30,6 +31,7 @@ export type WorkItemCostSummary = {
     completedSessionCount: number;
     inputTokens: number;
     cachedInputTokens: number;
+    cacheCreationInputTokens: number;
     outputTokens: number;
     costUsdReported: string;
     costUsdComputed: string;
@@ -48,7 +50,8 @@ export async function workItemCostSummary(
 ): Promise<WorkItemCostSummary> {
   const rows = (await db.execute(sql`
     SELECT id, predecessor_id, relation, state, outcome, budget_state,
-           usage_input_tokens, usage_cached_input_tokens, usage_output_tokens,
+           usage_input_tokens, usage_cached_input_tokens,
+           usage_cache_creation_input_tokens, usage_output_tokens,
            usage_cost_usd_reported, usage_cost_usd_computed
     FROM dopaios_ai_sessions
     WHERE work_item_id = ${workItemId}
@@ -62,6 +65,7 @@ export async function workItemCostSummary(
     budget_state: string | null;
     usage_input_tokens: number;
     usage_cached_input_tokens: number;
+    usage_cache_creation_input_tokens: number;
     usage_output_tokens: number;
     usage_cost_usd_reported: string;
     usage_cost_usd_computed: string;
@@ -96,6 +100,7 @@ export async function workItemCostSummary(
       budgetState: row.budget_state,
       inputTokens: Number(row.usage_input_tokens),
       cachedInputTokens: Number(row.usage_cached_input_tokens),
+      cacheCreationInputTokens: Number(row.usage_cache_creation_input_tokens),
       outputTokens: Number(row.usage_output_tokens),
       costUsdReported: Number(row.usage_cost_usd_reported).toFixed(8),
       costUsdComputed: Number(row.usage_cost_usd_computed).toFixed(8),
@@ -111,6 +116,7 @@ export async function workItemCostSummary(
       completedSessionCount: sessions.filter((s) => s.countsAsCompleted).length,
       inputTokens: sessions.reduce((sum, s) => sum + s.inputTokens, 0),
       cachedInputTokens: sessions.reduce((sum, s) => sum + s.cachedInputTokens, 0),
+      cacheCreationInputTokens: sessions.reduce((sum, s) => sum + s.cacheCreationInputTokens, 0),
       outputTokens: sessions.reduce((sum, s) => sum + s.outputTokens, 0),
       costUsdReported: (reportedScaled / SCALE).toFixed(8),
       costUsdComputed: (computedScaled / SCALE).toFixed(8),

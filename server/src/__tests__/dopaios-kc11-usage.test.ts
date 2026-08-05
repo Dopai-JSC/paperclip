@@ -41,9 +41,14 @@ if (!embeddedPostgresSupport.supported) {
 }
 
 // FakeEngine usage tất định: claude-sonnet-5 tại pin LiteLLM có giá
-// in 2e-6, cache-read 2e-7, out 1e-5 → mỗi bước computed
-// 1000×2e-6 + 500×2e-7 + 400×1e-5 = 0.00610000 USD.
-const STEP_TOKENS = { inputTokens: 1000, cachedInputTokens: 500, outputTokens: 400 };
+// in 2e-6, cache-read 2e-7, cache-creation 2.5e-6, out 1e-5 → mỗi bước
+// computed 1000×2e-6 + 500×2e-7 + 0×2.5e-6 + 400×1e-5 = 0.00610000 USD.
+const STEP_TOKENS = {
+  inputTokens: 1000,
+  cachedInputTokens: 500,
+  cacheCreationInputTokens: 0,
+  outputTokens: 400,
+};
 const STEP_COMPUTED = "0.00610000";
 
 describeEmbeddedPostgres("dopaios KC-11 usage and budget per AI session", () => {
@@ -91,8 +96,14 @@ describeEmbeddedPostgres("dopaios KC-11 usage and budget per AI session", () => 
       inputCostPerToken: 0.000002,
       outputCostPerToken: 0.00001,
       cacheReadCostPerToken: 2e-7,
+      cacheCreationCostPerToken: 0.0000025,
     });
     expect(computeCostUsd("claude-sonnet-5", STEP_TOKENS)).toBe(STEP_COMPUTED);
+    // cache_creation tính theo đơn giá riêng (1,25× input tại pin) — không
+    // được gộp vào input thường: 0.0061 + 100×2.5e-6 = 0.00635000.
+    expect(
+      computeCostUsd("claude-sonnet-5", { ...STEP_TOKENS, cacheCreationInputTokens: 100 }),
+    ).toBe("0.00635000");
     expect(() => computeCostUsd("model-khong-ton-tai", STEP_TOKENS)).toThrowError(
       PriceResolutionError,
     );
@@ -120,7 +131,8 @@ describeEmbeddedPostgres("dopaios KC-11 usage and budget per AI session", () => 
 
     const usageRows = (await db.execute(sql`
       SELECT seq, step, model, billing_type, input_tokens, cached_input_tokens,
-             output_tokens, cost_usd_reported, cost_usd_computed, price_source
+             cache_creation_input_tokens, output_tokens, cost_usd_reported,
+             cost_usd_computed, price_source
       FROM dopaios_session_usage WHERE session_id = 'SES-U1' ORDER BY seq
     `)) as unknown as Array<Record<string, unknown>>;
     expect(usageRows).toHaveLength(3);
@@ -131,6 +143,7 @@ describeEmbeddedPostgres("dopaios KC-11 usage and budget per AI session", () => 
       billing_type: "subscription_included",
       input_tokens: 1000,
       cached_input_tokens: 500,
+      cache_creation_input_tokens: 0,
       output_tokens: 400,
       cost_usd_reported: null,
       cost_usd_computed: STEP_COMPUTED,

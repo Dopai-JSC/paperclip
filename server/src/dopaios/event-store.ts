@@ -939,6 +939,7 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         billingType: d["billingType"],
         inputTokens: d["inputTokens"],
         cachedInputTokens: d["cachedInputTokens"],
+        cacheCreationInputTokens: d["cacheCreationInputTokens"],
         outputTokens: d["outputTokens"],
         costUsdReported: (d["costUsdReported"] as string | null) ?? null,
         costUsdComputed: d["costUsdComputed"] as string,
@@ -950,6 +951,7 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({
           usageInputTokens: sql`${dopaiosAiSessions.usageInputTokens} + ${d["inputTokens"]}`,
           usageCachedInputTokens: sql`${dopaiosAiSessions.usageCachedInputTokens} + ${d["cachedInputTokens"]}`,
+          usageCacheCreationInputTokens: sql`${dopaiosAiSessions.usageCacheCreationInputTokens} + ${d["cacheCreationInputTokens"]}`,
           usageOutputTokens: sql`${dopaiosAiSessions.usageOutputTokens} + ${d["outputTokens"]}`,
           usageCostUsdReported: sql`${dopaiosAiSessions.usageCostUsdReported} + ${reportedDelta}::numeric`,
           usageCostUsdComputed: sql`${dopaiosAiSessions.usageCostUsdComputed} + ${d["costUsdComputed"]}::numeric`,
