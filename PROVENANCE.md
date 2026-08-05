@@ -139,3 +139,16 @@ component files are pinned by SHA-256 over exact bytes (`.gitattributes`
 disables EOL conversion in that directory). Consistency check:
 `node dopaios/fixtures/validate.mjs`. The catalog record file lives in the
 Dopaios repository under `docs/architecture/verification/evidence/fixtures/`.
+
+## Vendored LiteLLM model price table (KC-11)
+
+`dopaios/pricing/model_prices_and_context_window.json` is an F-type import
+(Phụ lục A) from `BerriAI/litellm`, pinned at commit
+`e926097fecc79e58cee0937cd54bf67f445a0c45` (pricing date 2026-08-05).
+SHA-256 of the exact bytes:
+`64c1cd8e97ecf9801c8cf66c66f16552168b08535230b8e0a5304fdee31a08b5`.
+License at the pinned commit: MIT for repository content outside the
+`enterprise/` directory (this file lives at the repository root). The file is
+loaded fail-closed by `server/src/dopaios/pricing.ts`, which verifies this
+checksum at first load; price updates must re-pin commit + checksum +
+pricing date here and in that module together.
