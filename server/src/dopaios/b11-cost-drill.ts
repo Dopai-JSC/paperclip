@@ -74,11 +74,15 @@ function contractFor(index: number, steps: number): ExecutionContract {
   };
 }
 
-function engineFor(sessionId: string): ClaudeCliEngine {
+// artifactDir theo WORK-ITEM (không theo phiên): hợp đồng resume của engine
+// đọc file bước của phiên tiền nhiệm khi ghép output cuối — per-session dir
+// làm chuỗi retry gãy ở bước ghép (bug bắt được trong drill B6 thật; hai
+// phiên fail giữ nguyên làm evidence). configDir vẫn theo phiên cho ccusage.
+function engineFor(sessionId: string, workItemIndex: number): ClaudeCliEngine {
   return new ClaudeCliEngine({
     cliPath: requireEnv("KC11_CLI_PATH"),
     tokenFile: requireEnv("KC11_TOKEN_FILE"),
-    artifactDir: join(requireEnv("KC11_ARTIFACT_DIR"), sessionId),
+    artifactDir: join(requireEnv("KC11_ARTIFACT_DIR"), `wi-${workItemIndex}`),
     configDir: join(requireEnv("KC11_CONFIG_BASE"), sessionId),
     cliTimeoutMs: CLI_TIMEOUT_MS,
     heartbeatMs: 5_000,
@@ -162,7 +166,7 @@ async function driveSession(input: {
     const outcome = await runWorkItemSession(db, {
       sessionId: input.sessionId,
       agentId: AGENT,
-      adapter: engineFor(input.sessionId),
+      adapter: engineFor(input.sessionId, input.workItemIndex),
       contract: contractFor(input.workItemIndex, input.steps),
       budget: input.budget,
       predecessor: input.predecessor,
