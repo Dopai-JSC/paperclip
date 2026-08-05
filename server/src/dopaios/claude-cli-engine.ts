@@ -36,6 +36,9 @@ export type ClaudeCliEngineOptions = {
   // KC-11: billingType ghi vào usage (mặc định subscription_included — đường
   // OAuth token thuê bao; đổi khi chạy fallback API key có trần).
   billingType?: string;
+  // KC-11: pin CLAUDE_CONFIG_DIR theo phiên để ccusage đối soát được đúng
+  // transcript của từng Phiên chạy AI; bỏ trống thì dùng thư mục tạm sạch.
+  configDir?: string;
 };
 
 // Kết quả parse một lượt stream-json của `claude --print`.
@@ -120,6 +123,7 @@ export class ClaudeCliEngine implements EngineAdapter {
       heartbeatMs: 5_000,
       cliTimeoutMs: 180_000,
       billingType: "subscription_included",
+      configDir: "",
       ...options,
     };
     mkdirSync(this.options.artifactDir, { recursive: true });
@@ -131,7 +135,12 @@ export class ClaudeCliEngine implements EngineAdapter {
 
   private childEnv(): NodeJS.ProcessEnv {
     if (!this.configDir) {
-      this.configDir = mkdtempSync(join(tmpdir(), "dopaios-b7-cfg-"));
+      if (this.options.configDir) {
+        mkdirSync(this.options.configDir, { recursive: true });
+        this.configDir = this.options.configDir;
+      } else {
+        this.configDir = mkdtempSync(join(tmpdir(), "dopaios-b7-cfg-"));
+      }
     }
     // Whitelist tối thiểu thay vì kế thừa process.env: chặn mọi biến điều
     // hướng auth/backend (ANTHROPIC_BASE_URL, ANTHROPIC_AUTH_TOKEN,
