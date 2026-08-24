@@ -855,6 +855,77 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       emit("");
     }
 
+    // Dopaios patch (KC-01 event store): index của message_store dùng hàm
+    // trong biểu thức (vd. message_store.category) nên HÀM người-dùng phải
+    // được dump TRƯỚC index — pg_indexes một mình làm restore fail với
+    // "function ... does not exist". Dump function/procedure sql|plpgsql của
+    // các schema không-hệ-thống, trừ hàm thuộc extension (pg_depend 'e');
+    // check_function_bodies=false để thứ tự hàm gọi nhau không thành vấn đề.
+    const allUserTypes = await sql<{ schema_name: string; type_name: string; definition: string }[]>`
+      SELECT n.nspname AS schema_name, t.typname AS type_name,
+             CASE t.typtype
+               WHEN 'c' THEN 'CREATE TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname) || ' AS (' ||
+                 (SELECT string_agg(quote_ident(a.attname) || ' ' || pg_catalog.format_type(a.atttypid, a.atttypmod), ', ' ORDER BY a.attnum)
+                  FROM pg_attribute a
+                  WHERE a.attrelid = t.typrelid AND a.attnum > 0 AND NOT a.attisdropped) || ')'
+               WHEN 'e' THEN 'CREATE TYPE ' || quote_ident(n.nspname) || '.' || quote_ident(t.typname) || ' AS ENUM (' ||
+                 (SELECT string_agg(quote_literal(e.enumlabel), ', ' ORDER BY e.enumsortorder)
+                  FROM pg_enum e WHERE e.enumtypid = t.oid) || ')'
+             END AS definition
+      FROM pg_type t
+      JOIN pg_namespace n ON n.oid = t.typnamespace
+      LEFT JOIN pg_class c ON c.oid = t.typrelid
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        AND (
+          (t.typtype = 'c' AND c.relkind = 'c')
+          OR t.typtype = 'e'
+        )
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = t.oid AND d.classid = 'pg_type'::regclass AND d.deptype = 'e'
+        )
+      ORDER BY n.nspname, t.typname
+    `;
+    const userTypes = allUserTypes.filter((t) => includedSchemas.has(t.schema_name) && t.definition);
+
+    if (userTypes.length > 0) {
+      emit("-- User-defined types (before functions that reference them)");
+      for (const t of userTypes) {
+        // Idempotent: DB đích có thể đã mang sẵn type (restore vào DB có
+        // schema nền) — chỉ tạo khi chưa tồn tại, không đụng type đang có.
+        emitStatement(
+          `DO $dopai_type_guard$ BEGIN IF NOT EXISTS (SELECT 1 FROM pg_type pt JOIN pg_namespace pn ON pn.oid = pt.typnamespace WHERE pn.nspname = ${formatSqlLiteral(t.schema_name)} AND pt.typname = ${formatSqlLiteral(t.type_name)}) THEN ${t.definition}; END IF; END $dopai_type_guard$;`,
+        );
+      }
+      emit("");
+    }
+
+    const allFunctions = await sql<{ schema_name: string; function_name: string; definition: string }[]>`
+      SELECT n.nspname AS schema_name, p.proname AS function_name,
+             pg_get_functiondef(p.oid) AS definition
+      FROM pg_proc p
+      JOIN pg_namespace n ON n.oid = p.pronamespace
+      JOIN pg_language l ON l.oid = p.prolang
+      WHERE ${sql.unsafe(nonSystemSchemaPredicate("n.nspname"))}
+        AND p.prokind IN ('f', 'p')
+        AND l.lanname IN ('sql', 'plpgsql')
+        AND NOT EXISTS (
+          SELECT 1 FROM pg_depend d
+          WHERE d.objid = p.oid AND d.classid = 'pg_proc'::regclass AND d.deptype = 'e'
+        )
+      ORDER BY n.nspname, p.proname
+    `;
+    const functions = allFunctions.filter((fn) => includedSchemas.has(fn.schema_name));
+
+    if (functions.length > 0) {
+      emit("-- Functions (before indexes that reference them)");
+      emitStatement("SET LOCAL check_function_bodies = false;");
+      for (const fn of functions) {
+        emitStatement(`${fn.definition};`);
+      }
+      emit("");
+    }
+
     // Indexes (non-primary, non-unique-constraint)
     const allIndexes = await sql<{ schema_name: string; tablename: string; indexdef: string }[]>`
       SELECT schemaname AS schema_name, tablename, indexdef
