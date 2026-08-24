@@ -471,7 +471,7 @@ export async function runnerTick(
         contract: {
           workItemId: activation.work_item_id,
           contractRevision: Number(activation.xc_rev ?? 1),
-          sopRef: `${cfg.sopRef.id}@${cfg.sopRef.revision}`,
+          sopRef: { id: cfg.sopRef.id, revision: cfg.sopRef.revision },
           steps: pinnedSteps,
         },
       });
