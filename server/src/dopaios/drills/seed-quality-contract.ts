@@ -1,17 +1,17 @@
-import type { Db } from "./event-store.js";
-import { registerActor } from "./commands.js";
+import type { Db } from "../core/event-store.js";
+import { registerActor } from "../core/commands.js";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "./approval.js";
+} from "../core/approval.js";
 import {
   registerQualityContract,
   qualityContractContentSha256,
   type QualityContractRef,
-} from "./lifecycle.js";
+} from "../core/lifecycle.js";
 
 // KC-14: seed một Hợp đồng chất lượng đã duyệt qua ĐƯỜNG KC-03 THẬT —
 // draft → in-review → Gói quyết định → approve (Approval Record hiệu lực) —

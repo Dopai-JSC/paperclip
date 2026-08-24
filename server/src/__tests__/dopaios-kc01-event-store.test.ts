@@ -16,7 +16,7 @@ import {
   readStream,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   activateSopRun,
   advanceToDecision,
@@ -34,9 +34,9 @@ import {
   reviewFixtureExecution,
   runFixtureExecution,
   validateSelfCheck,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-01 contract tests over the canonical batch-1 fixtures fx-01 and fx-02
 // (dopaios/fixtures). The embedded test database runs the full migration

@@ -14,7 +14,7 @@ import {
   replayProjections,
   snapshotProjections,
   CommandRejectedError,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   provisionWorkspace,
   activateWorkspace,
@@ -22,7 +22,7 @@ import {
   recordWorkspacePurge,
   requireActiveWorkspace,
   accessWorkspaceCredential,
-} from "../dopaios/workspace.ts";
+} from "../dopaios/core/workspace.ts";
 import {
   initFixtureRepo,
   materializeWorkspace,
@@ -32,9 +32,9 @@ import {
   listTree,
   bindPort,
   type MaterializedWorkspace,
-} from "../dopaios/workspace-fs.ts";
-import { FakeEngine, runWorkItemSession } from "../dopaios/engine.ts";
-import { requestActivation, claimActivation, completeActivation } from "../dopaios/activation.ts";
+} from "../dopaios/core/workspace-fs.ts";
+import { FakeEngine, runWorkItemSession } from "../dopaios/core/engine.ts";
+import { requestActivation, claimActivation, completeActivation } from "../dopaios/core/activation.ts";
 
 // KC-05 B5: "sau khi đóng, dữ liệu tạm được purge đúng phạm vi" theo thứ tự
 // ADR-012 — chặn task mới → đóng → xóa đúng prefix Release → post-check

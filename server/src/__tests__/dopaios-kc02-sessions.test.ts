@@ -9,8 +9,8 @@ import {
   readStream,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
-import { activateSopRun, registerActor, registerApprovedArtifact, createSopDefinition, publishSopDefinition, requestTestRun } from "../dopaios/commands.ts";
+} from "../dopaios/core/event-store.ts";
+import { activateSopRun, registerActor, registerApprovedArtifact, createSopDefinition, publishSopDefinition, requestTestRun } from "../dopaios/core/commands.ts";
 import {
   completeSession,
   createSuccessorSession,
@@ -19,7 +19,7 @@ import {
   recordSessionArtifact,
   recordSessionSignal,
   startAiSession,
-} from "../dopaios/sessions.ts";
+} from "../dopaios/core/sessions.ts";
 
 // KC-02 B2: record Phiên chạy AI trên event store KC-01 — bất biến PRD Mục 3.
 

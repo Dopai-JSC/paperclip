@@ -2,16 +2,16 @@ import { readFileSync } from "node:fs";
 import pg from "pg";
 import { query } from "@anthropic-ai/claude-agent-sdk";
 import { createDb } from "@paperclipai/db";
-import { payloadSha256 } from "./event-store.js";
+import { payloadSha256 } from "../core/event-store.js";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "./commands.js";
-import { completeSession, recordSessionArtifact, startAiSession } from "./sessions.js";
-import { DopaiosSessionStore } from "./session-store/DopaiosSessionStore.js";
+} from "../core/commands.js";
+import { completeSession, recordSessionArtifact, startAiSession } from "../core/sessions.js";
+import { DopaiosSessionStore } from "../core/session-store/DopaiosSessionStore.js";
 
 // KC-02 B8: cùng dạng work-item nhưng chạy qua Agent SDK 0.3.220 với
 // DopaiosSessionStore mirror transcript vào Postgres (dual-write). Kịch bản

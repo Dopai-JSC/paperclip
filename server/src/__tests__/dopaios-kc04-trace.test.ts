@@ -4,7 +4,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, type CommandContext } from "../dopaios/event-store.ts";
+import { executeCommand, type CommandContext } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -14,24 +14,24 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { startAiSession, recordSessionArtifact, completeSession } from "../dopaios/sessions.ts";
+} from "../dopaios/core/approval.ts";
+import { startAiSession, recordSessionArtifact, completeSession } from "../dopaios/core/sessions.ts";
 import {
   declareWorkItemDependency,
   traceCriticalOutput,
   outputsPinningSourceRevision,
   listCurrentRunOutputs,
   artifactProvenance,
-} from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-04 B2 — "chức năng mẫu" (QD-3): một chức năng fixture đi trọn chuỗi
 // spec → code → test → artifact → kết quả kiểm trên FakeEngine, rồi truy vấn:

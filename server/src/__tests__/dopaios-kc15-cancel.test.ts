@@ -10,7 +10,7 @@ import {
   executeCommand,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -24,11 +24,11 @@ import {
   advanceToDecision,
   recordApproval,
   completeSopRun,
-} from "../dopaios/commands.ts";
-import { cancelTestRun } from "../dopaios/exceptions.ts";
-import { declareWorkItemDependency } from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/commands.ts";
+import { cancelTestRun } from "../dopaios/core/exceptions.ts";
+import { declareWorkItemDependency } from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-15 B4 — ca kiểm thử 3 của tiêu chí đạt: "lệnh hủy xử lý hết work-item
 // mở mà không tính chúng là hoàn thành (cascade nguyên tử với disposition

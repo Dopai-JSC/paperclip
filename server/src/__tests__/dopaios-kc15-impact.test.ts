@@ -11,7 +11,7 @@ import {
   replayProjections,
   snapshotProjections,
   type CommandContext,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -24,23 +24,23 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { createArtifactRevision, type SourceRef } from "../dopaios/lifecycle.ts";
-import { submitFixtureRevision } from "../dopaios/revisions.ts";
+} from "../dopaios/core/approval.ts";
+import { createArtifactRevision, type SourceRef } from "../dopaios/core/lifecycle.ts";
+import { submitFixtureRevision } from "../dopaios/core/revisions.ts";
 import {
   declareWorkItemDependency,
   transitiveDependents,
   currentOutputsPinningSource,
-} from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-15 B3 — ca kiểm thử 2 của tiêu chí đạt: "thay đổi spec chỉ thay thế
 // phần bị ảnh hưởng và quay lại đúng cổng (re-entry duy nhất qua revision

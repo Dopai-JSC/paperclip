@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { replayProjections } from "./event-store.js";
+import { replayProjections } from "../core/event-store.js";
 import {
   compareRpo0Snapshots,
   compareConfirmedFileInventory,

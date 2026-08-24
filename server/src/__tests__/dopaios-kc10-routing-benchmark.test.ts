@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { measureKc10RouteToActivation } from "../dopaios/kc10-routing-benchmark.js";
+import { measureKc10RouteToActivation } from "../dopaios/drills/kc10-routing-benchmark.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

@@ -6,7 +6,7 @@ import {
   createProcessRuntime,
   validateDefinitionAgainstSources,
   validateProcessDefinition,
-} from "../dopaios/process-as-code.ts";
+} from "../dopaios/core/process-as-code.ts";
 
 const MINIMAL_QUOTE_DEFINITION = {
   schemaVersion: "1.0",

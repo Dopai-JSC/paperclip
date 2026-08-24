@@ -5,15 +5,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "../dopaios/commands.ts";
-import { FakeEngine, type EngineAdapter, type EngineRunInput, type EngineRunResult, type ExecutionContract } from "../dopaios/engine.ts";
+} from "../dopaios/core/commands.ts";
+import { FakeEngine, type EngineAdapter, type EngineRunInput, type EngineRunResult, type ExecutionContract } from "../dopaios/core/engine.ts";
 import {
   AuthError,
   BreakerOpenError,
@@ -22,7 +22,7 @@ import {
   resetAuthBreaker,
   runActivation,
   withAuthBreaker,
-} from "../dopaios/activation.ts";
+} from "../dopaios/core/activation.ts";
 
 // KC-02 B5: entry kích hoạt kiểu KC-13 (SFR-011 idempotent, DEV-010 claim
 // compare-and-set) + circuit-breaker chuỗi lỗi auth — điều kiện gác trước V-01.

@@ -1,5 +1,5 @@
 import { createDb } from "@paperclipai/db";
-import { countAllEvents, replayProjections, snapshotProjections } from "./event-store.js";
+import { countAllEvents, replayProjections, snapshotProjections } from "../core/event-store.js";
 
 // KC-01 reconciliation runner: rebuilds every projection from the event log,
 // then reports row counts so the operator can compare against the

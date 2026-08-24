@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -18,7 +18,7 @@ import {
   reviewFixtureExecution,
   attachCheckEvidence,
   pinProductBaseline,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
@@ -26,8 +26,8 @@ import {
   assembleDecisionPackage,
   recordApprovalDecision,
   type RecordApprovalPayload,
-} from "../dopaios/approval.ts";
-import { closeCondition, dispositionImpact } from "../dopaios/conditions.ts";
+} from "../dopaios/core/approval.ts";
+import { closeCondition, dispositionImpact } from "../dopaios/core/conditions.ts";
 import {
   createArtifactRevision,
   beginImplementation,
@@ -35,7 +35,7 @@ import {
   retireArtifact,
   registerQualityContract,
   qualityContractContentSha256,
-} from "../dopaios/lifecycle.ts";
+} from "../dopaios/core/lifecycle.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
 
 // KC-14 B2 — hoàn tất bảng `artifact_state` FS-002 (create-revision /

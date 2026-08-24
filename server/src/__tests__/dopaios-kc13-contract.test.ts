@@ -5,14 +5,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   createProjectShell,
   registerApprovedArtifact,
   createSopDefinition,
   publishSopDefinition,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   registerStaffAi,
   pinStartupPool,
@@ -21,10 +21,10 @@ import {
   approveProjectInitiation,
   createProjectWorkItem,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { compileExecutionContract } from "../dopaios/contract.ts";
-import { routeWorkItem } from "../dopaios/router.ts";
-import { requestActivation, claimActivation } from "../dopaios/activation.ts";
+} from "../dopaios/core/routing.ts";
+import { compileExecutionContract } from "../dopaios/core/contract.ts";
+import { routeWorkItem } from "../dopaios/core/router.ts";
+import { requestActivation, claimActivation } from "../dopaios/core/activation.ts";
 
 // KC-13 B3: Hợp đồng thực hiện AI (PRD FR-63). Biên dịch từ bốn nguồn có
 // phiên bản; thiếu trường bắt buộc thì AI không bắt đầu; sửa hợp đồng tạo

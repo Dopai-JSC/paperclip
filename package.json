@@ -17,6 +17,7 @@
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
     "typecheck:build-gaps": "pnpm run preflight:workspace-links && node scripts/run-typecheck-build-gaps.mjs",
+    "lint:dopaios-boundaries": "eslint --max-warnings 0 \"server/src/dopaios/core/**/*.ts\" \"server/src/routes/**/*.ts\" \"server/src/index.ts\" \"server/src/app.ts\"",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
@@ -63,6 +64,8 @@
     "@playwright/test": "^1.58.2",
     "cross-env": "^10.1.0",
     "esbuild": "^0.28.1",
+    "eslint": "^9.20.0",
+    "typescript-eslint": "^8.24.0",
     "typescript": "^5.7.3",
     "vitest": "^4.1.8"
   },

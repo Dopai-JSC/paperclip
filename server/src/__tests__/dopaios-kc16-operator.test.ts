@@ -4,10 +4,10 @@ import { createServer } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
-import { writeWorkerHeartbeatAtomic } from "../dopaios/kc16-probes.ts";
+import { writeWorkerHeartbeatAtomic } from "../dopaios/drills/kc16-probes.ts";
 
 test("operator health snapshot is ready only after every recovery component passes", async (t) => {
-  const operator = await import("../dopaios/kc16-operator.ts").catch(() => ({})) as {
+  const operator = await import("../dopaios/drills/kc16-operator.ts").catch(() => ({})) as {
     collectOperatorHealth?: (input: unknown, dependencies: unknown) => Promise<unknown>;
   };
   const expectedCommit = "e9a11b8c3fa1bcb8ebf8b2d42bb05486c1cfa7fc";

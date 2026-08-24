@@ -7,19 +7,19 @@ import {
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "./commands.js";
-import { requestActivation, runActivation } from "./activation.js";
+} from "../core/commands.js";
+import { requestActivation, runActivation } from "../core/activation.js";
 import {
   countAllEvents,
   payloadSha256,
   replayProjections,
   snapshotProjections,
-} from "./event-store.js";
-import { FakeEngine } from "./engine.js";
-import { qualityContractContentSha256 } from "./lifecycle.js";
-import { activateRunFromProcessDefinition } from "./process-run-adapter.js";
-import { validateDefinitionAgainstSources } from "./process-as-code.js";
-import { runUntilQuiescent, type RunnerFixtureConfig } from "./runner.js";
+} from "../core/event-store.js";
+import { FakeEngine } from "../core/engine.js";
+import { qualityContractContentSha256 } from "../core/lifecycle.js";
+import { activateRunFromProcessDefinition } from "../core/process-run-adapter.js";
+import { validateDefinitionAgainstSources } from "../core/process-as-code.js";
+import { runUntilQuiescent, type RunnerFixtureConfig } from "../core/runner.js";
 import { seedApprovedQualityContract } from "./seed-quality-contract.js";
 
 const databaseUrl = process.env.DATABASE_URL;
@@ -28,7 +28,7 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required");
 if (!sourceRoot) throw new Error("DOPAIOS_SOURCE_ROOT is required");
 
 const definition = JSON.parse(
-  readFileSync(new URL("../../../dopaios/processes/quote-request.v1.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../dopaios/processes/quote-request.v1.json", import.meta.url), "utf8"),
 ) as {
   id: string;
   revision: number;

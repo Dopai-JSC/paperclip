@@ -1,21 +1,21 @@
 import { readFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
-import { replayProjections, snapshotProjections } from "./event-store.js";
+import { replayProjections, snapshotProjections } from "../core/event-store.js";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "./commands.js";
-import { detectStalledSessions } from "./sessions.js";
+} from "../core/commands.js";
+import { detectStalledSessions } from "../core/sessions.js";
 import {
   latestConfirmedCheckpoint,
   runWorkItemSession,
   type ExecutionContract,
-} from "./engine.js";
-import { ClaudeCliEngine } from "./claude-cli-engine.js";
+} from "../core/engine.js";
+import { ClaudeCliEngine } from "../core/claude-cli-engine.js";
 
 // KC-02 B7: work-item THẬT qua `claude --print` trên DB container dopaios_kc02.
 // Các mode chạy tuần tự bởi b7-drive.sh:

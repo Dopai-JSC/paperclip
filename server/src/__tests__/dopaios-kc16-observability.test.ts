@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import test from "node:test";
 
 const metricsCli = fileURLToPath(
-  new URL("../dopaios/emit-kc16-recovery-metrics.ts", import.meta.url),
+  new URL("../dopaios/drills/emit-kc16-recovery-metrics.ts", import.meta.url),
 );
 const tsxLoader = new URL("../../node_modules/tsx/dist/loader.mjs", import.meta.url).href;
 
@@ -139,7 +139,7 @@ test("metrics CLI rejects missing measurements and fractional RPO loss", () => {
 });
 
 test("recovery metrics expose detection, RTO and RPO in stable units", async () => {
-  const observability = await import("../dopaios/kc16-observability.ts").catch(() => ({})) as {
+  const observability = await import("../dopaios/drills/kc16-observability.ts").catch(() => ({})) as {
     renderRecoveryMetrics?: (measurement: unknown) => string;
   };
 
@@ -165,7 +165,7 @@ test("recovery metrics expose detection, RTO and RPO in stable units", async () 
 });
 
 test("incident correlation finds the first component failure on one trace", async () => {
-  const { correlateRecoveryIncident } = await import("../dopaios/kc16-observability.ts") as {
+  const { correlateRecoveryIncident } = await import("../dopaios/drills/kc16-observability.ts") as {
     correlateRecoveryIncident?: (events: unknown[], traceId: string) => unknown;
   };
   const events = [
@@ -184,7 +184,7 @@ test("incident correlation finds the first component failure on one trace", asyn
 });
 
 test("structured recovery trace redacts credential-bearing fields", async () => {
-  const { formatRecoveryTraceEvent } = await import("../dopaios/kc16-observability.ts") as {
+  const { formatRecoveryTraceEvent } = await import("../dopaios/drills/kc16-observability.ts") as {
     formatRecoveryTraceEvent?: (event: unknown) => string;
   };
   const line = formatRecoveryTraceEvent?.({

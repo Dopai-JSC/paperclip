@@ -6,7 +6,7 @@ import { createActor, createMachine } from "xstate";
 
 const PROCESS_SCHEMA = JSON.parse(
   readFileSync(
-    new URL("../../../dopaios/processes/process-definition.schema.json", import.meta.url),
+    new URL("../../../../dopaios/processes/process-definition.schema.json", import.meta.url),
     "utf8",
   ),
 ) as object;

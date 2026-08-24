@@ -17,23 +17,23 @@ import {
   reviewFixtureExecution,
   runFixtureExecution,
   validateSelfCheck,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
-import { FakeEngine, runWorkItemSession, latestConfirmedCheckpoint } from "../dopaios/engine.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
+import { FakeEngine, runWorkItemSession, latestConfirmedCheckpoint } from "../dopaios/core/engine.ts";
 import {
   completeSession,
   detectStalledSessions,
   startAiSession,
-} from "../dopaios/sessions.ts";
+} from "../dopaios/core/sessions.ts";
 import {
   METRIC_DICTIONARY,
   automationStats,
   automationStatsFromEventLog,
   costPerAcceptedFunction,
   gateLoad,
-} from "../dopaios/metric-sources.ts";
-import { workItemCostSummary } from "../dopaios/cost-summary.ts";
+} from "../dopaios/core/metric-sources.ts";
+import { workItemCostSummary } from "../dopaios/core/cost-summary.ts";
 
 // KC-11 B3: nguồn event cho tỷ lệ tự động, sản lượng nghiệm thu/giờ người và
 // tải tại cổng — mẫu số chống gaming SM-C4, kiểm bằng recount độc lập dựng

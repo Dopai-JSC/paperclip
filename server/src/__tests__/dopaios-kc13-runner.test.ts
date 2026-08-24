@@ -9,7 +9,7 @@ import {
   executeCommand,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   createProjectShell,
@@ -19,7 +19,7 @@ import {
   requestTestRun,
   activateSopRun,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   registerStaffAi,
   pinStartupPool,
@@ -28,23 +28,23 @@ import {
   approveProjectInitiation,
   createProjectWorkItem,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { routeWorkItem } from "../dopaios/router.ts";
-import { compileExecutionContract } from "../dopaios/contract.ts";
+} from "../dopaios/core/routing.ts";
+import { routeWorkItem } from "../dopaios/core/router.ts";
+import { compileExecutionContract } from "../dopaios/core/contract.ts";
 import {
   requestActivation,
   claimActivation,
   completeActivation,
-} from "../dopaios/activation.ts";
-import { FakeEngine } from "../dopaios/engine.ts";
+} from "../dopaios/core/activation.ts";
+import { FakeEngine } from "../dopaios/core/engine.ts";
 import {
   runnerTick,
   runUntilQuiescent,
   requeueExpiredActivations,
   type RunnerFixtureConfig,
   type RunnerProjectConfig,
-} from "../dopaios/runner.ts";
-import { qualityContractContentSha256 } from "../dopaios/lifecycle.ts";
+} from "../dopaios/core/runner.ts";
+import { qualityContractContentSha256 } from "../dopaios/core/lifecycle.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
 
 // KC-13 B5: runner tick — AC-NFR-3.1 (work-item đủ điều kiện tự kích hoạt/

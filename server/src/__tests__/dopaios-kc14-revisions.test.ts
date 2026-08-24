@@ -9,7 +9,7 @@ import {
   CommandPayloadMismatchError,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -22,11 +22,11 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   recordApproval,
-} from "../dopaios/commands.ts";
-import { submitFixtureRevision } from "../dopaios/revisions.ts";
-import { detectOverdueConditions } from "../dopaios/conditions.ts";
+} from "../dopaios/core/commands.ts";
+import { submitFixtureRevision } from "../dopaios/core/revisions.ts";
+import { detectOverdueConditions } from "../dopaios/core/conditions.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-14 B4 — bản sửa và vô hiệu theo bảng đầu ra FS-003:
 //  - submit-fixture-revision (hàng NONE revision kế tiếp): bản sửa không mở

@@ -2,7 +2,7 @@ import type {
   ConnectorAdapter,
   ConnectorAdapterIdentity,
   ConnectorExecutionInput,
-} from "./connector-gateway.js";
+} from "../core/connector-gateway.js";
 
 export type FakeConnectorOutcome =
   | { ok: true; value: Record<string, unknown> }

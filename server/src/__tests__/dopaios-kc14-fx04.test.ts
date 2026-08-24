@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -21,10 +21,10 @@ import {
   advanceToDecision,
   recordApproval,
   completeSopRun,
-} from "../dopaios/commands.ts";
-import { readTwoLifecycles } from "../dopaios/read-model.ts";
+} from "../dopaios/core/commands.ts";
+import { readTwoLifecycles } from "../dopaios/core/read-model.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-14 B6 — ca chuẩn tắc FX-04 (AC-V1-03, kịch bản S01–S05 của
 // dopaios/fixtures/fx-04-fail-then-fix.json) trên đúng hash pin của các

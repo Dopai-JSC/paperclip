@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKc10SessionCookie } from "../dopaios/kc10-auth.js";
+import { buildKc10SessionCookie } from "../dopaios/core/kc10-auth.js";
 
 describe("KC-10 browser session cookie", () => {
   it("builds the instance-scoped Better Auth signed-cookie wire format", () => {
