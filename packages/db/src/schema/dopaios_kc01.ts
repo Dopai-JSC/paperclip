@@ -64,6 +64,9 @@ export const dopaiosProjects = pgTable("dopaios_projects", {
   templateRef: jsonb("template_ref").$type<Record<string, unknown>>().notNull(),
   orchestrator: text("orchestrator").notNull(),
   createdBy: text("created_by").notNull(),
+  // ADR-031 (0525): thuộc tính "Project có bên ngoài" cho guard điều kiện
+  // tắt SoD; NULL = chưa khai = không xác định (guard đọc là fail-closed).
+  hasExternalParties: boolean("has_external_parties"),
 });
 
 export const dopaiosArtifacts = pgTable(
