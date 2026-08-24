@@ -54,6 +54,10 @@ const HTTP_METHODS = new Set(["get", "put", "post", "delete", "options", "head",
 const explicitOpenApiCoverageExclusions = new Set([
   // Pipeline routes are experimental and not yet represented in the public OpenAPI document.
   "pipelines.ts",
+  // Dopaios KC-10 thin-slice routes sit behind the fail-closed DOPAIOS_KC10_ENABLED
+  // gate and are not part of the public OpenAPI document yet (mẫu hiện thực số 2 —
+  // đường /api/companies/:companyId/…; đưa vào spec khi gate mặc định bật).
+  "kc10.ts",
 ]);
 
 function createApp() {
