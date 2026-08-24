@@ -35,8 +35,14 @@ export async function startEmbeddedPostgresTestDatabase(
   const baseUrl = externalBaseUrl();
   if (!baseUrl) return startEmbeddedUpstream(tempDirPrefix);
 
-  const safePrefix = tempDirPrefix.toLowerCase().replaceAll(/[^a-z0-9_]/g, "_");
-  const databaseName = `dopaios_test_${safePrefix}${process.pid}_${randomUUID().replaceAll("-", "")}`;
+  // Postgres giới hạn identifier 63 byte: đuôi pid + 12 hex đủ duy nhất cho
+  // một lần chạy CI; prefix (tên suite) bị cắt để tổng luôn nằm trong giới hạn.
+  const suffix = `${process.pid}_${randomUUID().replaceAll("-", "").slice(0, 12)}`;
+  const safePrefix = tempDirPrefix
+    .toLowerCase()
+    .replaceAll(/[^a-z0-9_]/g, "_")
+    .slice(0, 63 - "dopaios_test_".length - suffix.length);
+  const databaseName = `dopaios_test_${safePrefix}${suffix}`;
   if (!/^[a-z0-9_]+$/u.test(databaseName) || databaseName.length > 63) {
     throw new Error(`Unsafe external test database identifier: ${databaseName}`);
   }
