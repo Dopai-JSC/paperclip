@@ -61,12 +61,12 @@ const contract: ExecutionContract = {
 
 const db = createDb(requireEnv("DATABASE_URL"));
 
-const engine = new ClaudeCliEngine({
+const engine: ClaudeCliEngine = new ClaudeCliEngine({
   cliPath: requireEnv("CLAUDE_CLI_PATH"),
   tokenFile: requireEnv("CLAUDE_TOKEN_FILE"),
   artifactDir: requireEnv("B7_ARTIFACT_DIR"),
   heartbeatMs: 5_000,
-  promptFor: (c, step, index) => {
+  promptFor: (c, step, index): string => {
     if (step === "phan-tich") {
       return `Yêu cầu: ${GOAL}\nLiệt kê đúng 3 gạch đầu dòng các ý chính cần có trong mô tả. Chỉ trả về 3 gạch đầu dòng, không thêm gì khác.`;
     }
