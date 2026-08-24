@@ -175,13 +175,40 @@ describe("approvalService separation of duties", () => {
     expect(result.applied).toBe(true);
   });
 
-  it("exempts the single-operator local-board sentinel from separation of duties", async () => {
+  // Dopaios ADR-031 (Approved 20/08/2026): miễn trừ local-board đứng sau
+  // guard điều kiện tắt — unit test stub DB tiêm guard/audit; hành vi thật
+  // của guard kiểm ở contract test dopaios-sod-guard.test.ts.
+  it("exempts the single-operator local-board sentinel when the ADR-031 guard allows it", async () => {
     const selfRequested = { ...createApproval("pending"), requestedByUserId: "local-board" };
     const approved = { ...selfRequested, status: "approved" };
     const dbStub = createDbStub([[selfRequested]], [approved]);
-    const svc = approvalService(dbStub.db as any);
+    const audits: string[] = [];
+    const svc = approvalService(dbStub.db as any, {
+      sodExemptionGuard: async () => ({ allowed: true, reasons: [] }),
+      sodExemptionAudit: async (_db, approvalId, actorId) => {
+        audits.push(`${approvalId}:${actorId}`);
+      },
+    });
     const result = await svc.approve("approval-1", "local-board", "x");
     expect(result.applied).toBe(true);
+    expect(audits).toEqual(["approval-1:local-board"]);
+  });
+
+  it("fails closed to plain separation of duties when the ADR-031 guard has tripped", async () => {
+    const selfRequested = { ...createApproval("pending"), requestedByUserId: "local-board" };
+    const dbStub = createDbStub([[selfRequested]], []);
+    const svc = approvalService(dbStub.db as any, {
+      sodExemptionGuard: async () => ({
+        allowed: false,
+        reasons: ["số Staff người đang active là 2, khác đúng một"],
+      }),
+      sodExemptionAudit: async () => {
+        throw new Error("audit must not run when the guard trips");
+      },
+    });
+    await expect(svc.approve("approval-1", "local-board", "x")).rejects.toMatchObject({
+      message: expect.stringContaining("separation of duties"),
+    });
   });
 });
 

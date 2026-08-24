@@ -7,8 +7,43 @@ import { agentService } from "./agents.js";
 import { budgetService } from "./budgets.js";
 import { notifyHireApproved } from "./hire-hook.js";
 import { instanceSettingsService } from "./instance-settings.js";
+import {
+  evaluateSodExemptionGuard,
+  recordSodExemptionUse,
+  type SodExemptionGuardResult,
+} from "../dopaios/core/sod-guard.js";
 
-export function approvalService(db: Db) {
+// Dopaios ADR-031: hook guard/audit của ngoại lệ SoD tiêm được để unit test
+// stub DB không phải dựng event store; mặc định là guard thật.
+export type ApprovalServiceOptions = {
+  sodExemptionGuard?: (db: Db) => Promise<SodExemptionGuardResult>;
+  sodExemptionAudit?: (db: Db, approvalId: string, actorId: string) => Promise<void>;
+};
+
+async function defaultSodExemptionGuard(db: Db): Promise<SodExemptionGuardResult> {
+  // Đọc chế độ chạy qua config tập trung (mẫu hiện thực số 4); import lười
+  // để không kéo validate config vào mọi đường dựng service.
+  const { loadConfig } = await import("../config.js");
+  let deploymentMode = "unknown";
+  try {
+    deploymentMode = loadConfig().deploymentMode;
+  } catch {
+    // giữ "unknown" — guard đọc là không phải local_trusted → vô hiệu.
+  }
+  return evaluateSodExemptionGuard(db, { deploymentMode });
+}
+
+export function approvalService(db: Db, options?: ApprovalServiceOptions) {
+  const sodGuard = options?.sodExemptionGuard ?? defaultSodExemptionGuard;
+  const sodAudit =
+    options?.sodExemptionAudit ??
+    (async (auditDb: Db, approvalId: string, actorId: string) => {
+      await recordSodExemptionUse(auditDb, `SOD-EXEMPT-${approvalId}`, {
+        actorId,
+        targetKind: "approval",
+        targetId: approvalId,
+      });
+    });
   const agentsSvc = agentService(db);
   const budgets = budgetService(db);
   const instanceSettings = instanceSettingsService(db);
@@ -62,10 +97,22 @@ export function approvalService(db: Db) {
     if (
       targetStatus === "approved" &&
       existing.requestedByUserId &&
-      existing.requestedByUserId === decidedByUserId &&
-      decidedByUserId !== "local-board"
+      existing.requestedByUserId === decidedByUserId
     ) {
-      throw unprocessable("Requester and decider must differ — separation of duties");
+      if (decidedByUserId !== "local-board") {
+        throw unprocessable("Requester and decider must differ — separation of duties");
+      }
+      // ADR-031 (Approved 20/08/2026 — Amends ADR-017): miễn trừ local-board
+      // chỉ còn hiệu lực khi guard điều kiện tắt cho phép; điều kiện không
+      // còn thỏa thì fail-closed về đúng luật SoD. Mỗi lần dùng ngoại lệ ghi
+      // event audit kèm actor và target.
+      const guard = await sodGuard(db);
+      if (!guard.allowed) {
+        throw unprocessable(
+          `Requester and decider must differ — separation of duties (ngoại lệ local-board đã tự vô hiệu: ${guard.reasons.join("; ")})`,
+        );
+      }
+      await sodAudit(db, id, decidedByUserId);
     }
 
     const now = new Date();

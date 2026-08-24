@@ -113,6 +113,43 @@ export async function createProjectShell(
   });
 }
 
+// ADR-031 (0525): khai báo Project có bên ngoài hay không — input của guard
+// điều kiện tắt cho ngoại lệ SoD một-người-vận-hành. Chưa khai (NULL trên
+// projection) đọc là "không xác định" và guard fail-closed.
+export async function declareProjectExternalParties(
+  db: Db,
+  commandId: string,
+  payload: { projectId: string; actor: string; hasExternalParties: boolean },
+): Promise<CommandResult> {
+  return executeCommand(db, {
+    commandId,
+    payload: payload as unknown as Json,
+    handler: async (ctx, p) => {
+      await requireActorWithCapability(ctx, p["actor"] as string, "orchestrator");
+      const project = (await ctx.tx.execute(sql`
+        SELECT id FROM dopaios_projects WHERE id = ${p["projectId"]}
+      `)) as unknown as Array<{ id: string }>;
+      if (project.length === 0) {
+        throw new CommandRejectedError("ERR-PROJECT", `Project ${p["projectId"]} not found`);
+      }
+      await ctx.emit({
+        streamName: `dopaiosProject-${p["projectId"]}`,
+        type: "ProjectExternalPartiesDeclared",
+        data: {
+          projectId: p["projectId"],
+          hasExternalParties: p["hasExternalParties"],
+          declaredBy: p["actor"],
+        },
+        metadata: { commandId, audit: true },
+      });
+      return {
+        projectId: p["projectId"] as string,
+        hasExternalParties: p["hasExternalParties"] as boolean,
+      };
+    },
+  });
+}
+
 // fx-02 S01: register the business-test SOP artifact as approved in the
 // FS-002 ledger slice. KC-14: optional artifactType passthrough so fixtures
 // can bootstrap quality-contract ledger rows (hàng đăng ký bootstrap FS-002).

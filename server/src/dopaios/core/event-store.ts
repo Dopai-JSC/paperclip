@@ -627,6 +627,14 @@ export async function projectEvent(tx: Db | Tx, event: DopaiosEvent): Promise<vo
         .set({ state: "P0_ACTIVE" })
         .where(eq(dopaiosProjects.id, d["projectId"]));
       break;
+    // ADR-031 (0525): khai báo thuộc tính có-bên-ngoài của Project — input
+    // cho guard điều kiện tắt của ngoại lệ SoD local-board.
+    case "ProjectExternalPartiesDeclared":
+      await tx
+        .update(dopaiosProjects)
+        .set({ hasExternalParties: d["hasExternalParties"] as boolean })
+        .where(eq(dopaiosProjects.id, d["projectId"]));
+      break;
     case "ArtifactRegistered":
       await tx.insert(dopaiosArtifacts).values({
         id: d["artifactId"],
