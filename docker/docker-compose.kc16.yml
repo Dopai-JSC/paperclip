@@ -107,7 +107,7 @@ services:
       - --input-type=module
       - --eval
       - |
-        import { writeWorkerHeartbeatAtomic } from './server/src/dopaios/kc16-probes.ts';
+        import { writeWorkerHeartbeatAtomic } from './server/src/dopaios/drills/kc16-probes.ts';
         const heartbeatPath = '/kc16/worker/heartbeat.json';
         const tick = () => writeWorkerHeartbeatAtomic(heartbeatPath, new Date());
         await tick();

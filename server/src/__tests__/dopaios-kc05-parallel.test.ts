@@ -9,13 +9,13 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, CommandRejectedError } from "../dopaios/event-store.ts";
+import { executeCommand, CommandRejectedError } from "../dopaios/core/event-store.ts";
 import {
   provisionWorkspace,
   activateWorkspace,
   requireActiveWorkspace,
   accessWorkspaceCredential,
-} from "../dopaios/workspace.ts";
+} from "../dopaios/core/workspace.ts";
 import {
   initFixtureRepo,
   materializeWorkspace,
@@ -26,9 +26,9 @@ import {
   readCredentialFile,
   sha256Hex,
   type MaterializedWorkspace,
-} from "../dopaios/workspace-fs.ts";
-import { requestActivation, claimActivation, completeActivation } from "../dopaios/activation.ts";
-import { FakeEngine, runWorkItemSession } from "../dopaios/engine.ts";
+} from "../dopaios/core/workspace-fs.ts";
+import { requestActivation, claimActivation, completeActivation } from "../dopaios/core/activation.ts";
+import { FakeEngine, runWorkItemSession } from "../dopaios/core/engine.ts";
 
 // KC-05 B3: hai Release giả lập chạy ĐỒNG THỜI trên hai git worktree thật cắt
 // từ một repo nền, mỗi bên FakeEngine ghi checkpoint thành artifact tạm +

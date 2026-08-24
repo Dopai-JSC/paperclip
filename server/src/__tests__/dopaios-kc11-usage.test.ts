@@ -9,23 +9,23 @@ import {
   readStream,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "../dopaios/commands.ts";
-import { FakeEngine, runWorkItemSession } from "../dopaios/engine.ts";
-import { recordSessionUsage, completeSession } from "../dopaios/sessions.ts";
+} from "../dopaios/core/commands.ts";
+import { FakeEngine, runWorkItemSession } from "../dopaios/core/engine.ts";
+import { recordSessionUsage, completeSession } from "../dopaios/core/sessions.ts";
 import {
   computeCostUsd,
   resolveModelPrice,
   PRICE_SOURCE,
   PriceResolutionError,
-} from "../dopaios/pricing.ts";
-import { workItemCostSummary } from "../dopaios/cost-summary.ts";
+} from "../dopaios/core/pricing.ts";
+import { workItemCostSummary } from "../dopaios/core/cost-summary.ts";
 
 // KC-11 B1: usage/chi phí theo Phiên chạy AI trên event store KC-01 —
 // mỗi bước engine một dòng usage; trần chi phí hợp đồng (limits.costUsd)
@@ -190,7 +190,7 @@ describeEmbeddedPostgres("dopaios KC-11 usage and budget per AI session", () => 
     });
     // SES-U2 đã terminal (0 bước) — dùng phiên khác còn RUNNING qua đường lệnh
     // trực tiếp: mở phiên thủ công không qua engine.
-    const { startAiSession } = await import("../dopaios/sessions.ts");
+    const { startAiSession } = await import("../dopaios/core/sessions.ts");
     await startAiSession(db, "U-START-RAW", {
       sessionId: "SES-U3",
       workItemId: "WI-KC11-A",

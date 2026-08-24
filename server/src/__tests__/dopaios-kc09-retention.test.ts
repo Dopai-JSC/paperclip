@@ -9,18 +9,18 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
-import { registerActor, registerApprovedArtifact } from "../dopaios/commands.js";
-import { bindArtifactProjectScope } from "../dopaios/context-package.js";
-import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/event-store.js";
-import { completeSession, startAiSession } from "../dopaios/sessions.js";
+import { registerActor, registerApprovedArtifact } from "../dopaios/core/commands.js";
+import { bindArtifactProjectScope } from "../dopaios/core/context-package.js";
+import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/core/event-store.js";
+import { completeSession, startAiSession } from "../dopaios/core/sessions.js";
 import {
   recordWorkspacePurge,
   recordWorkspaceRetentionControl,
-} from "../dopaios/workspace.js";
+} from "../dopaios/core/workspace.js";
 import {
   initFixtureRepo,
   purgeReleaseScopeOnDisk,
-} from "../dopaios/workspace-fs.js";
+} from "../dopaios/core/workspace-fs.js";
 
 const embedded = await getEmbeddedPostgresTestSupport();
 const describeDb = embedded.supported ? describe : describe.skip;

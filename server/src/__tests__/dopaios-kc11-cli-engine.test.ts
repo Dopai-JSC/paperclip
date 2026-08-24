@@ -14,12 +14,12 @@ import {
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "../dopaios/commands.ts";
-import { runWorkItemSession } from "../dopaios/engine.ts";
+} from "../dopaios/core/commands.ts";
+import { runWorkItemSession } from "../dopaios/core/engine.ts";
 import {
   ClaudeCliEngine,
   parseClaudeStreamJson,
-} from "../dopaios/claude-cli-engine.ts";
+} from "../dopaios/core/claude-cli-engine.ts";
 
 // KC-11 B2: ClaudeCliEngine đọc usage/total_cost_usd từ stream-json của
 // `claude --print`. Test dùng STUB CLI (bash phát JSONL đóng hộp) — hợp đồng

@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
-import { registerActor } from "../dopaios/commands.js";
+import { registerActor } from "../dopaios/core/commands.js";
 import { assessBreakGlassReadiness } from "../services/authorization.js";
 
 const embedded = await getEmbeddedPostgresTestSupport();

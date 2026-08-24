@@ -9,8 +9,8 @@ import {
   replayProjections,
   snapshotProjections,
   CommandPayloadMismatchError,
-} from "../dopaios/event-store.ts";
-import { registerActor, createProjectShell } from "../dopaios/commands.ts";
+} from "../dopaios/core/event-store.ts";
+import { registerActor, createProjectShell } from "../dopaios/core/commands.ts";
 import {
   registerStaffAi,
   setStaffAiStatus,
@@ -21,15 +21,15 @@ import {
   createProjectWorkItem,
   activateRelease,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { routeWorkItem } from "../dopaios/router.ts";
+} from "../dopaios/core/routing.ts";
+import { routeWorkItem } from "../dopaios/core/router.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
+} from "../dopaios/core/approval.ts";
 
 // KC-13 B6: bộ ca chặn tổng hợp KC13-B01…B12, mỗi ca một test mang đúng case
 // id, kèm vệt audit bất biến (SQR-001). Nguồn từng ca ghi ngay tại test:

@@ -5,15 +5,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   createProjectShell,
   registerApprovedArtifact,
   createSopDefinition,
   publishSopDefinition,
-} from "../dopaios/commands.ts";
-import { compileExecutionContract } from "../dopaios/contract.ts";
+} from "../dopaios/core/commands.ts";
+import { compileExecutionContract } from "../dopaios/core/contract.ts";
 import {
   registerStaffAi,
   setStaffAiStatus,
@@ -23,9 +23,9 @@ import {
   approveProjectInitiation,
   createProjectWorkItem,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { routeWorkItem } from "../dopaios/router.ts";
-import { requestActivation, claimActivation } from "../dopaios/activation.ts";
+} from "../dopaios/core/routing.ts";
+import { routeWorkItem } from "../dopaios/core/router.ts";
+import { requestActivation, claimActivation } from "../dopaios/core/activation.ts";
 
 // KC-13 B4: router bốn điều kiện FR-15 tại HAI thời điểm (route và claim),
 // chọn trong danh sách Manifest đã pin, primary → fallback với lý do ghi

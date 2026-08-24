@@ -4,9 +4,9 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { PostgresSessionStore } from "../dopaios/session-store/PostgresSessionStore.js";
-import { DopaiosSessionStore } from "../dopaios/session-store/DopaiosSessionStore.js";
-import { runSessionStoreConformance } from "../dopaios/session-store/conformance.js";
+import { PostgresSessionStore } from "../dopaios/core/session-store/PostgresSessionStore.js";
+import { DopaiosSessionStore } from "../dopaios/core/session-store/DopaiosSessionStore.js";
+import { runSessionStoreConformance } from "../dopaios/core/session-store/conformance.js";
 
 // KC-02 B4: adapter mẫu SessionStore -> Postgres của Agent SDK 0.3.220
 // (bản chép verbatim, pin 71c804dc8) + lớp cứng hóa Dopai dedupe theo

@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createDb } from "@paperclipai/db";
-import { countAllEvents } from "./event-store.js";
+import { countAllEvents } from "../core/event-store.js";
 import {
   activateSopRun,
   advanceToDecision,
@@ -15,7 +15,7 @@ import {
   reviewFixtureExecution,
   runFixtureExecution,
   validateSelfCheck,
-} from "./commands.js";
+} from "../core/commands.js";
 import { seedApprovedQualityContract } from "./seed-quality-contract.js";
 
 // KC-01 drill seeder: drives the canonical fixture chain (fx-01 C01 +
@@ -24,10 +24,10 @@ import { seedApprovedQualityContract } from "./seed-quality-contract.js";
 // Usage: DATABASE_URL=postgres://... pnpm exec tsx server/src/dopaios/seed-kc01-drill.ts
 
 const fx01 = JSON.parse(
-  readFileSync(new URL("../../../dopaios/fixtures/fx-01-none-preparing.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../dopaios/fixtures/fx-01-none-preparing.json", import.meta.url), "utf8"),
 );
 const fx02 = JSON.parse(
-  readFileSync(new URL("../../../dopaios/fixtures/fx-02-run-test-chain.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../dopaios/fixtures/fx-02-run-test-chain.json", import.meta.url), "utf8"),
 );
 
 const url = process.env.DATABASE_URL;

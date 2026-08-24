@@ -5,14 +5,14 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand } from "../dopaios/event-store.js";
-import { executeCutover, setCutoverReadiness, sha256Utf8, CUTOVER_READINESS_FLAGS } from "../dopaios/cutover.js";
+import { executeCommand } from "../dopaios/core/event-store.js";
+import { executeCutover, setCutoverReadiness, sha256Utf8, CUTOVER_READINESS_FLAGS } from "../dopaios/core/cutover.js";
 import {
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.js";
+} from "../dopaios/core/approval.js";
 import {
   setupCutoverBase,
   stagePlanWithApproval,

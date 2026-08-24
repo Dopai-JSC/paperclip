@@ -4,6 +4,10 @@ on:
   pull_request:
     branches:
       - master
+      # Nhánh tích hợp Dopaios hiện hành: PR hạ tầng đợt build chạy trọn
+      # pr.yml (trước đây chỉ test-protection + supply-chain chạy cho PR
+      # vào nhánh này).
+      - spike/dot1-fixtures
 
 concurrency:
   group: pr-${{ github.event.pull_request.number }}
@@ -128,6 +132,9 @@ jobs:
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
+
+      - name: Lint Dopaios core/drills import boundaries
+        run: pnpm run lint:dopaios-boundaries
 
       - name: Verify release registry test coverage
         run: pnpm run test:release-registry

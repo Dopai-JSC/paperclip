@@ -9,13 +9,13 @@ import {
   replayProjections,
   snapshotProjections,
   countAllEvents,
-} from "./event-store.js";
+} from "../core/event-store.js";
 import {
   provisionWorkspace,
   activateWorkspace,
   beginWorkspaceClose,
   recordWorkspacePurge,
-} from "./workspace.js";
+} from "../core/workspace.js";
 import {
   initFixtureRepo,
   materializeWorkspace,
@@ -25,9 +25,9 @@ import {
   listTree,
   readCredentialFile,
   type MaterializedWorkspace,
-} from "./workspace-fs.js";
-import { requestActivation, claimActivation, completeActivation } from "./activation.js";
-import { FakeEngine, runWorkItemSession } from "./engine.js";
+} from "../core/workspace-fs.js";
+import { requestActivation, claimActivation, completeActivation } from "../core/activation.js";
+import { FakeEngine, runWorkItemSession } from "../core/engine.js";
 
 // KC-05 B6: diễn tập trên Postgres NGOÀI (container dopaios-spike-pg, DB
 // dopaios_kc05) — chạy trọn kịch bản hai Release song song trên đĩa thật của

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildKc10Dataset } from "../dopaios/kc10-dataset.js";
+import { buildKc10Dataset } from "../dopaios/core/kc10-dataset.js";
 
 const input = {
   seed: "KC10-20260805-v1",

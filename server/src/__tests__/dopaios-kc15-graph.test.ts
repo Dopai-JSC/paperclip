@@ -11,14 +11,14 @@ import {
   snapshotProjections,
   CommandPayloadMismatchError,
   type CommandContext,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   declareWorkItemDependency,
   transitiveDependents,
   transitiveDependencies,
   wouldCreateCycle,
-} from "../dopaios/graph-repo.ts";
-import { registerActor } from "../dopaios/commands.ts";
+} from "../dopaios/core/graph-repo.ts";
+import { registerActor } from "../dopaios/core/commands.ts";
 
 // KC-15 B1: nền đồ thị phụ thuộc dùng chung — schema 0513 + projector + lệnh
 // khai cạnh + traversal qua graph-repo (QD-1/QD-2, ADR-019 phương án C).

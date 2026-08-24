@@ -15,17 +15,17 @@ import {
   replayProjections,
   snapshotProjections,
   CommandRejectedError,
-} from "../dopaios/event-store.ts";
-import { provisionWorkspace, activateWorkspace } from "../dopaios/workspace.ts";
+} from "../dopaios/core/event-store.ts";
+import { provisionWorkspace, activateWorkspace } from "../dopaios/core/workspace.ts";
 import {
   initFixtureRepo,
   materializeWorkspace,
   listTree,
   type MaterializedWorkspace,
-} from "../dopaios/workspace-fs.ts";
-import { requestActivation, completeActivation } from "../dopaios/activation.ts";
-import { recordSessionArtifact, detectStalledSessions } from "../dopaios/sessions.ts";
-import { requeueExpiredActivations } from "../dopaios/runner.ts";
+} from "../dopaios/core/workspace-fs.ts";
+import { requestActivation, completeActivation } from "../dopaios/core/activation.ts";
+import { recordSessionArtifact, detectStalledSessions } from "../dopaios/core/sessions.ts";
+import { requeueExpiredActivations } from "../dopaios/core/runner.ts";
 
 // KC-05 B4: dừng ĐỘT NGỘT một worker thật (tiến trình con bị SIGKILL khi đang
 // giữ claim và vừa ghi checkpoint đầu) rồi KHỞI ĐỘNG LẠI BẰNG CHÍNH worker —
@@ -61,7 +61,7 @@ type WorkerHandle = {
 // Bộ thu output DUY NHẤT gắn từ lúc spawn — mọi marker đều nằm trong một
 // buffer, chờ marker sau không lỡ marker in ra giữa hai lần chờ.
 function spawnWorker(extraEnv: Record<string, string>): WorkerHandle {
-  const child = spawn("pnpm", ["exec", "tsx", "src/dopaios/kc05-worker.ts"], {
+  const child = spawn("pnpm", ["exec", "tsx", "src/dopaios/drills/kc05-worker.ts"], {
     cwd: serverDir,
     env: { ...process.env, NODE_ENV: "test", ...extraEnv },
     stdio: ["ignore", "pipe", "pipe"],

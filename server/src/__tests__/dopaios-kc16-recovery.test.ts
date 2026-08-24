@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 test("recovery manifest preserves every normative RPO-0 category", async () => {
-  const recovery = await import("../dopaios/kc16-recovery.ts").catch(() => ({}));
+  const recovery = await import("../dopaios/drills/kc16-recovery.ts").catch(() => ({}));
   const buildRecoveryManifest = "buildRecoveryManifest" in recovery
     ? recovery.buildRecoveryManifest as (input: unknown) => unknown
     : undefined;
@@ -67,7 +67,7 @@ test("recovery manifest preserves every normative RPO-0 category", async () => {
 });
 
 test("recovery manifest rejects a missing normative RPO-0 category", async () => {
-  const { buildRecoveryManifest } = await import("../dopaios/kc16-recovery.ts");
+  const { buildRecoveryManifest } = await import("../dopaios/drills/kc16-recovery.ts");
 
   assert.throws(
     () => buildRecoveryManifest({
@@ -99,7 +99,7 @@ test("recovery manifest rejects a missing normative RPO-0 category", async () =>
 });
 
 test("artifact inventory is path-stable and hashes file bytes", async (t) => {
-  const { inventoryDirectory } = await import("../dopaios/kc16-recovery.ts") as {
+  const { inventoryDirectory } = await import("../dopaios/drills/kc16-recovery.ts") as {
     inventoryDirectory?: (root: string) => Promise<unknown>;
   };
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-inventory-"));
@@ -130,7 +130,7 @@ test("artifact inventory is path-stable and hashes file bytes", async (t) => {
 });
 
 test("completion marker is written last and only for a checksum-valid manifest", async (t) => {
-  const recovery = await import("../dopaios/kc16-recovery.ts") as {
+  const recovery = await import("../dopaios/drills/kc16-recovery.ts") as {
     buildRecoveryManifest: (input: Record<string, unknown>) => Record<string, unknown>;
     writeRecoveryManifestAtomic?: (
       root: string,
@@ -177,7 +177,7 @@ test("completion marker is written last and only for a checksum-valid manifest",
 });
 
 test("manifest verification fails closed after manifest tampering", async (t) => {
-  const recovery = await import("../dopaios/kc16-recovery.ts") as {
+  const recovery = await import("../dopaios/drills/kc16-recovery.ts") as {
     buildRecoveryManifest: (input: Record<string, unknown>) => Record<string, unknown>;
     writeRecoveryManifestAtomic: (root: string, manifest: Record<string, unknown>) => Promise<unknown>;
     verifyRecoveryManifest?: (root: string) => Promise<unknown>;
@@ -214,7 +214,7 @@ test("manifest verification fails closed after manifest tampering", async (t) =>
 });
 
 test("manifest verification reports an incomplete bundle instead of leaking ENOENT", async (t) => {
-  const { verifyRecoveryManifest } = await import("../dopaios/kc16-recovery.ts");
+  const { verifyRecoveryManifest } = await import("../dopaios/drills/kc16-recovery.ts");
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-incomplete-"));
   t.after(() => rm(root, { recursive: true, force: true }));
 
@@ -225,7 +225,7 @@ test("manifest verification reports an incomplete bundle instead of leaking ENOE
 });
 
 test("readiness stays closed when artifact health or reconciliation fails", async () => {
-  const { evaluateRecoveryReadiness } = await import("../dopaios/kc16-recovery.ts") as {
+  const { evaluateRecoveryReadiness } = await import("../dopaios/drills/kc16-recovery.ts") as {
     evaluateRecoveryReadiness?: (input: unknown) => unknown;
   };
 
@@ -243,7 +243,7 @@ test("readiness stays closed when artifact health or reconciliation fails", asyn
 });
 
 test("readiness rejects an unhealthy app or Postgres and stale worker or backup", async () => {
-  const { evaluateRecoveryReadiness } = await import("../dopaios/kc16-recovery.ts");
+  const { evaluateRecoveryReadiness } = await import("../dopaios/drills/kc16-recovery.ts");
 
   assert.deepEqual(evaluateRecoveryReadiness({
     application: { ok: false },
@@ -260,7 +260,7 @@ test("readiness rejects an unhealthy app or Postgres and stale worker or backup"
 });
 
 test("NFR-8 measurement accepts the exact detection and RTO boundaries with zero data loss", async () => {
-  const { measureRecoveryObjective } = await import("../dopaios/kc16-recovery.ts") as {
+  const { measureRecoveryObjective } = await import("../dopaios/drills/kc16-recovery.ts") as {
     measureRecoveryObjective?: (input: unknown) => unknown;
   };
 
@@ -282,7 +282,7 @@ test("NFR-8 measurement accepts the exact detection and RTO boundaries with zero
 });
 
 test("migration recovery decision never restores from an unverified backup", async () => {
-  const { decideMigrationRecovery } = await import("../dopaios/kc16-recovery.ts") as {
+  const { decideMigrationRecovery } = await import("../dopaios/drills/kc16-recovery.ts") as {
     decideMigrationRecovery?: (input: unknown) => unknown;
   };
 
@@ -309,7 +309,7 @@ test("migration recovery decision never restores from an unverified backup", asy
 });
 
 test("restore journal cannot open readiness before replay and reconciliation", async () => {
-  const { validateRestoreJournal } = await import("../dopaios/kc16-recovery.ts") as {
+  const { validateRestoreJournal } = await import("../dopaios/drills/kc16-recovery.ts") as {
     validateRestoreJournal?: (steps: string[]) => unknown;
   };
   const valid = [
@@ -340,7 +340,7 @@ test("restore journal cannot open readiness before replay and reconciliation", a
 });
 
 test("confirmed file inventory rejects missing, mismatched, and orphaned bytes", async () => {
-  const { compareConfirmedFileInventory } = await import("../dopaios/kc16-recovery.ts") as {
+  const { compareConfirmedFileInventory } = await import("../dopaios/drills/kc16-recovery.ts") as {
     compareConfirmedFileInventory?: (input: unknown) => unknown;
   };
 
@@ -371,7 +371,7 @@ test("confirmed file inventory rejects missing, mismatched, and orphaned bytes",
 });
 
 test("RPO-0 reconciliation reports missing and hash-mismatched confirmed records", async () => {
-  const { compareRpo0Snapshots } = await import("../dopaios/kc16-recovery.ts") as {
+  const { compareRpo0Snapshots } = await import("../dopaios/drills/kc16-recovery.ts") as {
     compareRpo0Snapshots?: (expected: unknown, actual: unknown) => unknown;
   };
   const expected = {
@@ -394,7 +394,7 @@ test("RPO-0 reconciliation reports missing and hash-mismatched confirmed records
 });
 
 test("confirmation callback runs only after live and mirror artifact bytes are durable", async (t) => {
-  const { persistConfirmedFile } = await import("../dopaios/kc16-recovery.ts") as {
+  const { persistConfirmedFile } = await import("../dopaios/drills/kc16-recovery.ts") as {
     persistConfirmedFile?: (input: unknown) => Promise<unknown>;
   };
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-confirm-"));
@@ -432,7 +432,7 @@ test("confirmation callback runs only after live and mirror artifact bytes are d
 });
 
 test("fault after the live write never crosses the confirmation boundary", async (t) => {
-  const { persistConfirmedFile } = await import("../dopaios/kc16-recovery.ts");
+  const { persistConfirmedFile } = await import("../dopaios/drills/kc16-recovery.ts");
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-preconfirm-fault-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   let committed = false;
@@ -452,7 +452,7 @@ test("fault after the live write never crosses the confirmation boundary", async
 });
 
 test("bundle verification detects artifact bytes changed after completion", async (t) => {
-  const recovery = await import("../dopaios/kc16-recovery.ts") as {
+  const recovery = await import("../dopaios/drills/kc16-recovery.ts") as {
     buildRecoveryManifest: (input: Record<string, unknown>) => Record<string, unknown>;
     writeRecoveryManifestAtomic: (root: string, manifest: Record<string, unknown>) => Promise<unknown>;
     verifyRecoveryBundle?: (root: string) => Promise<unknown>;

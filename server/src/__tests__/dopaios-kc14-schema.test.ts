@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 
 // KC-14 B1: schema 0512 + projector — hai bảng mới (Hợp đồng chất lượng,
 // bước của run) và các cột hai-vòng-đời trên phiên bản đầu ra / work-item /

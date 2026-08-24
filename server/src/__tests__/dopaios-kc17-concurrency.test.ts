@@ -5,8 +5,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { countAllEvents, CommandRejectedError } from "../dopaios/event-store.js";
-import { executeCutover } from "../dopaios/cutover.js";
+import { countAllEvents, CommandRejectedError } from "../dopaios/core/event-store.js";
+import { executeCutover } from "../dopaios/core/cutover.js";
 import { setupCutoverBase, baseCutoverPayload } from "./helpers/dopaios-kc17.js";
 
 // KC-17 B5 — đúng-một-lần dưới tương tranh thật (AC-V1-10 + KC-01

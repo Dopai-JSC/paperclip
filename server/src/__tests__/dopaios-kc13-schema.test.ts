@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 
 // KC-13 B1: schema 0509 + projector — bốn bảng định tuyến/kích hoạt mới
 // (staff AI, startup pool, Team Manifest, Hợp đồng thực hiện AI) và cột lease

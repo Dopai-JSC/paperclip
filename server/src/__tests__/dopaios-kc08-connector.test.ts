@@ -5,16 +5,16 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "@paperclipai/db";
-import { executeCommand, payloadSha256, replayProjections, snapshotProjections } from "../dopaios/event-store.js";
-import { markArtifactImpact, registerActor, registerApprovedArtifact } from "../dopaios/commands.js";
+import { executeCommand, payloadSha256, replayProjections, snapshotProjections } from "../dopaios/core/event-store.js";
+import { markArtifactImpact, registerActor, registerApprovedArtifact } from "../dopaios/core/commands.js";
 import {
   assembleDecisionPackage,
   pinSeparationPolicy,
   recordApprovalDecision,
   registerDraftArtifact,
   submitArtifactForReview,
-} from "../dopaios/approval.js";
-import { bindArtifactProjectScope, sha256Utf8 } from "../dopaios/context-package.js";
+} from "../dopaios/core/approval.js";
+import { bindArtifactProjectScope, sha256Utf8 } from "../dopaios/core/context-package.js";
 import {
   ConnectorDeniedError,
   ConnectorReconciliationRequiredError,
@@ -25,13 +25,13 @@ import {
   type ConnectorAdapterIdentity,
   type ConnectorGatewayRuntime,
   type ConnectorPolicyInput,
-} from "../dopaios/connector-gateway.js";
+} from "../dopaios/core/connector-gateway.js";
 import {
   ConnectorExecutionError,
   FakeConnector,
   connectorAuthFailure,
   connectorTransientFailure,
-} from "../dopaios/kc08-fixture-support.js";
+} from "../dopaios/drills/kc08-fixture-support.js";
 
 const embedded = await getEmbeddedPostgresTestSupport();
 const describeDb = embedded.supported ? describe : describe.skip;

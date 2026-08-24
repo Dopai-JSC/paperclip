@@ -1,6 +1,6 @@
 import { readFileSync } from "node:fs";
 import { createDb } from "@paperclipai/db";
-import { countAllEvents, replayProjections, snapshotProjections } from "./event-store.js";
+import { countAllEvents, replayProjections, snapshotProjections } from "../core/event-store.js";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -14,9 +14,9 @@ import {
   advanceToDecision,
   recordApproval,
   completeSopRun,
-} from "./commands.js";
+} from "../core/commands.js";
 import { seedApprovedQualityContract } from "./seed-quality-contract.js";
-import { readTwoLifecycles } from "./read-model.js";
+import { readTwoLifecycles } from "../core/read-model.js";
 
 // KC-14 drill seeder: chạy trọn ca chuẩn tắc FX-04 (fail-then-fix, AC-V1-03)
 // trên DATABASE_URL (container dopaios_kc14) rồi replay đối soát — bằng chứng
@@ -24,7 +24,7 @@ import { readTwoLifecycles } from "./read-model.js";
 // Usage: DATABASE_URL=postgres://... pnpm exec tsx server/src/dopaios/seed-kc14-drill.ts
 
 const fx02 = JSON.parse(
-  readFileSync(new URL("../../../dopaios/fixtures/fx-02-run-test-chain.json", import.meta.url), "utf8"),
+  readFileSync(new URL("../../../../dopaios/fixtures/fx-02-run-test-chain.json", import.meta.url), "utf8"),
 );
 
 function componentSha(pathPart: string): string {

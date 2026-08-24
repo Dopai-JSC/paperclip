@@ -14,7 +14,7 @@ import {
   replayProjections,
   snapshotProjections,
   CommandRejectedError,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   provisionWorkspace,
   activateWorkspace,
@@ -23,7 +23,7 @@ import {
   abortWorkspace,
   accessWorkspaceCredential,
   closeWorkspacesForTerminalReleases,
-} from "../dopaios/workspace.ts";
+} from "../dopaios/core/workspace.ts";
 import {
   initFixtureRepo,
   materializeWorkspace,
@@ -31,10 +31,10 @@ import {
   writeScoped,
   hashTree,
   type MaterializedWorkspace,
-} from "../dopaios/workspace-fs.ts";
-import { requestActivation, claimActivation, completeActivation } from "../dopaios/activation.ts";
-import { startAiSession, completeSession, recordSessionArtifact } from "../dopaios/sessions.ts";
-import { requeueExpiredActivations } from "../dopaios/runner.ts";
+} from "../dopaios/core/workspace-fs.ts";
+import { requestActivation, claimActivation, completeActivation } from "../dopaios/core/activation.ts";
+import { startAiSession, completeSession, recordSessionArtifact } from "../dopaios/core/sessions.ts";
+import { requeueExpiredActivations } from "../dopaios/core/runner.ts";
 
 // KC-05 B7: ca kiểm cho các finding của vòng review đối kháng 2 lens —
 // blocker "purge khi writer còn sống / hai phiên RUNNING một work-item",

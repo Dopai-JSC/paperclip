@@ -44,6 +44,7 @@ function loadPriceTable(): Record<string, Record<string, unknown>> {
     "..",
     "..",
     "..",
+    "..",
     "dopaios",
     "pricing",
     "model_prices_and_context_window.json",

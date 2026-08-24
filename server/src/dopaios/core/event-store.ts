@@ -76,22 +76,10 @@ export type DopaiosEvent = {
   metadata: Record<string, unknown> | null;
 };
 
-export class CommandPayloadMismatchError extends Error {
-  constructor(commandId: string) {
-    super(`Command ${commandId} was already executed with a different payload`);
-    this.name = "CommandPayloadMismatchError";
-  }
-}
-
-export class CommandRejectedError extends Error {
-  constructor(
-    readonly code: string,
-    message: string,
-  ) {
-    super(message);
-    this.name = "CommandRejectedError";
-  }
-}
+// I-5: định nghĩa lỗi tập trung tại core/errors.ts; re-export để giữ nguyên
+// hợp đồng import hiện có của 30+ module và contract test.
+export { CommandPayloadMismatchError, CommandRejectedError } from "./errors.js";
+import { CommandPayloadMismatchError, CommandRejectedError } from "./errors.js";
 
 function canonicalJson(value: unknown): string {
   if (Array.isArray(value)) {

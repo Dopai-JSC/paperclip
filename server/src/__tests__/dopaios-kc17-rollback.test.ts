@@ -5,8 +5,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { readStream, snapshotProjections, replayProjections } from "../dopaios/event-store.js";
-import { registerDraftArtifact } from "../dopaios/approval.js";
+import { readStream, snapshotProjections, replayProjections } from "../dopaios/core/event-store.js";
+import { registerDraftArtifact } from "../dopaios/core/approval.js";
 import {
   executeCutover,
   rollbackCutover,
@@ -16,7 +16,7 @@ import {
   recordPostClosureCutoverRevision,
   writeBootstrapState,
   sha256Utf8,
-} from "../dopaios/cutover.js";
+} from "../dopaios/core/cutover.js";
 import {
   setupCutoverBase,
   baseCutoverPayload,

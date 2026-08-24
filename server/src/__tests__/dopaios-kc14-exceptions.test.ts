@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -19,15 +19,15 @@ import {
   advanceToDecision,
   recordApproval,
   answerClarification,
-} from "../dopaios/commands.ts";
-import { submitFixtureRevision } from "../dopaios/revisions.ts";
+} from "../dopaios/core/commands.ts";
+import { submitFixtureRevision } from "../dopaios/core/revisions.ts";
 import {
   detectOverdueRunConditions,
   decideRunException,
   cancelTestRun,
-} from "../dopaios/exceptions.ts";
+} from "../dopaios/core/exceptions.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-14 B5 — hai hàng `ACCEPTED` của bảng đầu ra FS-003 (SFR-034) và hủy run
 // (SFR-041/051/057, FX-02-N15) trên trục đầu ra:

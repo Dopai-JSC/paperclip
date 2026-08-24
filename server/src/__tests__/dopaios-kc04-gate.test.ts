@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand } from "../dopaios/event-store.ts";
+import { executeCommand } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   runFixtureExecution,
@@ -13,17 +13,17 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   attachCheckEvidence,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { startAiSession, recordSessionArtifact } from "../dopaios/sessions.ts";
+} from "../dopaios/core/approval.ts";
+import { startAiSession, recordSessionArtifact } from "../dopaios/core/sessions.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-04 B4 — FR-21 nghiệm thu: "trường hợp kiểm thử thiếu liên kết bị chặn"
 // (+ FR-50: hồ sơ mất nguồn không thể được chấp nhận). Hợp đồng chất lượng
