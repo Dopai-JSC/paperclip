@@ -1,16 +1,16 @@
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { CommandPayloadMismatchError } from "./event-store.js";
-import { claimActivation, completeActivation } from "./activation.js";
+import { CommandPayloadMismatchError } from "../core/event-store.js";
+import { claimActivation, completeActivation } from "../core/activation.js";
 import {
   FakeEngine,
   runWorkItemSession,
   latestConfirmedCheckpoint,
   type EngineAdapter,
   type EngineSessionParams,
-} from "./engine.js";
-import { requireActiveWorkspace, resolveScopedPath } from "./workspace.js";
-import { workspaceBoundEngine } from "./workspace-fs.js";
+} from "../core/engine.js";
+import { requireActiveWorkspace, resolveScopedPath } from "../core/workspace.js";
+import { workspaceBoundEngine } from "../core/workspace-fs.js";
 
 // KC-05 B4/B7: worker THẬT — tiến trình con do test spawn rồi SIGKILL giữa
 // chừng (QD-4 kế hoạch KC-05). Worker claim activation với lease + epoch, chạy

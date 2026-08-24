@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { buildKc10Dataset } from "./kc10-dataset.js";
+import { buildKc10Dataset } from "../core/kc10-dataset.js";
 import { KC10_COMPANY_ID, seedKc10OperationalProjection } from "./kc10-seed.js";
 
 const databaseUrl = process.env.DATABASE_URL;

@@ -10,30 +10,30 @@ import {
   replayProjections,
   snapshotProjections,
   type CommandContext,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
   runFixtureExecution,
   validateSelfCheck,
   reviewFixtureExecution,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { createArtifactRevision } from "../dopaios/lifecycle.ts";
-import { startAiSession, recordSessionArtifact, completeSession } from "../dopaios/sessions.ts";
+} from "../dopaios/core/approval.ts";
+import { createArtifactRevision } from "../dopaios/core/lifecycle.ts";
+import { startAiSession, recordSessionArtifact, completeSession } from "../dopaios/core/sessions.ts";
 import {
   traceCriticalOutput,
   outputsPinningSourceRevision,
   artifactProvenance,
-} from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-04 B6 — chốt các finding vòng review đối kháng 2 lens bằng test:
 //  - (m-4) event ArtifactRegistered KIỂU CŨ (không mang sourceRefs/storageRef)

@@ -9,8 +9,8 @@ import {
   CommandPayloadMismatchError,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
-import { registerActor, registerApprovedArtifact, createProjectShell } from "../dopaios/commands.ts";
+} from "../dopaios/core/event-store.ts";
+import { registerActor, registerApprovedArtifact, createProjectShell } from "../dopaios/core/commands.ts";
 import {
   assembleDecisionPackage,
   createGateRecord,
@@ -19,7 +19,7 @@ import {
   registerDraftArtifact,
   submitArtifactForReview,
   type RecordApprovalPayload,
-} from "../dopaios/approval.ts";
+} from "../dopaios/core/approval.ts";
 
 // KC-03 B2: tầng lệnh approval engine — bốn outcome, guard fail-closed
 // SFR-013/014/021/022/025/026/027 + ERR-001…004, supersede nguyên tử

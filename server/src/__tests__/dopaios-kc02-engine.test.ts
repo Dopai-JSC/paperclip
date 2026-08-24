@@ -5,21 +5,21 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "../dopaios/commands.ts";
-import { detectStalledSessions } from "../dopaios/sessions.ts";
+} from "../dopaios/core/commands.ts";
+import { detectStalledSessions } from "../dopaios/core/sessions.ts";
 import {
   FakeEngine,
   latestConfirmedCheckpoint,
   runWorkItemSession,
   type ExecutionContract,
-} from "../dopaios/engine.ts";
+} from "../dopaios/core/engine.ts";
 
 // KC-02 B3: cùng một work-item dưới Hợp đồng thực hiện AI chạy qua adapter
 // hình ACP với FakeEngine — trọn chuỗi gián đoạn → thử lại → giao lại,

@@ -108,14 +108,14 @@ docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --e
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   @sourceMounts -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
-  ./server/src/dopaios/seed-kc14-drill.ts
+  ./server/src/dopaios/drills/seed-kc14-drill.ts
 
 docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --entrypoint node `
   -e DATABASE_URL=postgres://paperclip@postgres:5432/dopaios_kc16 `
   -e KC16_RUNTIME_ROOT=/kc16 @sourceMounts `
   -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
-  ./server/src/dopaios/seed-kc16-drill.ts
+  ./server/src/dopaios/drills/seed-kc16-drill.ts
 ```
 
 The KC-16 fixture must report the pre-confirmation fault as contained, two
@@ -184,7 +184,7 @@ docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --e
   @sourceMounts -v "${migrationSource}:/kc16-migrations:ro" `
   -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
-  ./server/src/dopaios/create-kc16-recovery-bundle.ts
+  ./server/src/dopaios/drills/create-kc16-recovery-bundle.ts
 ```
 
 Do not proceed unless the command reports a verified manifest and the bundle has
@@ -266,7 +266,7 @@ $verifierOutput = @(
     -e KC16_LIVE_ROOT=/kc16 @sourceMounts `
     -v "${kc16Runtime}:/kc16:ro" -w /app $runtimeImage `
     --import ./server/node_modules/tsx/dist/loader.mjs `
-    ./server/src/dopaios/verify-kc16-recovery.ts 2>&1
+    ./server/src/dopaios/drills/verify-kc16-recovery.ts 2>&1
 )
 $verifierExit = $LASTEXITCODE
 $detectionUtc = [DateTimeOffset]::UtcNow.ToString('O')
@@ -401,7 +401,7 @@ docker run --rm --pull never --user 1000:1000 --network dopaios-kc16_default --e
   -e "KC16_BUNDLE_ROOT=/kc16/recovery/$bundleId" -e KC16_LIVE_ROOT=/kc16 `
   @sourceMounts -v "${kc16Runtime}:/kc16" -w /app $runtimeImage `
   --import ./server/node_modules/tsx/dist/loader.mjs `
-  ./server/src/dopaios/verify-kc16-recovery.ts
+  ./server/src/dopaios/drills/verify-kc16-recovery.ts
 ```
 
 It must report byte-identical RPO-0 data after replay, exact artifact/checkpoint
@@ -503,7 +503,7 @@ $liveVerifierOutput = @(
     -e KC16_LIVE_ROOT=/kc16 @sourceMounts `
     -v "${kc16Runtime}:/kc16:ro" -w /app $runtimeImage `
     --import ./server/node_modules/tsx/dist/loader.mjs `
-    ./server/src/dopaios/verify-kc16-recovery.ts 2>&1
+    ./server/src/dopaios/drills/verify-kc16-recovery.ts 2>&1
 )
 $liveVerifierExit = $LASTEXITCODE
 $liveVerifierText = $liveVerifierOutput -join [Environment]::NewLine
@@ -525,7 +525,7 @@ $metricsOutput = @(
     -e "KC16_READINESS_MONOTONIC_MS=$readinessMonotonicMs" `
     -e KC16_RPO_LOSS_COUNT=0 @sourceMounts -w /app $runtimeImage `
     --import ./server/node_modules/tsx/dist/loader.mjs `
-    ./server/src/dopaios/emit-kc16-recovery-metrics.ts 2>&1
+    ./server/src/dopaios/drills/emit-kc16-recovery-metrics.ts 2>&1
 )
 $metricsExit = $LASTEXITCODE
 $metricsText = ($metricsOutput -join [Environment]::NewLine) + [Environment]::NewLine

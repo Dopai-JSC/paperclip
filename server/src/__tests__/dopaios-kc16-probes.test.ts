@@ -6,7 +6,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 test("artifact probe verifies durable bytes and leaves no health-check file", async (t) => {
-  const probes = await import("../dopaios/kc16-probes.ts").catch(() => ({})) as {
+  const probes = await import("../dopaios/drills/kc16-probes.ts").catch(() => ({})) as {
     probeArtifactStore?: (root: string) => Promise<unknown>;
   };
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-artifact-probe-"));
@@ -20,7 +20,7 @@ test("artifact probe verifies durable bytes and leaves no health-check file", as
 });
 
 test("application probe pins the running server to the expected commit", async (t) => {
-  const { probeApplicationHealth } = await import("../dopaios/kc16-probes.ts") as {
+  const { probeApplicationHealth } = await import("../dopaios/drills/kc16-probes.ts") as {
     probeApplicationHealth?: (url: string, expectedCommit: string) => Promise<unknown>;
   };
   const expectedCommit = "e9a11b8c3fa1bcb8ebf8b2d42bb05486c1cfa7fc";
@@ -43,7 +43,7 @@ test("application probe pins the running server to the expected commit", async (
 });
 
 test("worker probe rejects a heartbeat older than the approved threshold", async (t) => {
-  const { probeWorkerHeartbeat } = await import("../dopaios/kc16-probes.ts") as {
+  const { probeWorkerHeartbeat } = await import("../dopaios/drills/kc16-probes.ts") as {
     probeWorkerHeartbeat?: (path: string, options: { now: Date; maxAgeSeconds: number }) => Promise<unknown>;
   };
   const root = await mkdtemp(join(tmpdir(), "dopaios-kc16-worker-probe-"));
@@ -65,7 +65,7 @@ test("worker probe rejects a heartbeat older than the approved threshold", async
 });
 
 test("Postgres probe reports pinned server and pgvector versions", async () => {
-  const { probePostgresHealth } = await import("../dopaios/kc16-probes.ts") as {
+  const { probePostgresHealth } = await import("../dopaios/drills/kc16-probes.ts") as {
     probePostgresHealth?: (input: unknown, run: unknown) => Promise<unknown>;
   };
   const run = async () => ({ stdout: "dopaios_kc16|16.14|0.8.6|f\n" });
@@ -84,7 +84,7 @@ test("Postgres probe reports pinned server and pgvector versions", async () => {
 });
 
 test("worker heartbeat writer produces a fresh heartbeat consumable by the probe", async (t) => {
-  const probes = await import("../dopaios/kc16-probes.ts") as {
+  const probes = await import("../dopaios/drills/kc16-probes.ts") as {
     writeWorkerHeartbeatAtomic?: (path: string, now: Date) => Promise<void>;
     probeWorkerHeartbeat: (path: string, options: { now: Date; maxAgeSeconds: number }) => Promise<unknown>;
   };

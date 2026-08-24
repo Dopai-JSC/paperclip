@@ -2,12 +2,12 @@ import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { buildKc10Dataset } from "../dopaios/kc10-dataset.js";
+import { buildKc10Dataset } from "../dopaios/core/kc10-dataset.js";
 import {
   KC10_COMPANY_ID,
   seedKc10ControlPlane,
   seedKc10OperationalProjection,
-} from "../dopaios/kc10-seed.js";
+} from "../dopaios/drills/kc10-seed.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

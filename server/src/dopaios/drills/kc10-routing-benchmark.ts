@@ -1,7 +1,7 @@
 import { performance } from "node:perf_hooks";
 import { sql } from "drizzle-orm";
-import { requestActivation } from "./activation.js";
-import { executeCommand, type Db } from "./event-store.js";
+import { requestActivation } from "../core/activation.js";
+import { executeCommand, type Db } from "../core/event-store.js";
 
 export type Kc10RouteToActivationSample = {
   schema: "dopaios.kc10.route-to-activation-sample/v1";

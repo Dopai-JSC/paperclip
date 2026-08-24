@@ -10,8 +10,8 @@ import {
   replayProjections,
   snapshotProjections,
   CommandRejectedError,
-} from "../dopaios/event-store.ts";
-import { registerActor, createProjectShell } from "../dopaios/commands.ts";
+} from "../dopaios/core/event-store.ts";
+import { registerActor, createProjectShell } from "../dopaios/core/commands.ts";
 import {
   registerStaffAi,
   setStaffAiStatus,
@@ -21,8 +21,8 @@ import {
   approveProjectInitiation,
   createProjectWorkItem,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { requestActivation } from "../dopaios/activation.ts";
+} from "../dopaios/core/routing.ts";
+import { requestActivation } from "../dopaios/core/activation.ts";
 
 // KC-13 B2: pool khởi động + vòng đời Team Manifest bootstrap + khóa cửa
 // PREPARING. Bootstrap theo lời PRD FR-8: Orchestrator CHỌN và DUYỆT — hành

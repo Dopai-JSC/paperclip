@@ -11,14 +11,14 @@ import {
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "../dopaios/commands.ts";
-import { payloadSha256 } from "../dopaios/event-store.ts";
-import { requestActivation, runActivation } from "../dopaios/activation.ts";
-import { FakeEngine } from "../dopaios/engine.ts";
-import { qualityContractContentSha256 } from "../dopaios/lifecycle.ts";
-import { runUntilQuiescent, type RunnerFixtureConfig } from "../dopaios/runner.ts";
+} from "../dopaios/core/commands.ts";
+import { payloadSha256 } from "../dopaios/core/event-store.ts";
+import { requestActivation, runActivation } from "../dopaios/core/activation.ts";
+import { FakeEngine } from "../dopaios/core/engine.ts";
+import { qualityContractContentSha256 } from "../dopaios/core/lifecycle.ts";
+import { runUntilQuiescent, type RunnerFixtureConfig } from "../dopaios/core/runner.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import { activateRunFromProcessDefinition } from "../dopaios/process-run-adapter.ts";
+import { activateRunFromProcessDefinition } from "../dopaios/core/process-run-adapter.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;

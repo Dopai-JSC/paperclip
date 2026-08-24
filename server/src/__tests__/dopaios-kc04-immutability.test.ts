@@ -10,7 +10,7 @@ import {
   replayProjections,
   snapshotProjections,
   type CommandContext,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   runFixtureExecution,
@@ -18,19 +18,19 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { createArtifactRevision } from "../dopaios/lifecycle.ts";
-import { startAiSession, recordSessionArtifact } from "../dopaios/sessions.ts";
-import { traceCriticalOutput } from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/approval.ts";
+import { createArtifactRevision } from "../dopaios/core/lifecycle.ts";
+import { startAiSession, recordSessionArtifact } from "../dopaios/core/sessions.ts";
+import { traceCriticalOutput } from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-04 B3 — tiêu chí 3: "Thay artifact phải tạo phiên bản mới, không đổi
 // bằng chứng cũ." Thay spec (createArtifactRevision, đường KC-14/KC-15) rồi

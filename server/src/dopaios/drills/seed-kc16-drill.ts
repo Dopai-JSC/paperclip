@@ -1,13 +1,13 @@
 import { access, readFile, rm } from "node:fs/promises";
 import { createDb } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import { createProjectShell, registerActor } from "./commands.js";
+import { createProjectShell, registerActor } from "../core/commands.js";
 import { persistConfirmedFile } from "./kc16-recovery.js";
 import {
   completeSession,
   recordSessionArtifact,
   startAiSession,
-} from "./sessions.js";
+} from "../core/sessions.js";
 
 const databaseUrl = process.env.DATABASE_URL;
 const runtimeRoot = process.env.KC16_RUNTIME_ROOT ?? "/kc16";
@@ -15,7 +15,7 @@ if (!databaseUrl) throw new Error("DATABASE_URL is required");
 
 const db = createDb(databaseUrl);
 const fixture = JSON.parse(
-  await readFile(new URL("../../../dopaios/fixtures/fx-01-none-preparing.json", import.meta.url), "utf8"),
+  await readFile(new URL("../../../../dopaios/fixtures/fx-01-none-preparing.json", import.meta.url), "utf8"),
 ) as {
   base_command: {
     template_ref: { template_id: string; revision: number; sha256: string };

@@ -11,7 +11,7 @@ import {
   replayProjections,
   snapshotProjections,
   type CommandContext,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -25,10 +25,10 @@ import {
   advanceToDecision,
   recordApproval,
   answerClarification,
-} from "../dopaios/commands.ts";
-import { declareWorkItemDependency, transitiveDependents } from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/commands.ts";
+import { declareWorkItemDependency, transitiveDependents } from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-15 B2 — ca kiểm thử 1 của tiêu chí đạt: "thiếu thông tin chỉ dừng nhánh
 // phụ thuộc (đối chiếu 'đúng impact set' của FS-003 SFR-031/050)".

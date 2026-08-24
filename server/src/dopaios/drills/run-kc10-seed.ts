@@ -1,9 +1,9 @@
 import { randomBytes, randomUUID } from "node:crypto";
 import { authSessions, createDb, instanceUserRoles } from "@paperclipai/db";
 import { inArray, sql } from "drizzle-orm";
-import { boardAuthService } from "../services/board-auth.js";
-import { buildKc10SessionCookie } from "./kc10-auth.js";
-import { buildKc10Dataset } from "./kc10-dataset.js";
+import { boardAuthService } from "../../services/board-auth.js";
+import { buildKc10SessionCookie } from "../core/kc10-auth.js";
+import { buildKc10Dataset } from "../core/kc10-dataset.js";
 import {
   KC10_COMPANY_ID,
   seedKc10ControlPlane,

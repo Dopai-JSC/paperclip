@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, CommandRejectedError } from "../dopaios/event-store.ts";
+import { executeCommand, CommandRejectedError } from "../dopaios/core/event-store.ts";
 import {
   provisionWorkspace,
   activateWorkspace,
@@ -13,8 +13,8 @@ import {
   recordWorkspacePurge,
   accessWorkspaceCredential,
   resolveScopedPath,
-} from "../dopaios/workspace.ts";
-import { requestActivation, claimActivation } from "../dopaios/activation.ts";
+} from "../dopaios/core/workspace.ts";
+import { requestActivation, claimActivation } from "../dopaios/core/activation.ts";
 
 // KC-05 B2: cấp phát nguyên tử dưới tương tranh THẬT + ca âm cho từng guard
 // hình dạng production (ASM-001). Hai Release song song không nhận trùng

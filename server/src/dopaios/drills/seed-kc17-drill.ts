@@ -4,7 +4,7 @@ import {
   countAllEvents,
   replayProjections,
   snapshotProjections,
-} from "./event-store.js";
+} from "../core/event-store.js";
 import {
   executeCutover,
   rollbackCutover,
@@ -13,8 +13,8 @@ import {
   closeReconciliation,
   recordPostClosureCutoverRevision,
   writeBootstrapState,
-} from "./cutover.js";
-import { registerDraftArtifact } from "./approval.js";
+} from "../core/cutover.js";
+import { registerDraftArtifact } from "../core/approval.js";
 import {
   setupCutoverBase,
   baseCutoverPayload,
