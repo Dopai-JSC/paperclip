@@ -129,6 +129,12 @@ reported actionable advisories in same-major dependency lines:
   `GHSA-qwww-vcr4-c8h2` on `react-router 7.18.0`. New advisories outside this
   reviewed baseline continue to fail the gate.
 
+The baseline was refreshed again on 2026-08-24 (start of the build wave — the
+OSV database had moved against the untouched lockfile and gated every infra
+PR): same-major pins raised to `js-yaml 4.3.1`, `dompurify 3.4.13`,
+`mermaid 11.16.1`, `nanoid 3.3.18 / 5.1.16`; `pnpm-lock.yaml` regenerated
+from those pins. No accepted-risk exception was added or removed.
+
 ## Dopai-authored fixture catalog (verification batch 1)
 
 `dopaios/fixtures/` is authored by Dopai; it contains no third-party content.
