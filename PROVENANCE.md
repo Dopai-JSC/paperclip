@@ -53,6 +53,7 @@ lexicographically last entry when merging upstream migrations.
 | anchore/syft | v1.50.0 | Apache-2.0 | SBOM (SPDX JSON) generation, local + CI |
 | google/osv-scanner | v2.4.0 | Apache-2.0 | vulnerability scan of `pnpm-lock.yaml`, local + CI |
 | postgres (OCI image) | `postgres:16@sha256:33f923b05f64ca54ac4401c01126a6b92afe839a0aa0a52bc5aeb5cc958e5f20` | PostgreSQL License | external database for the spike deployment |
+| pgvector/pgvector (OCI image) | `pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2` | PostgreSQL License | PostgreSQL 16 + pgvector 0.8.6 — KC-16 drill compose and CI job `dopaios_contract_postgres16` (ADR-032) |
 | @anthropic-ai/claude-code | 2.1.220 | Anthropic Commercial Terms | AI engine candidate / smoke test (KC-02) |
 | ccusage | 20.0.19 | MIT | per-seat usage reconciliation (KC-11) |
 

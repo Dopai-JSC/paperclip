@@ -202,6 +202,76 @@ jobs:
             pnpm test:run:general -- --group '${{ matrix.group }}'
           fi
 
+  # ADR-032 (điều kiện sau duyệt — PR hạ tầng đầu đợt build): contract test
+  # Dopaios chạy trọn chuỗi migration trên PostgreSQL 16 THẬT bên cạnh đường
+  # embedded-postgres (PG 18) của vòng nhanh. Image pgvector/pgvector pin
+  # digest — PostgreSQL 16 + pgvector 0.8.6, cùng digest KC-16 (PROVENANCE).
+  dopaios_contract_postgres16:
+    name: Dopaios contract tests on postgres:16
+    needs: [policy]
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    services:
+      postgres:
+        image: pgvector/pgvector@sha256:e437c9093a50af23597712f57d57e15c4f4db171e1504c68adfccd85433aa9b2
+        env:
+          POSTGRES_USER: paperclip
+          POSTGRES_HOST_AUTH_METHOD: trust
+          POSTGRES_DB: postgres
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U paperclip -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Restore regenerated PR lockfile (if policy uploaded one)
+        uses: actions/download-artifact@v8
+        continue-on-error: true
+        with:
+          name: pr-lockfile
+          path: .
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Assert PostgreSQL major 16 + pgvector 0.8.6
+        run: |
+          url="postgres://paperclip@localhost:5432/postgres"
+          server_version="$(psql "$url" -tAc 'show server_version')"
+          echo "server_version=$server_version"
+          case "$server_version" in
+            16.*) ;;
+            *) echo "ERROR: PostgreSQL major khác 16"; exit 1 ;;
+          esac
+          vector_version="$(psql "$url" -tAc "select default_version from pg_available_extensions where name = 'vector'")"
+          echo "pgvector=$vector_version"
+          if [ "$vector_version" != "0.8.6" ]; then
+            echo "ERROR: pgvector khác 0.8.6 (migration 0521 pin exact)"; exit 1
+          fi
+
+      - name: Run Dopaios contract suites against postgres:16
+        env:
+          DOPAIOS_TEST_DATABASE_URL: postgres://paperclip@localhost:5432/postgres
+          DOPAIOS_KC08_DATABASE_URL: postgres://paperclip@localhost:5432/postgres
+        run: pnpm --filter @paperclipai/server exec vitest run dopaios
+
   verify:
     # Preserve the legacy required-check name while the underlying work runs in parallel.
     name: verify
