@@ -11,15 +11,15 @@ import {
   snapshotProjections,
   replayProjections,
   CommandPayloadMismatchError,
-} from "../dopaios/event-store.js";
-import { executeAuditedCommand } from "../dopaios/approval.js";
+} from "../dopaios/core/event-store.js";
+import { executeAuditedCommand } from "../dopaios/core/approval.js";
 import {
   executeCutover,
   completeCutover,
   writeBootstrapState,
   appendCutoverRecord,
   type CutoverRecordInput,
-} from "../dopaios/cutover.js";
+} from "../dopaios/core/cutover.js";
 import {
   setupCutoverBase,
   baseCutoverPayload,

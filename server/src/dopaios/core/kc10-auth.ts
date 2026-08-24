@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { deriveAuthCookiePrefix } from "../auth/better-auth.js";
+import { deriveAuthCookiePrefix } from "../../auth/better-auth.js";
 
 export type Kc10SessionCookie = {
   name: string;

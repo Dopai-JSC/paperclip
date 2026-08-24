@@ -6,7 +6,7 @@ import {
   getKc10OperationalObject,
   listKc10OperationalObjects,
   type ListKc10OperationalObjectsInput,
-} from "../dopaios/kc10-operations.js";
+} from "../dopaios/core/kc10-operations.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 interface Kc10RouteOptions {

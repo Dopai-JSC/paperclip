@@ -5,8 +5,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
-import { registerActor, registerApprovedArtifact, createProjectShell, pinProductBaseline } from "../dopaios/commands.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
+import { registerActor, registerApprovedArtifact, createProjectShell, pinProductBaseline } from "../dopaios/core/commands.ts";
 import {
   assembleDecisionPackage,
   createGateRecord,
@@ -15,7 +15,7 @@ import {
   registerDraftArtifact,
   submitArtifactForReview,
   type RecordApprovalPayload,
-} from "../dopaios/approval.ts";
+} from "../dopaios/core/approval.ts";
 
 // KC-03 B4: 14 điểm phê duyệt theo fixture FX-03 (AC-FR-24.3 + P0-01 theo
 // AC-FR-24.2), tự dựng guard production trên fork — đúng ranh ASM-001 (không

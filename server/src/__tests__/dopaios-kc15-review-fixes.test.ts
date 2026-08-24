@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, CommandRejectedError } from "../dopaios/event-store.ts";
+import { executeCommand, CommandRejectedError } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -19,20 +19,20 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
   submitArtifactForReview,
   assembleDecisionPackage,
   recordApprovalDecision,
-} from "../dopaios/approval.ts";
-import { createArtifactRevision, type SourceRef } from "../dopaios/lifecycle.ts";
-import { submitFixtureRevision } from "../dopaios/revisions.ts";
-import { cancelTestRun } from "../dopaios/exceptions.ts";
-import { declareWorkItemDependency } from "../dopaios/graph-repo.ts";
+} from "../dopaios/core/approval.ts";
+import { createArtifactRevision, type SourceRef } from "../dopaios/core/lifecycle.ts";
+import { submitFixtureRevision } from "../dopaios/core/revisions.ts";
+import { cancelTestRun } from "../dopaios/core/exceptions.ts";
+import { declareWorkItemDependency } from "../dopaios/core/graph-repo.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-15 B5 — xử finding vòng review đối kháng 2 lens trên toàn diff B1–B4:
 //  - blocker lens 1: impact nguồn-đổi-nghĩa KHÔNG được chạm run terminal

@@ -81,7 +81,7 @@ upstream snapshot for comparison. See `dopaios/message-db/PIN.md`.
 |---|---|
 | Upstream | https://github.com/anthropics/claude-agent-sdk-typescript |
 | Pin | tag `v0.3.220` = commit `71c804dc8f4a61c1dca6fe10d4b95a6b65d1396b` |
-| Copied | 2026-07-31, `examples/session-stores/postgres/src/PostgresSessionStore.ts` (verbatim) and `examples/session-stores/shared/conformance.ts` (one-line deviation: `bun:test` → `vitest`) into `server/src/dopaios/session-store/` |
+| Copied | 2026-07-31, `examples/session-stores/postgres/src/PostgresSessionStore.ts` (verbatim) and `examples/session-stores/shared/conformance.ts` (one-line deviation: `bun:test` → `vitest`) into `server/src/dopaios/core/session-store/` |
 | License | MIT (example code, not published to npm) |
 | Role | Reference SessionStore→Postgres adapter + the SDK's 13-check conformance suite for KC-02; Dopai hardening (uuid dedupe for SDK append retries) lives in `DopaiosSessionStore.ts` on top, never edits the copies |
 
@@ -129,6 +129,12 @@ reported actionable advisories in same-major dependency lines:
   `GHSA-qwww-vcr4-c8h2` on `react-router 7.18.0`. New advisories outside this
   reviewed baseline continue to fail the gate.
 
+The baseline was refreshed again on 2026-08-24 (start of the build wave — the
+OSV database had moved against the untouched lockfile and gated every infra
+PR): same-major pins raised to `js-yaml 4.3.1`, `dompurify 3.4.13`,
+`mermaid 11.16.1`, `nanoid 3.3.18 / 5.1.16`; `pnpm-lock.yaml` regenerated
+from those pins. No accepted-risk exception was added or removed.
+
 ## Dopai-authored fixture catalog (verification batch 1)
 
 `dopaios/fixtures/` is authored by Dopai; it contains no third-party content.
@@ -149,6 +155,6 @@ SHA-256 of the exact bytes:
 `64c1cd8e97ecf9801c8cf66c66f16552168b08535230b8e0a5304fdee31a08b5`.
 License at the pinned commit: MIT for repository content outside the
 `enterprise/` directory (this file lives at the repository root). The file is
-loaded fail-closed by `server/src/dopaios/pricing.ts`, which verifies this
+loaded fail-closed by `server/src/dopaios/core/pricing.ts`, which verifies this
 checksum at first load; price updates must re-pin commit + checksum +
 pricing date here and in that module together.

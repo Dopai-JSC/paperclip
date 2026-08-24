@@ -7,21 +7,21 @@ import {
   projectEvent,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.js";
-import { markArtifactImpact, registerApprovedArtifact } from "../dopaios/commands.js";
-import { startAiSession } from "../dopaios/sessions.js";
+} from "../dopaios/core/event-store.js";
+import { markArtifactImpact, registerApprovedArtifact } from "../dopaios/core/commands.js";
+import { startAiSession } from "../dopaios/core/sessions.js";
 import {
   approveContextPackage,
   bindArtifactProjectScope,
   buildContextPackage,
   sha256Utf8,
   type TokenCounter,
-} from "../dopaios/context-package.js";
+} from "../dopaios/core/context-package.js";
 import {
   indexDkpSource,
   retrieveDkp,
   type FourDimensionalEmbedder,
-} from "../dopaios/dkp-retrieval.js";
+} from "../dopaios/core/dkp-retrieval.js";
 import { startKc08VectorTestDatabase } from "./helpers/dopaios-kc08-postgres.js";
 
 const vectorBaseUrl = process.env.DOPAIOS_KC08_DATABASE_URL;

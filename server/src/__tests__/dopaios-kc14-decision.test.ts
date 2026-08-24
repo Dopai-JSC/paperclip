@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -20,9 +20,9 @@ import {
   recordApproval,
   answerClarification,
   type RunApprovalCondition,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-14 B3 — đủ BỐN outcome của điểm phê duyệt trên trục Phiên bản đầu ra
 // (bảng FS-003 d.1599-1603):

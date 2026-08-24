@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -21,16 +21,16 @@ import {
   completeSopRun,
   markArtifactImpact,
   answerClarification,
-} from "../dopaios/commands.ts";
-import { submitFixtureRevision } from "../dopaios/revisions.ts";
+} from "../dopaios/core/commands.ts";
+import { submitFixtureRevision } from "../dopaios/core/revisions.ts";
 import {
   detectOverdueRunConditions,
   decideRunException,
   cancelTestRun,
-} from "../dopaios/exceptions.ts";
-import { registerQualityContract, qualityContractContentSha256 } from "../dopaios/lifecycle.ts";
+} from "../dopaios/core/exceptions.ts";
+import { registerQualityContract, qualityContractContentSha256 } from "../dopaios/core/lifecycle.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
-import type { QualityContractRef } from "../dopaios/lifecycle.ts";
+import type { QualityContractRef } from "../dopaios/core/lifecycle.ts";
 
 // KC-14 B7 — kiểm các fix theo finding vòng review đối kháng 2 lens:
 //  - SFR-057 tuần tự: run không RUNNING từ chối exec/complete; complete đếm

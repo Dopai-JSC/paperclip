@@ -5,15 +5,15 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
-import { registerActor } from "../dopaios/commands.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
+import { registerActor } from "../dopaios/core/commands.ts";
 import {
   assembleDecisionPackage,
   pinSeparationPolicy,
   recordApprovalDecision,
   registerDraftArtifact,
   submitArtifactForReview,
-} from "../dopaios/approval.ts";
+} from "../dopaios/core/approval.ts";
 import {
   closeCondition,
   decideException,
@@ -21,7 +21,7 @@ import {
   detectOverdueConditions,
   dispositionImpact,
   isApprovalEffective,
-} from "../dopaios/conditions.ts";
+} from "../dopaios/core/conditions.ts";
 
 // KC-03 B3: vòng đời condition/EXCEPTION và luật gộp impact — SFR-055 đóng
 // kèm bằng chứng; SFR-016/034 quá hạn → mất hiệu lực + Gói EXCEPTION + một

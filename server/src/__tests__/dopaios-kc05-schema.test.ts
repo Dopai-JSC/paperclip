@@ -10,13 +10,13 @@ import {
   replayProjections,
   snapshotProjections,
   CommandPayloadMismatchError,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   provisionWorkspace,
   activateWorkspace,
   beginWorkspaceClose,
   recordWorkspacePurge,
-} from "../dopaios/workspace.ts";
+} from "../dopaios/core/workspace.ts";
 
 // KC-05 B1: schema 0517 + projector + vòng đời workspace theo Release trên
 // event store KC-01 (QD-1). Bài kiểm nền: cấp phát → vật chất hóa → đóng →

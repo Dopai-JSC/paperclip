@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { executeCommand, replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 
 // KC-03 B1: schema 0507 + projector — bốn bảng approval engine mới và các cột
 // mở rộng dựng được thuần từ event log, replay byte-identical (SQR-003),

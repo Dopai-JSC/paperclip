@@ -1,6 +1,6 @@
 import type { Db } from "@paperclipai/db";
 import { sql } from "drizzle-orm";
-import type { Kc10Dataset } from "./kc10-dataset.js";
+import type { Kc10Dataset } from "../core/kc10-dataset.js";
 
 export const KC10_COMPANY_ID = "2c3d90b5-2d57-58d4-a12c-0bb5ae7c2f10";
 

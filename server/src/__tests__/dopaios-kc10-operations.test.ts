@@ -5,7 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   getKc10OperationalObject,
   listKc10OperationalObjects,
-} from "../dopaios/kc10-operations.js";
+} from "../dopaios/core/kc10-operations.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,

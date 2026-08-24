@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import type { createDb } from "@paperclipai/db";
-import { registerActor } from "./commands.js";
+import { registerActor } from "../core/commands.js";
 import {
   pinSeparationPolicy,
   registerDraftArtifact,
@@ -9,14 +9,14 @@ import {
   assembleDecisionPackage,
   recordApprovalDecision,
   type RecordApprovalPayload,
-} from "./approval.js";
+} from "../core/approval.js";
 import {
   registerBootstrapWorkflow,
   setCutoverReadiness,
   sha256Utf8,
   CUTOVER_READINESS_FLAGS,
   type ExecuteCutoverPayload,
-} from "./cutover.js";
+} from "../core/cutover.js";
 
 // Hỗ trợ fixture KC-17 dùng chung cho test VÀ drill (B6 — finding lens 1:
 // không import từ __tests__ vào build production): dựng bối cảnh cutover
@@ -25,7 +25,7 @@ import {
 
 type Db = ReturnType<typeof createDb>;
 
-const FIXTURES_ROOT = new URL("../../../dopaios/fixtures/", import.meta.url);
+const FIXTURES_ROOT = new URL("../../../../dopaios/fixtures/", import.meta.url);
 
 export function readFixtureUtf8(rel: string): string {
   return readFileSync(fileURLToPath(new URL(rel, FIXTURES_ROOT)), "utf8");

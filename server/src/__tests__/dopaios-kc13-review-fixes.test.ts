@@ -9,7 +9,7 @@ import {
   executeCommand,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.ts";
+} from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   createProjectShell,
@@ -17,7 +17,7 @@ import {
   createSopDefinition,
   publishSopDefinition,
   recordApproval,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import {
   registerStaffAi,
   pinStartupPool,
@@ -27,15 +27,15 @@ import {
   createProjectWorkItem,
   activateRelease,
   AI_ROLES,
-} from "../dopaios/routing.ts";
-import { routeWorkItem } from "../dopaios/router.ts";
-import { compileExecutionContract } from "../dopaios/contract.ts";
+} from "../dopaios/core/routing.ts";
+import { routeWorkItem } from "../dopaios/core/router.ts";
+import { compileExecutionContract } from "../dopaios/core/contract.ts";
 import {
   requestActivation,
   claimActivation,
   completeActivation,
-} from "../dopaios/activation.ts";
-import { requeueExpiredActivations } from "../dopaios/runner.ts";
+} from "../dopaios/core/activation.ts";
+import { requeueExpiredActivations } from "../dopaios/core/runner.ts";
 
 // KC-13 B7: các ca kiểm cho finding của vòng review đối kháng — ba blocker
 // (thẩm quyền S09, requeue re-check trong transaction, FR-63 bắt buộc) và

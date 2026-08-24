@@ -11,19 +11,19 @@ import {
   readStream,
   replayProjections,
   snapshotProjections,
-} from "../dopaios/event-store.js";
-import { registerApprovedArtifact, markArtifactImpact } from "../dopaios/commands.js";
-import { registerDraftArtifact } from "../dopaios/approval.js";
-import { compileExecutionContract } from "../dopaios/contract.js";
-import { requestActivation, runActivation } from "../dopaios/activation.js";
-import { FakeEngine } from "../dopaios/engine.js";
+} from "../dopaios/core/event-store.js";
+import { registerApprovedArtifact, markArtifactImpact } from "../dopaios/core/commands.js";
+import { registerDraftArtifact } from "../dopaios/core/approval.js";
+import { compileExecutionContract } from "../dopaios/core/contract.js";
+import { requestActivation, runActivation } from "../dopaios/core/activation.js";
+import { FakeEngine } from "../dopaios/core/engine.js";
 import {
   approveContextPackage,
   bindArtifactProjectScope,
   buildContextPackage,
   sha256Utf8,
   type TokenCounter,
-} from "../dopaios/context-package.js";
+} from "../dopaios/core/context-package.js";
 
 const embedded = await getEmbeddedPostgresTestSupport();
 const describeDb = embedded.supported ? describe : describe.skip;

@@ -1,23 +1,23 @@
 import { join } from "node:path";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
-import { replayProjections, snapshotProjections } from "./event-store.js";
+import { replayProjections, snapshotProjections } from "../core/event-store.js";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "./commands.js";
-import { completeSession } from "./sessions.js";
+} from "../core/commands.js";
+import { completeSession } from "../core/sessions.js";
 import {
   latestConfirmedCheckpoint,
   runWorkItemSession,
   type ExecutionContract,
   type SessionBudget,
-} from "./engine.js";
-import { ClaudeCliEngine } from "./claude-cli-engine.js";
-import { workItemCostSummary } from "./cost-summary.js";
+} from "../core/engine.js";
+import { ClaudeCliEngine } from "../core/claude-cli-engine.js";
+import { workItemCostSummary } from "../core/cost-summary.js";
 
 // KC-11 B4–B6: drill chi phí THẬT qua `claude --print` (stream-json).
 // Modes (drive tuần tự từ shell, mọi id mang suffix B11_RUN_ID — nếp B7):

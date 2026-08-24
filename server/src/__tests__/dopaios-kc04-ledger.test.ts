@@ -5,10 +5,10 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
-import { registerActor, registerApprovedArtifact } from "../dopaios/commands.ts";
-import { registerDraftArtifact } from "../dopaios/approval.ts";
-import { createArtifactRevision } from "../dopaios/lifecycle.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
+import { registerActor, registerApprovedArtifact } from "../dopaios/core/commands.ts";
+import { registerDraftArtifact } from "../dopaios/core/approval.ts";
+import { createArtifactRevision } from "../dopaios/core/lifecycle.ts";
 
 // KC-04 B1: provenance trên sổ cái artifact FS-002 (migration 0515) — hợp
 // đồng input "Danh sách nguồn" d.629 + EDGE-001 (pin ID@revision hoặc hash,

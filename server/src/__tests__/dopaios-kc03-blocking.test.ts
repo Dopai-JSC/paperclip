@@ -5,7 +5,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { replayProjections, snapshotProjections } from "../dopaios/event-store.ts";
+import { replayProjections, snapshotProjections } from "../dopaios/core/event-store.ts";
 import {
   registerActor,
   registerApprovedArtifact,
@@ -18,7 +18,7 @@ import {
   reviewFixtureExecution,
   advanceToDecision,
   pinProductBaseline,
-} from "../dopaios/commands.ts";
+} from "../dopaios/core/commands.ts";
 import { seedApprovedQualityContract } from "./helpers/dopaios-kc14.ts";
 import {
   assembleDecisionPackage,
@@ -29,8 +29,8 @@ import {
   registerDraftArtifact,
   submitArtifactForReview,
   type RecordApprovalPayload,
-} from "../dopaios/approval.ts";
-import { declareSourceChanged, dispositionImpact, isApprovalEffective } from "../dopaios/conditions.ts";
+} from "../dopaios/core/approval.ts";
+import { declareSourceChanged, dispositionImpact, isApprovalEffective } from "../dopaios/core/conditions.ts";
 
 // KC-03 B5: 12 ca chặn FX-03-B01…B12 map TƯỜNG MINH — mỗi ca một `it` mang
 // đúng case id của fixture, kỳ vọng đúng mã lỗi/hành vi fixture ghi.

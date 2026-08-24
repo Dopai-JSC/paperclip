@@ -1,21 +1,21 @@
 import { readFileSync } from "node:fs";
 import { sql } from "drizzle-orm";
 import { createDb } from "@paperclipai/db";
-import { replayProjections, snapshotProjections } from "./event-store.js";
+import { replayProjections, snapshotProjections } from "../core/event-store.js";
 import {
   activateSopRun,
   createSopDefinition,
   publishSopDefinition,
   registerApprovedArtifact,
   requestTestRun,
-} from "./commands.js";
-import { detectStalledSessions } from "./sessions.js";
+} from "../core/commands.js";
+import { detectStalledSessions } from "../core/sessions.js";
 import {
   latestConfirmedCheckpoint,
   runWorkItemSession,
   type ExecutionContract,
-} from "./engine.js";
-import { ClaudeCliEngine } from "./claude-cli-engine.js";
+} from "../core/engine.js";
+import { ClaudeCliEngine } from "../core/claude-cli-engine.js";
 
 // KC-02 B7: work-item THẬT qua `claude --print` trên DB container dopaios_kc02.
 // Các mode chạy tuần tự bởi b7-drive.sh:
@@ -61,12 +61,12 @@ const contract: ExecutionContract = {
 
 const db = createDb(requireEnv("DATABASE_URL"));
 
-const engine = new ClaudeCliEngine({
+const engine: ClaudeCliEngine = new ClaudeCliEngine({
   cliPath: requireEnv("CLAUDE_CLI_PATH"),
   tokenFile: requireEnv("CLAUDE_TOKEN_FILE"),
   artifactDir: requireEnv("B7_ARTIFACT_DIR"),
   heartbeatMs: 5_000,
-  promptFor: (c, step, index) => {
+  promptFor: (c, step, index): string => {
     if (step === "phan-tich") {
       return `Yêu cầu: ${GOAL}\nLiệt kê đúng 3 gạch đầu dòng các ý chính cần có trong mô tả. Chỉ trả về 3 gạch đầu dòng, không thêm gì khác.`;
     }
